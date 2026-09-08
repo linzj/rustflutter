@@ -952,3 +952,15 @@ are both right and the *platforms* differ.
 `DART2RUST_OS` makes the run present a platform, as `DART2RUST_DUMP_*`
 make it dump: a host knob, not a translation rule. The next run sets it to
 `android` and the walk is compared again.
+
+## ws772 — 288, unchanged
+
+    ws770 288 stubbed
+    ws772 288 stubbed, 130 refusals, 64 crates   0 gone, 0 new
+
+`BoxBorder.lerp` still wants its `Some`: the promoted value there is not
+the `IrCastTo` that was typed but a downcast reaching `_handleOf`, which
+hands back a handle with no recorded type -- and `_widenedInto` treats an
+unknown type as "may already be an Option" and skips the wrap. That guard
+is the pattern behind this whole family; typing the three promoted reads
+one at a time is chipping at it.
