@@ -3815,6 +3815,9 @@ class RustBackend {
     // return `Result` to match (`JSONMessageCodec.decodeMessage`, ws506).
     'convert',
     'put_if_absent',
+    // `map.update`: the callback's failure comes out, and so does the
+    // `ArgumentError` for a key that is not there with no `ifAbsent`.
+    'update',
     'for_each',
     'sort_by_dart',
     'first_where',

@@ -307,13 +307,10 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 - 第 86 轮:那 14 个错误该留着(否定结果)。
 - 第 102/103 轮:`Rc<Self>` 的价钱由 fixture 定的形状。
 
-## 活账:ws/run 表(窗口约 40 行,ws692 起;更老的在 git)
+## 活账:ws/run 表(窗口约 40 行,run693 起;更老的在 git)
 
 | 轮 | 第一个停点 / 读数 | 处理 |
 |---|---|---|
-| ws692 | 链：stub **478**（-2：`_SettingsListItemState.build`、`_CupertinoSegmentedControlState.segmentForXPosition`，无新增），拒绝 183，可达 64。 | run692 |
-| run692 | 过了 `build`（元素槽的拼法一致后）。停在同文件 `_handleExpansion` 的 stub：`_controller.reverse().then<void>((value) { if (!mounted) { return; } })`——闭包的返回类型是 `FutureOr<void>`，体末尾落出去时后端已经会给 `Ok(FutureOr::value(()))`（`_fallsOffValue`），可裸 `return;` 一律拼成 `Ok(())`。修（通用）：裸 `return;` 就是语言的 `return null`，交回**该返回类型的 null**——与「落出末尾」同一个值（后端 `_fallsOff`，`_body` 里存取、闭包嵌套时保存恢复）。夹具 bareret SAME；tfthen/thenfwd/asyncfwd/asyncfutor/nullfn/voidslot/localfn/gclosure 回归 SAME。 | 链 ws693 |
-| ws693 | 链：stub **475**（-3：`_SettingsListItemState._handleExpansion`、`_DropdownButtonState._handleTap`、`ServicesBinding._handlePlatformMessage` 体，无新增），拒绝 183，可达 64。 | run693 |
 | run693 | 过了 `_handleExpansion`。停在同文件 `_buildHeaderWithChildren` 的 stub：`widget.optionsMap[widget.selectedOption]`——`optionsMap` 是 `LinkedHashMap<T?, DisplayOption>`，键槽是类型实参的拼法 `<T as DartNullable>::Or`；键值 `widget.selectedOption`（声明是裸参数 `T`）读出来本来就是投影的，却按 `_type(T?)` 深度 0 的 `Option<T>` 当槽，包了个 `option()` 再喂给 `Map::get(&K)`。修（通用）：集合自己的槽（元素、键、值）**就是类型实参**，`_intoArgument` 用 `_typeNested` 拼槽；`_intoElement`、`m[k]` 取、`m[k]=v`（表达式式与语句式两条路，`_mapEntry`）都走它。夹具 mapkeyslot SAME。 | 链 ws694 |
 | ws694 | 链：stub **476**（-1 `_buildHeaderWithChildren`，+2 新增：`_InkResponseState.updateHighlight`、`SliverMultiBoxAdaptorElement.createChild`）——两处都是 `Map<K, V?>` 的 `m[k] = 非空值` 出了 `Some(Some(..))`：`_arguments` 已按被调方声明的槽包过一次 `Some`，集合槽这一遍（第二次 `_widened`）又包了一次。修（通用）：`_widened` 的收尾「非空值进可空槽包 `Some`」看**手里已有的 Rust 类型**——已经是该槽的 `Option` 就不再包。夹具 mapnullval SAME；identmap/mapwiden/unmodmap/phmuse/splaymap/listgen/fromentries/hashtrie/insertall/iterable/itermap/listcast/listplus/listsingle/slotted 与 nullarg/nullsuper/ctornull/outparam/projarg/projected/tparam/qualgeneric/ifnull/ornull/nullmut/nullfn/dynifnull/dynslot 回归 SAME。 | 链 ws695 |
 | ws695 | 链：stub **472**（比 ws693 -3：`_buildHeaderWithChildren`、`RenderBox.baselineOffsetMinOf`、`Widget.==`，无新增），拒绝 183，可达 64。 | run695 |
@@ -351,6 +348,9 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 | run723 | **启动路径上不再有 panic**——程序跑满 120s 无输出、无 panic。gdb 抓栈：`gallery/constants.dart` 的 `kTransparentImage` 的 `LazyLock` 自锁——上游写的是 `final kTransparentImage = transparent_image::kTransparentImage;`（另一个库的同名顶层），拼成裸名后读到了自己。修（通用）：顶层**读**也带 module（`IrTopLevel.module`，与 `_topLevelModule` 同一张判断），后端拼 `crate::<module>::NAME`。夹具 topshadow SAME（基线挂住）。 | 链 ws724 |
 | ws724 | 链：stub **439**（同一组），拒绝 170。 | run724 |
 | run724 | 死锁没了。停在 `ImageProvider.resolve` 的 stub：`None.await`——上游写的是 `await null;`（让微任务队列跑一轮的惯用法）。修（通用）：`await v` 当 `v` 静态类型**不可能是 future** 时（不是 Future/FutureOr/顶类型/类型参数/实现 Future 的类），就是「一个 turn 加这个值」——拼成 `future_ready::<T>(v).await`，turbofish 由静态类型给（裸 `None` 推不出 `T`）。夹具 awaitnonfut SAME。链 **438**（-1）。 | run725 |
+| run725 | 停在 `AssetImage.obtainKey` 的拒绝：`FutureExtensions|onError`（dart:async 在 `Future` 上的扩展）。修（通用）：它就是把错误类型折进 test 的 `catchError`——`E` 是 `Object` 时 prelude 的 `catch_error` 就是全部；更窄的 `E` 要把 `is` 写进 test，拒绝而不是丢掉。实参按**扩展自己的类型参数**代入（回调返回 `FutureOr<T>`，按声明降会拼出没人声明的 `T`）。夹具 futonerror SAME。 | 链 ws726 |
+| ws726 | 链：stub **439**（+1：`obtain_key` 的 `Ok(FutureOr::value(None))` 推不出 `T`——`catch_error` 的回调按 `Rc<dyn Object>` 存着，什么也不约束）。修（通用）：`_fallsOffValue` 的 `None` 拼出类型 `None::<T>`。链 **438**（ws727），拒绝 169。 | run727 |
+| run727 | 图片路径走通了（错误被抛出并开始格式化）。停在 `FlutterError.defaultStackFilter` 的拒绝：`Map.update`。修（通用）：prelude 的 `Map` 加 `update(key, update, {ifAbsent})`（没有 `ifAbsent` 又没有键时抛 `ArgumentError`，与 Dart 同），`mapMethodNames` 与 `_preludeFailing` 各加一条。夹具 mapupdate SAME。 | 链 ws728 |
 
 ## 下一步(2026-09-05 重铺)
 

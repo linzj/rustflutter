@@ -1072,6 +1072,7 @@ const mapMethodNames = <String, String>{
   'entries': 'entries',
   'forEach': 'for_each',
   'putIfAbsent': 'put_if_absent',
+  'update': 'update',
   // A sorted map's ends. The prelude's `Map` keeps insertion order, so it
   // computes them (`SliverMultiBoxAdaptorElement.didFinishLayout` reads
   // both off a `SplayTreeMap<int, Element?>`, run718).

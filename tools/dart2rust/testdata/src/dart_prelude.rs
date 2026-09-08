@@ -2569,6 +2569,34 @@ impl<K: DartEq + Clone, V: Clone> Map<K, V> {
         Ok(value)
     }
 
+    /// `map.update(key, update, {ifAbsent})`: the value at `key` replaced
+    /// by `update(value)`, or `ifAbsent()`'s where there is none -- and
+    /// Dart's `ArgumentError` when there is neither
+    /// (`FlutterError.defaultStackFilter`, run727).
+    pub fn update(
+        &mut self,
+        key: K,
+        update: impl FnOnce(V) -> Result<V, DartError>,
+        if_absent: Option<std::rc::Rc<dyn Fn() -> Result<V, DartError>>>,
+    ) -> Result<V, DartError> {
+        if let Some(i) = self.at(&key) {
+            let value = update(self.entries[i].1.clone())?;
+            self.entries[i].1 = value.clone();
+            return Ok(value);
+        }
+        match if_absent {
+            Some(make) => {
+                let value = make()?;
+                self.entries.push((key, value.clone()));
+                Ok(value)
+            }
+            None => Err(std::rc::Rc::new(ArgumentError::new(
+                dart_boxed("Key not in map.".to_string()),
+                None,
+            )) as DartError),
+        }
+    }
+
     pub fn extend(&mut self, other: Map<K, V>) {
         for (key, value) in other.entries {
             self.insert(key, value);
