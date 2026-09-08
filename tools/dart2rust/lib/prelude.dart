@@ -1886,7 +1886,11 @@ impl<T: DartEq + Clone> Set<T> {
     }
 
     /// `set.removeWhere(test)`: every element the test holds of goes.
-    pub fn remove_where(&mut self, test: std::rc::Rc<dyn Fn(T) -> Result<bool, DartError>>) -> Result<(), DartError> {
+    /// `impl Fn`, as a list's `removeWhere` and every other prelude
+    /// callback slot that only calls what it is given: one convention, so
+    /// that a caller does not have to know which collection it holds
+    /// (`NavigatorState._forcedDisposeAllRouteEntries`, +1 at ws819).
+    pub fn remove_where<F: Fn(T) -> Result<bool, DartError>>(&mut self, test: F) -> Result<(), DartError> {
         let mut kept: Vec<T> = Vec::new();
         for e in self.items.drain(..) {
             if !test(e.clone())? {
@@ -8349,6 +8353,10 @@ macro_rules! dart_core_as {
     };
 }
 
+// ..and the prelude's plain value classes, which `x is DateTime` /
+// `x is ByteData` ask for the same way (3 refusals at ws817).
+dart_core_as!(DateTime);
+dart_core_as!(ByteData);
 dart_core_as!(Exception, FormatException => |e| Exception { message: e.message.clone(), rendered: Some(format!("{}", e)) });
 dart_core_as!(FormatException);
 dart_core_as!(ArgumentError, RangeError => |e| ArgumentError { message: e.message.clone(), name: None });

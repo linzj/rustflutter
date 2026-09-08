@@ -8845,6 +8845,10 @@ class RustBackend {
 
   /// The prelude's classes that `is` can ask about and a `throw` boxes.
   static const _preludeClasses = {
+    // The prelude's plain value classes: `x is DateTime` in a date
+    // picker's `_buildDayItem`, `x is ByteData` in the message codecs.
+    'DateTime',
+    'ByteData',
     'Exception',
     'FormatException',
     'StateError',

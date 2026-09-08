@@ -1779,3 +1779,32 @@ workspace:
 Unchanged from run809 except the frame count (191 -> 198, the run is
 timed and the machine was less busy). Nothing the compile ruler cleared
 has cost the run ruler anything.
+
+## ws819 -- a function value handed to translated code is the handle
+
+The backend spells *every* function-typed parameter of translated code
+`Rc<dyn Fn(..)>` -- "one spelling, both sides", decided long before this
+round -- so the front end's rule that lent the closure behind the handle
+at a slot the callee "only calls" had nothing left to be right about. It
+fired on a function-typed local and produced `&*layout_child.clone()`
+where `RenderFlex._computeSizes` declares the handle. The rule is gone.
+
+The loan belongs to the prelude, whose collection callbacks really are
+`impl Fn`, and `_preludeLends` is where it lives: the list grew
+`remove_where`, `retain_where`, `for_each` and `put_if_absent`, and a
+closure literal that arrived boxed is unboxed at one of those slots.
+
+The fnhandle fixture: a `Sizer` local passed to two methods that only call
+it, beside a closure literal at the same slot.
+    bin/run_chain.sh:  202 stubbed (was 208), 88 refusals, 64 crates
+    7 cleared, 1 added
+
+The one added was two prelude methods of the same name disagreeing:
+`Set.removeWhere` declared `Rc<dyn Fn>` where every other callback slot
+declares `impl Fn`, so unboxing the closure at it was the wrong shape. The
+set's is `impl Fn` now, and a caller no longer has to know which
+collection it holds.
+
+Also this round, from the refusal census: `x is DateTime` and
+`x is ByteData` answer through `DartCoreAs` like the prelude's exception
+classes (3 refusals). The isprelude fixture.
