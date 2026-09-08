@@ -2541,3 +2541,29 @@ null-aware `.map` whose closure the same reasoning would spell, and that is
 a separate place to teach. Kept rather than reverted because the fixture,
 not the chain, is the evidence: the gap is real and the cure is measured
 not to cost anything.
+
+### Where the next rounds are, at 195/57
+
+Two shapes are characterised and not yet done:
+
+  * **The other spelling site.** `TextFormField.validator` and `.onSaved`
+    stop at `Option<Rc<{closure}>>` where `Option<Rc<dyn Fn..>>` goes, the
+    same gap ws857 closed for `Some(..)` -- but at a null-aware `.map`,
+    whose closure return `_nullAware` already knows how to spell
+    (`spelled`) and did not here. Find why the body's type came back
+    unspellable rather than widening the test.
+
+  * **A covariant parameter keeps the base's Rust type.** Seven stubs in
+    `collection_below/src/equality.rs`: `SetEquality.equals(Set<E>? e1,..)`
+    overrides `UnorderedIterableEquality.equals(Iterable<E>? e1,..)`, the
+    CFE writes `e1 as Set<E>` at the top of the body, and the downcast
+    lands in a parameter the Rust signature spells `Option<Vec<..>>` --
+    `Set` is its own struct here and an `Iterable` is a `Vec`. The Set into
+    a List slot is a rule `coerce` already has (`to_list`, ws642); what is
+    missing is that the covariant cast go through it.
+
+And one that is a *run*, not a compile: **erasedtear loops forever**, at
+HEAD and before this session's rounds alike -- `children.indexOf(child)` on
+a list of boxed values does not find the child it was handed, so the walk
+never advances. That is the identity-on-a-value-class group showing what it
+costs at runtime rather than as a refusal.
