@@ -879,3 +879,19 @@ says the cost is neither. The third change in that commit was
 `_fillsParameter` resolving an abstract dispatch target -- a change to
 *signatures*, program-wide. `DART2RUST_ERASURE_OFF=1` turns the two
 erasure rules off so the next round says which it is.
+
+## ws768 — the bisect (289 with the erasure rules off)
+
+    ws767 324 stubbed (rules on),  round 3: 336
+    ws768 289 stubbed (rules off), round 3: 246
+
+So the +35 was theirs after all, and the three narrowings did nothing
+because the *first* of them never landed in the file: the patch reported
+success and the commit carries a different hunk. The guard is in now, and
+strict: `Map<K, V>.[]` returns `V?`, which Kernel writes `V%` --
+*undetermined*, not `nullable`, because `V`'s bound is nullable -- so
+testing for `nullable` let every `Map`-of-dynamic read through and took
+its `Option` off.
+
+289 is also three better than ws764: the lending fix, `DartEnum` on an
+`Enum`-bounded parameter, and the promoted downcast's type.
