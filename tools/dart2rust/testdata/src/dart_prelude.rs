@@ -3975,6 +3975,15 @@ impl Uri {
         Uri::parse_text(text)
     }
 
+    /// `Uri.tryParse(uri, [start, end])`: the same, and `null` where
+    /// `parse` would throw. This one keeps every text it is given -- the
+    /// parse here does no validating -- so the answer is always a `Uri`;
+    /// it is a separate name because Dart's is, and because a caller
+    /// writes `?? fallback` after it (`google_fonts`' font URL).
+    pub fn try_parse(text: String, start: i64, end: Option<i64>) -> Option<Self> {
+        Some(Uri::parse(text, start, end))
+    }
+
     fn parse_text(text: String) -> Self {
         Uri { text }
     }

@@ -2913,3 +2913,22 @@ depends on never type fallback being `()`" and both ends say `true false`.
 run868 holds the ruler after ws867 and ws868: 708 walk lines, 0 type-only
 differences, 508 as printed, no `RenderErrorBox`, 200 frames drawn and 0
 panicked.
+
+## ws869 -- `Uri.tryParse` is a name the prelude did not have
+
+    bin/run_chain.sh:  171 stubbed (was 172), 57 refusals (unchanged), 64 crates
+
+One member, `google_fonts`' `_httpFetchFontAndSaveToDevice`, and a small
+entry in the same ledger as ws862: the prelude had `Uri.parse` and not the
+`tryParse` beside it. The parse here does no validating, so the answer is
+always a `Uri` -- but it is a separate name because Dart's is, and because
+the caller writes `?? fallback` after it.
+
+The uritry fixture asks both, with and without the `start`/`end` slice, and
+reads `host`, `path` and a query parameter back. HEAD gives the gallery's
+"no associated function or constant named `try_parse`" and both ends say
+`true example.com x 1`.
+
+Two neighbours in the same group are *not* this: `Isolate.run` (Flutter's
+`compute`) needs a decision about what an isolate is in a single-threaded
+runtime, and `_WindowsMessage._fromTypedDataBase` is `dart:ffi` again.
