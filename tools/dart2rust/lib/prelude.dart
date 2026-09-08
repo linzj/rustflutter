@@ -2156,19 +2156,28 @@ impl DateTime {
         DateTime { microseconds_since_epoch: since, is_utc: false }
     }
 
-    pub fn from_microseconds_since_epoch(microseconds: i64) -> Self {
-        DateTime { microseconds_since_epoch: microseconds, is_utc: false }
+    /// Both take Dart's `isUtc`, which the class has a field for: a
+    /// `RestorableDateTime` restores with `fromMillisecondsSinceEpoch(
+    /// value, isUtc: false)` and the call had one argument too many.
+    pub fn from_microseconds_since_epoch(microseconds: i64, is_utc: bool) -> Self {
+        DateTime { microseconds_since_epoch: microseconds, is_utc }
     }
 
-    pub fn from_milliseconds_since_epoch(milliseconds: i64) -> Self {
+    pub fn from_milliseconds_since_epoch(milliseconds: i64, is_utc: bool) -> Self {
         DateTime {
             microseconds_since_epoch: milliseconds * 1000,
-            is_utc: false,
+            is_utc,
         }
     }
 
     pub fn milliseconds_since_epoch(&self) -> i64 {
         self.microseconds_since_epoch / 1000
+    }
+
+    /// The field as a method, as `is_utc` is: a `dart:` class's field is
+    /// read as a call (see the front end).
+    pub fn microseconds_since_epoch(&self) -> i64 {
+        self.microseconds_since_epoch
     }
 
     pub fn difference(&self, other: DateTime) -> Duration {

@@ -2663,3 +2663,21 @@ The hashallnull fixture is that expression -- a class hashing a
 `List<String>?` field through `Object.hash` and `Object.hashAll` under a
 null check, compared for two equal values, two nulls, and one of each. It
 does not compile at HEAD and both ends say `true true false`.
+
+## ws862 -- the prelude's `DateTime` says what Dart's says
+
+    bin/run_chain.sh:  184 stubbed (was 186), 57 refusals (unchanged), 64 crates
+
+`DateTime.fromMillisecondsSinceEpoch(int ms, {bool isUtc = false})`, and the
+prelude's took the milliseconds alone -- so `RestorableDateTime.
+fromPrimitives`, which restores with the flag spelled, handed it one
+argument too many. The class has an `is_utc` field and every other
+constructor sets it; these two now take it, as Dart declares them.
+`microsecondsSinceEpoch` was the same kind of gap next door: the field was
+there and the getter was not, and a `dart:` class's field is read as a call.
+
+The dtepoch fixture takes both constructors with the flag and without, and
+reads `millisecondsSinceEpoch`, `microsecondsSinceEpoch` and `isUtc` back.
+It does not compile at HEAD -- the same "takes 1 argument but 2 arguments
+were supplied" the gallery had -- and both ends say
+`1700000000000 false true 5 true false`.
