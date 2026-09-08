@@ -6183,7 +6183,18 @@ class RustBackend {
         _line(
           '{ let __i = ${expr(index)} as usize; $place[__i] = ${expr(value)}; }',
         );
-      case IrLocalFunction(:final name, :final closure, :final recursive):
+      case IrLocalFunction(
+        :final name,
+        :final closure,
+        :final recursive,
+        :final lends,
+      ):
+        // A binding that is only called is a plain `let`: no handle, so the
+        // closure may borrow what it reads (`IrLocalFunction.lends`).
+        if (lends) {
+          _line('let ${snake(name)} = ${expr(closure)};');
+          break;
+        }
         if (!recursive) {
           // Behind the handle every function value is (`Rc<dyn Fn>`): a
           // bare closure bound to `listener` could not be handed to

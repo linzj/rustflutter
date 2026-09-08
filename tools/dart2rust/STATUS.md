@@ -2183,3 +2183,29 @@ so it is reverted with the rest, and both are written down here for the
 round that does the generic local function properly, which needs the
 declaration, the call site and the two spellings of `dynamic` settled
 together.
+
+## ws838 -- a local function that is only called may borrow
+
+    bin/run_chain.sh:  204 stubbed (was 203), 60 refusals (was 64), 64 crates
+    3 stubs cleared, 4 added; refusals down 4
+
+A closure that reaches `this` has been refused unless it could copy the
+`final` fields it reads, because a function value here is an `Rc<dyn Fn>`
+and a `'static` closure cannot borrow. A *local function* whose binding is
+only ever **called** is not that: it never outlives the body it is written
+in, so it is a plain `let f = |..| ..` and may borrow what it reads --
+including `this`. The member's whole body decides: a read of the binding
+anywhere in it (passed on, stored, torn off) puts it back behind the
+handle. `IrLocalFunction.lends`, and the lendlocal fixture -- a local
+function inside a mixin that calls a method on `this` and changes its
+fields, agreeing with Dart on the list, the total and the log.
+
+That cleared five refusals of `popOrInvalidate` inside
+`DirectionalFocusTraversalPolicyMixin._popPolicyDataIfNeeded` and the three
+stubs whose callers could not find the method. Four stubs took their place,
+and they are a smaller question than the one they replaced: the method is
+`&mut self`, so the `move` closure moves the `&mut` rather than reborrowing
+it, and the super function's `this_: &__Self` cannot reach a `&mut self`
+trait method. The refusal was "this cannot be expressed"; what is left is
+"this needs a reborrow, and super functions need to know when a method
+mutates".

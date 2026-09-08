@@ -748,6 +748,10 @@ class KernelFrontend implements TypeWorld {
   /// initialiser (see `_withBorrowing`).
   final Set<String> _boxedFunctionLocals = {};
 
+  /// Set while a local function whose binding never escapes is lowered:
+  /// its closure may borrow `this` (see `IrLocalFunction.lends`).
+  bool _lendingLocal = false;
+
   /// Locals assigned inside a `try` body they are declared outside of.
   /// The backend lowers a `try` into a closure called on the spot, and
   /// Rust will not let a closure assign a binding that is not yet
@@ -3906,6 +3910,7 @@ class KernelFrontend implements TypeWorld {
     if (_reachesThis(fn) &&
         !_counted &&
         !copies &&
+        !_lendingLocal &&
         !(_borrowedArgument && _onlyReadsThis(fn))) {
       TreeNode? up = origin is TreeNode ? origin : null;
       while (up != null && up is! Member) {
@@ -12278,13 +12283,41 @@ class KernelFrontend implements TypeWorld {
       if (node.function.typeParameters.isNotEmpty) {
         throw Unsupported('generic local function', _sample(node));
       }
-      final closure = _closure(node.function, node) as IrClosure;
+      // A binding that is only *called* never outlives the body it is
+      // written in, so its closure may borrow rather than own -- which is
+      // how it reaches `this` without copying anything out of it. The
+      // member's whole body is what decides: a read anywhere in it (passed
+      // on, stored, torn off) makes it the `Rc<dyn Fn>` a function value
+      // is (`popOrInvalidate` inside `_popPolicyDataIfNeeded`, 5 refusals
+      // and 3 stubs at ws836).
+      final escapes = _ValueRead(node.variable);
+      final owner = _member;
+      final ownerBody = owner is Procedure
+          ? owner.function.body
+          : owner is Constructor
+          ? owner.function.body
+          : null;
+      ownerBody?.accept(escapes);
+      final lends = !escapes.found;
+      final wasLending = _lendingLocal;
+      if (lends) _lendingLocal = true;
+      final IrClosure closure;
+      try {
+        closure = _closure(node.function, node) as IrClosure;
+      } finally {
+        _lendingLocal = wasLending;
+      }
       // Recursive when the body names its own binding: a call
       // (`LocalFunctionInvocation`) or a read of it.
       final self = _SelfReference(node.variable);
       node.function.body?.accept(self);
-      if (!self.found) _boxedFunctionLocals.add(name);
-      return IrLocalFunction(name, closure, recursive: self.found);
+      if (!self.found && !lends) _boxedFunctionLocals.add(name);
+      return IrLocalFunction(
+        name,
+        closure,
+        recursive: self.found,
+        lends: lends && !self.found,
+      );
     }
     if (node is SwitchStatement) {
       final cases = <IrCase>[];
@@ -14582,6 +14615,26 @@ class _SelfReference extends RecursiveVisitor {
     if (node.variable == variable) found = true;
     super.visitLocalFunctionInvocation(node);
   }
+
+  @override
+  void visitVariableGet(VariableGet node) {
+    if (node.variable == variable) found = true;
+    super.visitVariableGet(node);
+  }
+}
+
+/// Whether a local function's binding is ever read as a *value* -- passed
+/// on, stored, torn off -- as opposed to only being called.
+///
+/// A binding that is only called never outlives the body it is written in,
+/// so its closure may borrow rather than own: it can reach `this` without
+/// copying anything out of it. One that escapes has to be the `Rc<dyn Fn>`
+/// every function value is.
+class _ValueRead extends RecursiveVisitor {
+  _ValueRead(this.variable);
+
+  final Variable variable;
+  bool found = false;
 
   @override
   void visitVariableGet(VariableGet node) {

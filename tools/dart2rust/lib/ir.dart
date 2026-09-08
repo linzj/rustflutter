@@ -1224,10 +1224,23 @@ class IrFunctionRef extends IrExpr {
 
 /// A local function: `void step() { .. }` written inside a body.
 class IrLocalFunction extends IrStmt {
-  const IrLocalFunction(this.name, this.closure, {this.recursive = false});
+  const IrLocalFunction(
+    this.name,
+    this.closure, {
+    this.recursive = false,
+    this.lends = false,
+  });
 
   final String name;
   final IrClosure closure;
+
+  /// Whether the binding is only ever *called*, never handed on.
+  ///
+  /// One that is may borrow: it is a plain `let f = |..| ..` bound to the
+  /// body it was written in, so it can reach `this` without copying
+  /// anything out of it. One that escapes is the `Rc<dyn Fn>` every
+  /// function value here is, and a `'static` closure cannot borrow.
+  final bool lends;
 
   /// Whether the body names the function itself: a Rust closure cannot,
   /// so the binding is a cell the closure holds a handle to and reads
