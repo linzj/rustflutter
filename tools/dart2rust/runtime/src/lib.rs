@@ -188,6 +188,14 @@ fn schedule_frame() {
             *f.borrow()
         });
         let micros = Timeline::now();
+        // `DART2RUST_TRACE_FRAMES=1`: one line per frame as it starts and
+        // as it ends, with the wall clock, so a run that produces nothing
+        // says whether it is drawing slowly or stuck inside one frame.
+        let traced = std::env::var("DART2RUST_TRACE_FRAMES").as_deref() == Ok("1");
+        let started = std::time::Instant::now();
+        if traced {
+            eprintln!("dart2rust frame {} begin at {}us", number, micros);
+        }
         // A frame that panics -- a stub on the compositing path, say -- is
         // reported and the run goes on to `report()`, so the trees built
         // and laid out before the panic can still be dumped and compared
@@ -197,6 +205,13 @@ fn schedule_frame() {
             dart_ui::_begin_frame(micros, number)?;
             dart_ui::_draw_frame()
         }));
+        if traced {
+            eprintln!(
+                "dart2rust frame {} end after {:?}",
+                number,
+                started.elapsed()
+            );
+        }
         match frame {
             Ok(result) => result,
             Err(payload) => {

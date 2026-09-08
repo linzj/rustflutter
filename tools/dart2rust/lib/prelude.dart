@@ -6771,9 +6771,36 @@ pub fn schedule_microtask(callback: Box<dyn FnOnce() -> Result<(), DartError>>) 
 /// Runs microtasks, spawned futures and due timers until none is ready;
 /// whether anything ran at all (a caller polling a future of its own re-polls
 /// it then, since the wake that resolving it sends is consumed in here).
+/// The wall clock the run is allowed (`DART2RUST_RUN_SECONDS`), so the
+/// scheduler can stop *between tasks* and not only between polls of `main`.
+/// A program whose every frame schedules the next never leaves
+/// `run_until_idle`, `run_main` never reached its own budget check, and the
+/// ruler produced no reading at all -- no render tree, no frame count, no
+/// report (run805: 381 frames and counting, at 440ms each).
+fn run_deadline() -> Option<std::time::Instant> {
+    RUN_DEADLINE.with(|d| d.get())
+}
+
+fn past_run_deadline() -> bool {
+    match run_deadline() {
+        Some(deadline) => std::time::Instant::now() >= deadline,
+        None => false,
+    }
+}
+
+thread_local! {
+    static RUN_DEADLINE: std::cell::Cell<Option<std::time::Instant>> =
+        const { std::cell::Cell::new(None) };
+}
+
 pub fn run_until_idle() -> bool {
     let mut worked = false;
     loop {
+        // The budget, between tasks: `run_main` reports and dumps when it
+        // gets the loop back, and it only gets it back from here.
+        if past_run_deadline() {
+            return worked;
+        }
         let task = (**SCHEDULER).borrow_mut().microtasks.pop_front();
         match task {
             Some(task) => {
@@ -6870,6 +6897,7 @@ pub fn run_main<F: std::future::Future<Output = Result<(), DartError>>>(main: F)
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
         .map(|s| std::time::Instant::now() + std::time::Duration::from_secs(s));
+    RUN_DEADLINE.with(|d| d.set(budget));
     loop {
         if let Some(deadline) = budget {
             if std::time::Instant::now() >= deadline {
