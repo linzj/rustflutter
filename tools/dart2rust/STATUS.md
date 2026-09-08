@@ -2274,3 +2274,21 @@ So this `if` is not reaching the `ConditionalExpression` branch at all, and
 the next attempt should start by finding which lowering emits it rather
 than by widening the test again. Recorded with the shape above, which is
 the thing to search the output for.
+
+## ws847 -- a `ByteBuffer` is its bytes, and a narrow number prints as itself
+
+    bin/run_chain.sh:  201 stubbed (was 202), 60 refusals, 64 crates
+
+`asByteData` and the rest of that family are declared on `DartByteBuffer`,
+which the `Vec<u8>` a typed list is here implements; a `ByteBuffer` holds
+those bytes and now forwards to them. One stub (`HashSink._finalizeData`).
+
+The fixture written for it found something else, which is the better half
+of the round: `'$bytes'` on a `Uint8List` printed
+`[Instance of 'int', Instance of 'int', Instance of 'int']`. The narrow
+numbers -- `u8`, `i8`, `u16`, `i16`, `u32`, `i32`, `u64`, `usize`, `isize`,
+`f32`, and `char` -- were declared through `dart_any_named!`, which gives a
+runtime type and no `dart_to_string`, so every one of them fell through to
+the blanket `Object`'s "Instance of". They go through `dart_any_display!`
+now, like the `i64` and `f64` beside them. Compile-neutral, and a silent
+wrong answer fewer: nothing in the stub set moved for it.
