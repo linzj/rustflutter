@@ -1438,3 +1438,24 @@ rather than the case:
 ## ws803 — 221 stubbed, the same set as ws801
 
 The map index and the two rules that came with it are compile-neutral.
+
+## run804 — the theme-cache panic is gone; the clock is a build now
+
+No output inside the budget again, and this time the sample is not a hot
+loop: `_MaterialState.build` -> `ColorScheme.shadow`, an ordinary build.
+`ColorScheme` is a value struct of about a hundred fields here, and
+`Theme.of(context).colorScheme` copies all of them at every mention -- which
+is what a Dart *reference* to an immutable object costs nothing for. That is
+the model question (a non-counted class has neither identity nor sharing),
+not a rule the census can name, and it is the next thing worth measuring:
+how much of the frame budget is spent copying themes.
+
+Where the two rulers stand at the end of this stretch:
+
+  - compile: 433 -> **221** stubbed, 130 refusals (from 183), 64 reachable
+    crates throughout
+  - run: the gallery gets past every panic the ruler has named so far --
+    the tap-region no-op, the dead tail, `Tween.lerp`'s dropped `as
+    dynamic`, the theme cache's untranslatable `hashCode` -- and the walk
+    was last measured whole at run787: 708 lines against the reference's
+    708, with **0** type-only differences.
