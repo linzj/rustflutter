@@ -5627,6 +5627,13 @@ class RustBackend {
       case IrBlock(:final statements):
         for (var i = 0; i < statements.length; i++) {
           stmt(statements[i], tail: tail && i == statements.length - 1);
+          // Nothing after a `return`: type flow analysis leaves the dead
+          // tail of a body in place, and emitting it put an `else`-less
+          // `if` in the function's tail position -- E0317, and a panic at
+          // runtime once the function was stubbed for it
+          // (`BaseTapAndDragGestureRecognizer._resetDragUpdateThrottle`,
+          // run785).
+          if (_alwaysReturns(statements[i])) break;
         }
       case IrReturn(:final value):
         // In a failing method every ordinary return is a success: Rust needs

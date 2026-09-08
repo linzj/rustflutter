@@ -1165,3 +1165,15 @@ Grouped, from ws747: **433 -> 259** stubbed, 183 -> 130 refusals.
 
     ws783 259 stubbed
     ws784 258 stubbed, 130 refusals, 64 crates   -1, 0 new
+
+## run785 — the walk holds at 708/0, and the panic moves to a dead tail
+
+    DART2RUST_OS=android, 708 lines, type-only differing: 0
+    panic: `BaseTapAndDragGestureRecognizer._resetDragUpdateThrottle`
+
+Type flow analysis proved the guard and left the rest of the body in
+place; emitted, its `else`-less `if` landed in the function's tail
+position (E0317) and the function was stubbed for it. Nothing after a
+statement that always returns is emitted now -- by `_alwaysReturns`, which
+already knew how to say it, so a nested block or a both-arms `if` counts
+too.
