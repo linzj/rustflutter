@@ -1130,22 +1130,24 @@ class KernelFrontend implements TypeWorld {
     // is that `dynamic` whatever Kernel's substitution says. Recorded even
     // over a type the lowering already put on, because that type is the
     // lie (`_throughReceiver`).
-    final erasedThrough = switch (node) {
-      InstanceInvocation(:final interfaceTarget, :final receiver) =>
-        _throughReceiver(
-          receiver,
-          interfaceTarget,
-          interfaceTarget.function?.returnType,
-        ),
-      InstanceGet(:final interfaceTarget, :final receiver) =>
-        _erasedRead(interfaceTarget, interfaceTarget.getterType) ??
-            _throughReceiver(
-              receiver,
-              interfaceTarget,
-              interfaceTarget.getterType,
-            ),
-      _ => null,
-    };
+    final erasedThrough = _erasureOff
+        ? null
+        : switch (node) {
+            InstanceInvocation(:final interfaceTarget, :final receiver) =>
+              _throughReceiver(
+                receiver,
+                interfaceTarget,
+                interfaceTarget.function?.returnType,
+              ),
+            InstanceGet(:final interfaceTarget, :final receiver) =>
+              _erasedRead(interfaceTarget, interfaceTarget.getterType) ??
+                  _throughReceiver(
+                    receiver,
+                    interfaceTarget,
+                    interfaceTarget.getterType,
+                  ),
+            _ => null,
+          };
     if (erasedThrough != null) lowered.rustType = erasedThrough;
     if (lowered.rustType == null) {
       final static = _staticType(node);
@@ -1343,7 +1345,13 @@ class KernelFrontend implements TypeWorld {
   /// `Rc<dyn Animatable<Rc<dyn Object>>>` -- and Kernel's substitution says
   /// `Animatable<TweenSequence.T>`, which is what the caller wrote and not
   /// what is there (`TweenSequence._evaluateAt`, run765).
+  /// A bisect switch: `DART2RUST_ERASURE_OFF=1` turns the two rules below
+  /// off, to say whether a round's cost is theirs.
+  static final bool _erasureOff =
+      Platform.environment['DART2RUST_ERASURE_OFF'] == '1';
+
   IrType? _erasedRead(Member target, DartType? declared) {
+    if (_erasureOff) return null;
     if (declared == null || declared is TypeParameterType) return null;
     final owner = target.enclosingClass;
     if (owner == null) return null;
@@ -13113,6 +13121,13 @@ class KernelFrontend implements TypeWorld {
         );
       }
     }
+    bool _enumBound(TypeParameter p) {
+      final bound = p.bound;
+      return bound is InterfaceType &&
+          bound.classNode.name == 'Enum' &&
+          bound.classNode.enclosingLibrary.importUri.toString() == 'dart:core';
+    }
+
     bool numericBound(TypeParameter p) {
       final bound = p.bound;
       return bound is InterfaceType &&
@@ -13130,6 +13145,10 @@ class KernelFrontend implements TypeWorld {
       numericParameters: {
         for (final p in node.typeParameters)
           if (!_erasedParameter(p) && numericBound(p)) p.name ?? 'T',
+      },
+      enumParameters: {
+        for (final p in node.typeParameters)
+          if (!_erasedParameter(p) && _enumBound(p)) p.name ?? 'T',
       },
       superclassArguments: superType == null
           ? const []

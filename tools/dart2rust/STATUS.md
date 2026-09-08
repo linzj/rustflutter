@@ -867,3 +867,15 @@ keep some of their parameters, so reading at the bound there is simply
 wrong. Narrowed again to a class that kept **none** of them -- the struct
 then has no type parameters at all, which is what makes the spelling
 unambiguous, and is exactly `TweenSequenceItem`.
+
+## ws767 — three narrowings, the same 324
+
+    ws765 324, ws766 324, ws767 324, all with round 3 at 336 against
+    ws764's 249.
+
+Narrowing `_throughReceiver` to a non-nullable parameter and `_erasedRead`
+to a class that kept none of its parameters changed nothing at all, which
+says the cost is neither. The third change in that commit was
+`_fillsParameter` resolving an abstract dispatch target -- a change to
+*signatures*, program-wide. `DART2RUST_ERASURE_OFF=1` turns the two
+erasure rules off so the next round says which it is.

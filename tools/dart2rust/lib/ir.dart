@@ -1630,6 +1630,7 @@ class IrClass {
     this.dartName,
     this.typeParameters = const [],
     this.numericParameters = const {},
+    this.enumParameters = const {},
     this.superclass,
     this.superclassArguments = const [],
     this.mixins = const [],
@@ -1681,6 +1682,10 @@ class IrClass {
   /// `math.min(a, b)` on two `T`s compiles (`AnimationMin<T extends num>`,
   /// run676).
   final Set<String> numericParameters;
+
+  /// Type parameters whose Dart bound is `Enum`: the Rust parameter carries
+  /// `DartEnum`, which is what `enumName` and `EnumName.name` need.
+  final Set<String> enumParameters;
   final String? superclass;
 
   /// The classes mixed in: `class Panel extends Measured with Scaled` -- the

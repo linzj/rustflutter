@@ -6734,7 +6734,8 @@ class RustBackend {
   /// ..for one parameter of the class: a numeric one (`T extends num`)
   /// carries the prelude's `DartNum` as well (`min`/`max` on a `T`).
   String _nbp(IrClass c, String p) =>
-      '${_nb(c)}${c.numericParameters.contains(p) ? ' + DartNum' : ''}';
+      '${_nb(c)}${c.numericParameters.contains(p) ? ' + DartNum' : ''}'
+      '${c.enumParameters.contains(p) ? ' + DartEnum' : ''}';
 
   String _nbm(IrMethod m) =>
       ' + DartNullable<Or: Clone + DartEq + FromDynamic + DartAny> + DartEq + FromDynamic + DartAny';
@@ -7191,7 +7192,7 @@ class RustBackend {
                 // `DartAny` only for a `Clone` element now that a list
                 // answers a cast to its dynamic form (`_UnorderedEquality<
                 // E>: Equality<Vec<E>>`, ws595).
-                : "$p: Clone + DartNullable<Or: Clone + DartEq + FromDynamic + DartAny> + DartEq + FromDynamic + DartAny + 'static",
+                : "$p: Clone + DartNullable<Or: Clone + DartEq + FromDynamic + DartAny> + DartEq + FromDynamic + DartAny${owner is IrClass && owner.enumParameters.contains(p) ? ' + DartEnum' : ''} + 'static",
           )
         : params;
     return '<${bound.join(', ')}>';
