@@ -307,12 +307,10 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 - 第 86 轮:那 14 个错误该留着(否定结果)。
 - 第 102/103 轮:`Rc<Self>` 的价钱由 fixture 定的形状。
 
-## 活账:ws/run 表(窗口约 40 行,ws691 起;更老的在 git)
+## 活账:ws/run 表(窗口约 40 行,ws692 起;更老的在 git)
 
 | 轮 | 第一个停点 / 读数 | 处理 |
 |---|---|---|
-| ws691 | 链：stub **480**（-1，回到 ws689 的同一组；`settings_list_item.rs build` 的错因从「closure arguments」变成「mismatched types」，集合没变所以 diff 空），拒绝 183，可达 64。 | run691 |
-| run691 | 仍停在 `_SettingsListItemState.build` 的 stub，但错因换了：`RadioListTile<T?>(value: _options.elementAt(index))`——`late Iterable<T?> _options` 的元素槽是 `<T as DartNullable>::Or`（类型实参已投影），读出来却按静态类型 `T?` 在深度 0 拼成 `Option<T>`，于是又包了一层 `from_option`。修（通用，两处）：① 被调方声明的返回类型是**裸**类型参数（`Iterable<E>.elementAt` 的 `E`，不是 `E?`）而此处静态类型是投影的 `T?` 时，值按被调方的实参拼法到达（`elementResult`，与既有 `edgeResult` 并列；`E?` 不算——prelude 容器把自己的 `V?` 拼成真 `Option<V>`，比实参多一层）；② `!element_at` 与 `IrIndex` 一样是「索引读」，要 `.clone()`（元素在 list 的引用后面）。夹具 elemslot SAME；iterable/itermap/listcast/listgen/listplus/listsingle/insertall/tearcol/removewhere/wheretear/fromiterable 与 projarg/projected/tparam/isgeneric/gentrait/genhandle/qualgeneric/nullarg/nullsuper 回归 SAME。 | 链 ws692 |
 | ws692 | 链：stub **478**（-2：`_SettingsListItemState.build`、`_CupertinoSegmentedControlState.segmentForXPosition`，无新增），拒绝 183，可达 64。 | run692 |
 | run692 | 过了 `build`（元素槽的拼法一致后）。停在同文件 `_handleExpansion` 的 stub：`_controller.reverse().then<void>((value) { if (!mounted) { return; } })`——闭包的返回类型是 `FutureOr<void>`，体末尾落出去时后端已经会给 `Ok(FutureOr::value(()))`（`_fallsOffValue`），可裸 `return;` 一律拼成 `Ok(())`。修（通用）：裸 `return;` 就是语言的 `return null`，交回**该返回类型的 null**——与「落出末尾」同一个值（后端 `_fallsOff`，`_body` 里存取、闭包嵌套时保存恢复）。夹具 bareret SAME；tfthen/thenfwd/asyncfwd/asyncfutor/nullfn/voidslot/localfn/gclosure 回归 SAME。 | 链 ws693 |
 | ws693 | 链：stub **475**（-3：`_SettingsListItemState._handleExpansion`、`_DropdownButtonState._handleTap`、`ServicesBinding._handlePlatformMessage` 体，无新增），拒绝 183，可达 64。 | run693 |
@@ -351,6 +349,8 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 | run722 | 过了 PageView。停在 gallery 自己的 `_MobileCarouselState.builder`：`x.clamp(0, 1)`——`clamp` 的形参声明是 `num`，而 `num` 在这边不是类型，整型字面量原样给了 `f64::clamp`。修（通用）：`num` 形参在**数字自己的方法**上就是接收者那个数字（`_numReceiver`）；`int.+(num)` 那条不受影响（接收者是 int）。夹具 numclamp SAME。 | 链 ws723 |
 | ws723 | 链：stub **439**（-9：滑块/进度/购物车/雪碧图等一串 `clamp`），拒绝 170，可达 64。 | run723 |
 | run723 | **启动路径上不再有 panic**——程序跑满 120s 无输出、无 panic。gdb 抓栈：`gallery/constants.dart` 的 `kTransparentImage` 的 `LazyLock` 自锁——上游写的是 `final kTransparentImage = transparent_image::kTransparentImage;`（另一个库的同名顶层），拼成裸名后读到了自己。修（通用）：顶层**读**也带 module（`IrTopLevel.module`，与 `_topLevelModule` 同一张判断），后端拼 `crate::<module>::NAME`。夹具 topshadow SAME（基线挂住）。 | 链 ws724 |
+| ws724 | 链：stub **439**（同一组），拒绝 170。 | run724 |
+| run724 | 死锁没了。停在 `ImageProvider.resolve` 的 stub：`None.await`——上游写的是 `await null;`（让微任务队列跑一轮的惯用法）。修（通用）：`await v` 当 `v` 静态类型**不可能是 future** 时（不是 Future/FutureOr/顶类型/类型参数/实现 Future 的类），就是「一个 turn 加这个值」——拼成 `future_ready::<T>(v).await`，turbofish 由静态类型给（裸 `None` 推不出 `T`）。夹具 awaitnonfut SAME。链 **438**（-1）。 | run725 |
 
 ## 下一步(2026-09-05 重铺)
 

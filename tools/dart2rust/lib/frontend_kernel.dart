@@ -2381,6 +2381,29 @@ class KernelFrontend implements TypeWorld {
       // throw, and there is nothing to await in a throw -- `.await` on a
       // `return Err(..)` is what came out.
       if (node.operand is Throw) return expression(node.operand);
+      // `await v` where `v` is *not* a future: Dart waits an event turn and
+      // completes with the value. `await null` -- the idiom for letting the
+      // microtask queue run -- is the whole of it here, and `None.await`
+      // was what came out (`ImageProvider.resolve`, run724). The already
+      // done future of the value, awaited: one turn, then the value.
+      final awaited = _staticType(node.operand);
+      if (awaited != null && !_couldBeFuture(awaited)) {
+        IrType? spelled;
+        try {
+          spelled = _type(awaited);
+        } on Unsupported {
+          spelled = null;
+        }
+        return IrAwait(
+          IrStaticCall(null, 'future_ready', [
+              expression(node.operand),
+            ], typeArguments: spelled == null ? const [] : [spelled])
+            ..rustType = IrType(
+              'Future',
+              arguments: [if (spelled != null) spelled],
+            ),
+        );
+      }
       return IrAwait(expression(node.operand));
     }
     if (node is Throw) {
@@ -10701,6 +10724,26 @@ class KernelFrontend implements TypeWorld {
   /// non-nullable arguments the gallery passes (`of<EmailStore>`, and
   /// nothing `of<X?>`). Any other type parameter is asked by id in the
   /// backend (`dart_cast_any`).
+  /// Whether a value of this type might be a future at run time: a
+  /// `Future`, a `FutureOr`, a top type, a type parameter, or a class that
+  /// implements `Future` (`SynchronousFuture`). Anything else, awaited, is
+  /// a turn and the value.
+  bool _couldBeFuture(DartType t) {
+    if (t is FutureOrType || t is DynamicType || t is TypeParameterType) {
+      return true;
+    }
+    if (t is! InterfaceType) return t is! NullType;
+    final cls = t.classNode;
+    if (cls.name == 'Object' &&
+        cls.enclosingLibrary.importUri.toString() == 'dart:core') {
+      return true;
+    }
+    final env = typeEnvironment;
+    if (env == null) return true;
+    return env.hierarchy.getTypeAsInstanceOf(t, env.coreTypes.futureClass) !=
+        null;
+  }
+
   IrExpr _isExpression(IsExpression node) {
     final asked = node.type;
     // A literal's runtime type is its static type: `<int?>[] is List<int>`
