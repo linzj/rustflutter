@@ -12024,10 +12024,15 @@ class _WalkSelf {
   /// The collection a receiver reads a held value out of -- `m[k]!`, `xs[i]`
   /// -- which is the place a mutating call on that value acts on
   /// (`_heldSlot`); null when the receiver is not such a read.
+  ///
+  /// The *outermost* one, so a nested read answers the place the mutation
+  /// reaches: `rawCells[y][x].add(child)` changes `rawCells`
+  /// (`RenderTable.assembleSemanticsNode`, ws788).
   static IrExpr? _heldIn(IrExpr? e) => switch (e) {
-    IrIndex(:final target) => target,
+    IrIndex(:final target) => _heldIn(target) ?? target,
     IrNullCheck(:final operand) => _heldIn(operand),
-    IrCall(:final target, name: '!map_get') when target != null => target,
+    IrCall(:final target, name: '!map_get') when target != null =>
+      _heldIn(target) ?? target,
     IrCall(:final target, name: 'clone', args: []) when target != null =>
       _heldIn(target),
     _ => null,
