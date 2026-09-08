@@ -307,13 +307,10 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 - 第 86 轮:那 14 个错误该留着(否定结果)。
 - 第 102/103 轮:`Rc<Self>` 的价钱由 fixture 定的形状。
 
-## 活账:ws/run 表(窗口约 40 行,run693 起;更老的在 git)
+## 活账:ws/run 表(窗口约 40 行,run695 起;更老的在 git)
 
 | 轮 | 第一个停点 / 读数 | 处理 |
 |---|---|---|
-| run693 | 过了 `_handleExpansion`。停在同文件 `_buildHeaderWithChildren` 的 stub：`widget.optionsMap[widget.selectedOption]`——`optionsMap` 是 `LinkedHashMap<T?, DisplayOption>`，键槽是类型实参的拼法 `<T as DartNullable>::Or`；键值 `widget.selectedOption`（声明是裸参数 `T`）读出来本来就是投影的，却按 `_type(T?)` 深度 0 的 `Option<T>` 当槽，包了个 `option()` 再喂给 `Map::get(&K)`。修（通用）：集合自己的槽（元素、键、值）**就是类型实参**，`_intoArgument` 用 `_typeNested` 拼槽；`_intoElement`、`m[k]` 取、`m[k]=v`（表达式式与语句式两条路，`_mapEntry`）都走它。夹具 mapkeyslot SAME。 | 链 ws694 |
-| ws694 | 链：stub **476**（-1 `_buildHeaderWithChildren`，+2 新增：`_InkResponseState.updateHighlight`、`SliverMultiBoxAdaptorElement.createChild`）——两处都是 `Map<K, V?>` 的 `m[k] = 非空值` 出了 `Some(Some(..))`：`_arguments` 已按被调方声明的槽包过一次 `Some`，集合槽这一遍（第二次 `_widened`）又包了一次。修（通用）：`_widened` 的收尾「非空值进可空槽包 `Some`」看**手里已有的 Rust 类型**——已经是该槽的 `Option` 就不再包。夹具 mapnullval SAME；identmap/mapwiden/unmodmap/phmuse/splaymap/listgen/fromentries/hashtrie/insertall/iterable/itermap/listcast/listplus/listsingle/slotted 与 nullarg/nullsuper/ctornull/outparam/projarg/projected/tparam/qualgeneric/ifnull/ornull/nullmut/nullfn/dynifnull/dynslot 回归 SAME。 | 链 ws695 |
-| ws695 | 链：stub **472**（比 ws693 -3：`_buildHeaderWithChildren`、`RenderBox.baselineOffsetMinOf`、`Widget.==`，无新增），拒绝 183，可达 64。 | run695 |
 | run695 | 过了整个 `_SettingsListItemState`（`build`/`_handleExpansion`/`_buildHeaderWithChildren` 都不再是 stub）。停在 `Icon.build` 的 stub：`String.fromCharCode(icon.codePoint)`——prelude 没有这个 dart:core 静态，前端也没映射，于是拼成了 `String::from_char_code`。修（通用，按「dart:core→prelude 只走一张表」）：prelude 加 `string_from_char_code`（一个 rune；落单代理面给替换字符，Rust 的 String 装不下），前端映射表加一条，后端自由函数表加一条。夹具 charcode SAME。 | 链 ws696 |
 | ws696 | 链：stub **464**（-8：`Icon.build`、`CupertinoNavigationBar.build`、`TextPainter._skipSpacesAndPunctuations`、`RawKeyEvent.fromMessage` 与四个平台的 `keyLabel`/`runeToLowerCase`，无新增），拒绝 183，可达 64。 | run696 |
 | run696 | 过了 `Icon.build`，进 viewport。停在 `RenderShrinkWrappingViewport::new` 的 stub：「cannot find value `cache_extent`」——抽象基类 `RenderViewportBase` 的字段初始化式被内联进子类构造器（`_inheritedInits`），里面的 `switch (cacheExtentStyle) {..}` 是**语句**，而后端的 `_substitute` 只走表达式，`IrBlockValue` 里也只替换 `IrLocalDecl` 的初始化式，于是基类形参名原样留下——子类只转发了 6 个 `super.` 形参，没转发 `cacheExtent`/`cacheExtentStyle`。修（通用）：`_substitute` 配一个语句遍历 `_substituteStmt`（22 种语句全覆盖；局部函数体是闭包，捕获是它自己的，不进）。夹具 basedefault SAME。 | 链 ws697 |
@@ -351,6 +348,9 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 | run725 | 停在 `AssetImage.obtainKey` 的拒绝：`FutureExtensions|onError`（dart:async 在 `Future` 上的扩展）。修（通用）：它就是把错误类型折进 test 的 `catchError`——`E` 是 `Object` 时 prelude 的 `catch_error` 就是全部；更窄的 `E` 要把 `is` 写进 test，拒绝而不是丢掉。实参按**扩展自己的类型参数**代入（回调返回 `FutureOr<T>`，按声明降会拼出没人声明的 `T`）。夹具 futonerror SAME。 | 链 ws726 |
 | ws726 | 链：stub **439**（+1：`obtain_key` 的 `Ok(FutureOr::value(None))` 推不出 `T`——`catch_error` 的回调按 `Rc<dyn Object>` 存着，什么也不约束）。修（通用）：`_fallsOffValue` 的 `None` 拼出类型 `None::<T>`。链 **438**（ws727），拒绝 169。 | run727 |
 | run727 | 图片路径走通了（错误被抛出并开始格式化）。停在 `FlutterError.defaultStackFilter` 的拒绝：`Map.update`。修（通用）：prelude 的 `Map` 加 `update(key, update, {ifAbsent})`（没有 `ifAbsent` 又没有键时抛 `ArgumentError`，与 Dart 同），`mapMethodNames` 与 `_preludeFailing` 各加一条。夹具 mapupdate SAME。 | 链 ws728 |
+| ws728 | 链：stub **438**，拒绝 168。 | run728 |
+| run728 | 停在 prelude 的 `List.sort() without a comparator on a type with no natural order` —— `DartList<T> for Vec<T>` 对任意 `T`，自然序放不进去。修（通用）：`sort_natural` 单独一个 trait，按 **Dart 的 `Comparable`** 排（标量在 prelude 里已实现，翻译类的 impl 由后端 `_preludeInterfaces` 生成）；没有 `Comparable` 的元素就没有这个方法——停在编译期而不是运行期。省略的比较器是「无比较器」那一支，不是 `sort_by_dart(None)`。中途先用 `PartialOrd` 试过：ws729 **441**（+3，`_SemanticsSortGroup` 这类只实现 `Comparable` 的翻译类不满足），改成 `Comparable` 后 **438**。夹具 sortnat SAME。 | 链 ws730 |
+| ws730 | 链：stub **438**（与 ws728 同一组），拒绝 168，可达 64。 | run730 |
 
 ## 下一步(2026-09-05 重铺)
 
