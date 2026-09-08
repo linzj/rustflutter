@@ -8337,9 +8337,12 @@ class RustBackend {
     final asError =
         _failure == 'Object' || _failure == 'std::rc::Rc<dyn Object>';
     if (boxed) {
-      return asError
-          ? '(std::rc::Rc::new($thrown) as std::rc::Rc<dyn Object>)'
-          : 'std::rc::Rc::new($thrown)';
+      // Through `dart_boxed`, not a bare `Rc::new`: the handle is the same
+      // one either way, and the registration behind it is what lets the
+      // error *print*. Without it every uncaught exception read `Instance
+      // of 'StateError'` -- six of the gallery's `RenderErrorBox`es and
+      // nothing to say why (run745).
+      return asError ? 'dart_boxed($thrown)' : 'std::rc::Rc::new($thrown)';
     }
     final valueType = value.rustType;
     if (asError &&

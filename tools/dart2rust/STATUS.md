@@ -713,3 +713,13 @@ timer as Dart's does. The one new stub is the prelude's own
 callback type. Fixed with the rethrow rules below.
 
 Under 300 for the first time; 433 -> 299 grouped, refusals 183 -> 130.
+
+## ws761 — rethrow carries its type (299 → 297)
+
+    ws760 299 stubbed, 130 refusals, 64 crates
+    ws761 297 stubbed, 130 refusals, 64 crates   -2, 0 new
+
+Two, and both of them matter more than the number: the prelude's own
+`run_until_idle` (the scheduler, and with it every timer at runtime) and
+`AssetBundleImageProvider._loadAsync` -- the gallery's whole image path,
+which the render-tree reconciliation reads as `RenderImage` 16 -> 0.
