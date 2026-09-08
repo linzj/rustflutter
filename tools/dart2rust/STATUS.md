@@ -1127,3 +1127,11 @@ The twelve that went are the `lerpDouble(a, 0, t)` family and the cascade
 binding. The twelve that came are one typo's worth: the backend suffixes a
 float literal *receiver* with `_f64`, and a literal the front end had
 already suffixed read `0.0_f64_f64`. Suffixed once now.
+
+## ws782 — the suffix, once (276 → 264)
+
+    ws781 276 stubbed
+    ws782 264 stubbed, 130 refusals, 64 crates   -12, 0 new
+
+Grouped, from ws747: **433 -> 264** stubbed, 183 -> 130 refusals, 64
+crates throughout, and the render walk's structure is the reference's.
