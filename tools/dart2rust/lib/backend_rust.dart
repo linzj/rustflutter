@@ -5064,6 +5064,13 @@ class RustBackend {
         return '${t.name}::${variants[index]}';
       }
     }
+    // A prelude class with a `const` form of its own: `const Stream()` is
+    // `dart:async`'s abstract base constructor, and a stream with no events
+    // is what the prelude's ready stream is when nothing filled it
+    // (`BaseRequest.finalize`, `LicenseRegistry.licenses`; 2 at ws830).
+    // A table, like every other `dart:core` mapping here.
+    final preludeConst = _preludeConstInstances[t.name];
+    if (preludeConst != null && fields.isEmpty) return preludeConst;
     // By module where the constant carries one: the fields are that
     // class's, not another library's class of the same name.
     final cls = library.resolve(t);
@@ -8842,6 +8849,10 @@ class RustBackend {
     'unawaited',
     // `dart:convert`'s `jsonEncode`, beside the `jsonDecode` next to it.
     'jsonEncode',
+    // `dart:io`'s `stdout`/`stdin`, which are getters the CFE lowers to a
+    // call.
+    'stdout',
+    'stdin',
     'never',
     'new_object',
     'string_from_char_codes',
@@ -8871,6 +8882,11 @@ class RustBackend {
   };
 
   /// The prelude's classes that `is` can ask about and a `throw` boxes.
+  /// `const X()` of a prelude class, where the prelude has the value it
+  /// names. Only for a constant with no fields: a constant that carries
+  /// some is a different object, and the shapes have to agree.
+  static const _preludeConstInstances = {'Stream': 'Stream::empty()'};
+
   static const _preludeClasses = {
     // The prelude's plain value classes: `x is DateTime` in a date
     // picker's `_buildDayItem`, `x is ByteData` in the message codecs.

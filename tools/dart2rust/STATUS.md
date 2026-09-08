@@ -2100,3 +2100,11 @@ The stub it added is the member that stopped being refused
 declares `Object? Function(Object?)`, and an `Object?` here is the handle
 whose null is the `Null` object, not an `Option`. Fixed in the same round
 by spelling the parameter the way the caller writes it.
+
+## ws831 -- the `toEncodable` shape
+
+    bin/run_chain.sh:  202 stubbed (was 203), 69 refusals, 64 crates
+
+ws830's one added stub, cleared by spelling `toEncodable` the way the
+caller writes it: `Object? Function(Object?)`, and an `Object?` here is the
+handle whose null is the `Null` object rather than an `Option`.

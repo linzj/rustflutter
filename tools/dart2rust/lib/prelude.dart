@@ -5487,6 +5487,7 @@ pub struct Stream<T> {
     events: std::rc::Rc<std::cell::RefCell<Vec<T>>>,
 }
 
+
 /// `StreamView<T>` is a stream that forwards to another; with nothing
 /// asynchronous in between it is the same thing.
 pub type StreamView<T> = Stream<T>;
@@ -5833,6 +5834,27 @@ pub fn iterable_extensions_get_indexed<T>(items: Vec<T>) -> Vec<(i64, T)> {
 /// `DartFuture` is a handle on a task the scheduler holds, not the task --
 /// and this says only that nobody waits for it.
 pub fn unawaited<T>(_future: Option<DartFuture<T>>) {}
+
+/// `dart:io`'s `stdout` / `stdin`, as much of them as a headless host has:
+/// a name that answers what it can. `supportsAnsiEscapes` is what the
+/// gallery asks (`LocalPlatform.stdoutSupportsAnsi`), and the answer for a
+/// program with no terminal is no.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Stdio;
+
+impl Stdio {
+    pub fn supports_ansi_escapes(&self) -> bool {
+        false
+    }
+}
+
+pub fn stdout() -> Stdio {
+    Stdio
+}
+
+pub fn stdin() -> Stdio {
+    Stdio
+}
 
 /// `dart:io`'s `exit`.
 pub fn exit(code: i64) -> ! {
