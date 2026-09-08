@@ -2716,13 +2716,18 @@ impl<K: DartEq + Clone, V: Clone> Map<K, V> {
             None => {
                 // The index, when it is up to date, is extended rather than
                 // dropped: filling a map one key at a time would otherwise
-                // rebuild it on every insertion.
-                let hash = key.dart_hash_code();
+                // rebuild it on every insertion. The hash is asked *inside*
+                // the index -- a map small enough never to have built one
+                // must never ask its keys to hash, because a class whose
+                // `hashCode` this compiler could not translate has one that
+                // panics (`_IdentityThemeDataCacheKey`, whose cache holds
+                // five entries; run802).
                 let at = self.entries.len();
                 self.entries.push((key, value));
                 if let Ok(mut cell) = self.index.try_borrow_mut() {
                     match cell.as_mut() {
                         Some((n, buckets)) if *n == at => {
+                            let hash = self.entries[at].0.dart_hash_code();
                             buckets.entry(hash).or_default().push(at);
                             *n = at + 1;
                         }

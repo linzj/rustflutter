@@ -263,6 +263,10 @@ class RustBackend {
   /// per-class fix one level up: the unit of refusal should be the unit of work.
   /// Returns whether the member was emitted, because a caller sometimes has to
   /// know: a trait default cannot delegate to a free function that was refused.
+  /// The members this class could not emit, by the `what` they were
+  /// announced with: a protocol impl written afterwards must not call one.
+  final _stubbed = <String>{};
+
   bool _member(
     String what,
     void Function() body, {
@@ -299,6 +303,10 @@ class RustBackend {
     } on Unsupported catch (error) {
       _out.removeRange(mark, _out.length);
       _indent = indent;
+      // Named, so the protocol impls below do not call what this member
+      // became: a stubbed `hashCode` panics, and `DartEq::dart_hash_code`
+      // must not (`_dartHashBody`; `_IdentityThemeDataCacheKey`, run802).
+      _stubbed.add(what);
       _line('// NOT TRANSLATED: $what');
       _line('//   $error');
       // The refusal stays written (it is what the count reads); under it,
@@ -7152,7 +7160,13 @@ class RustBackend {
         call = _inherentCall(inherited.$2, need, inherited.$1.name);
       }
     }
-    if (call != null) return _resultModel ? '$call.unwrap_or(0)' : call;
+    // ..unless this class could not emit it: the stub panics, and every
+    // collection that hashes its keys would panic with it. The default
+    // below (nothing, or the handle's address) is consistent with any
+    // equality, which is what the protocol promises.
+    if (call != null && !_stubbed.contains('${cls.name}.hashCode')) {
+      return _resultModel ? '$call.unwrap_or(0)' : call;
+    }
     if (cls.counted) {
       return '(std::rc::Rc::as_ptr(&self.__self.get()) as *const u8 as usize as i64) & 0x3fff_ffff';
     }
