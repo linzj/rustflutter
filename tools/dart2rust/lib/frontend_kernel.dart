@@ -5845,6 +5845,17 @@ class KernelFrontend implements TypeWorld {
       );
     }
     final List<IrExpr> args;
+    // A number's own method takes its own type where Dart writes `num`:
+    // `x.clamp(0, 1)` on a `double` is `clamp(0.0, 1.0)`, and Rust's
+    // `f64::clamp` takes no integer literal. Dart's `num` is not a type
+    // here, so the receiver says which one it is
+    // (`_MobileCarouselState.builder`, run722).
+    final wasNumReceiver = _numReceiver;
+    _numReceiver = receiverType is InterfaceType
+        ? (const {'double', 'int'}.contains(receiverType.classNode.name)
+              ? receiverType.classNode.name
+              : null)
+        : null;
     try {
       // With the call's type arguments for the method's own parameters,
       // as a static generic call has them (`_withGenericArgs`): `pop<T>
@@ -5867,6 +5878,7 @@ class KernelFrontend implements TypeWorld {
       _dispatchMember = wasDispatch;
       _dispatchReceiverType = wasReceiver;
       _dispatchInterface = wasInterface;
+      _numReceiver = wasNumReceiver;
     }
     // The owner by the receiver's *static* class when that is one of the
     // prelude's collections: TFA devirtualises `Map.cast` onto the one
@@ -9237,9 +9249,16 @@ class KernelFrontend implements TypeWorld {
         given!.nullability != Nullability.nullable) {
       lowered = _toF64(lowered);
     }
-    // No rule for a `num` parameter either: `int.+(num other)` is declared
-    // that way, and `index + 1` became `index + (1 as f64)` (ws54, 85 in
-    // dart:ui alone). `num` is not a type this output has.
+    // A `num` parameter has no rule of its own -- `int.+(num other)` is
+    // declared that way, and `index + 1` became `index + (1 as f64)`
+    // (ws54, 85 in dart:ui alone) -- except on a number, where the
+    // receiver says which number `num` is (`_numReceiver`).
+    if (scalar(param) == 'num' &&
+        _numReceiver == 'double' &&
+        scalar(given) == 'int' &&
+        given!.nullability != Nullability.nullable) {
+      lowered = _toF64(lowered);
+    }
     // A `List<String>` (any concrete element) into a `List<Object?>`: each
     // element shared into its `Rc<dyn Object>`.
     if (param is InterfaceType &&
@@ -11953,6 +11972,11 @@ class KernelFrontend implements TypeWorld {
     final name = type.classNode.name;
     return !copied.contains(name);
   }
+
+  /// The number the receiver of the call whose arguments are being lowered
+  /// is (`double`/`int`), or null: Dart's `num` is not a type here, so a
+  /// `num` parameter of a number's own method is the receiver's own.
+  String? _numReceiver;
 
   /// The declared return type of the function being lowered, for `return`
   /// to widen into when it is nullable and the value is not.
