@@ -2344,3 +2344,33 @@ them are in four groups that are each one decision, not one rule:
          to carry the function *type* rather than the name `Function`.
 
 The rest is ones and twos, each with its shape recorded above.
+
+## ws850 -- `is` against a function type is a downcast, not an arity guess
+
+    bin/run_chain.sh:  201 stubbed (unchanged), 59 refusals (was 60), 64 crates
+
+ws823 refused `x is Function` because the `is` lowering is handed a *name*,
+and every function type -- `void Function()`, `String Function(String)`,
+`_ListStringArgFunction` -- arrives under the name `Function`; answering
+"is it a function at all" made `dart:ui`'s `_runMain` hand a zero-argument
+`main` the argument list. The IR carried the type all along, in
+`IrType.parameters`; what was missing was something exact to ask.
+
+The prelude has it. A function object keeps the handle it was made from
+(`original`, there so that `removeListener(f)` finds what `addListener(f)`
+stored), and that handle's Rust type *is* the Dart signature translated. So
+`x is R Function(A)` is `dart_is_function_of::<dyn Fn(A) -> Result<R, E>>`,
+a downcast, and a bare `Function` is `dart_is_function`.
+
+Making it exact needed the boxing site to spell the same type: the binding
+inside `_dynamicFunction` is declared with the function's own type now, so
+a tear-off is an `Rc<dyn Fn(..)>` rather than the `Rc<{fn item}>` it used
+to infer, and a closure that arrived boxed is unboxed first rather than
+becoming an `Rc<Rc<..>>`. `dart_function_same` asks the same question and
+gets the same answer, so it is more often right too.
+
+With the test exact, the promotion ws823 reverted with it comes back: after
+`f is OneArg`, `f(arg)` is the function value. The isfnsig fixture -- a
+one-argument tear-off, a zero-argument one, and a closure of neither
+signature -- and sixteen existing function-value fixtures beside it,
+because this changed how every function reaches an `Object` slot.
