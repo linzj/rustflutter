@@ -12269,8 +12269,12 @@ class KernelFrontend implements TypeWorld {
       // `T effectiveValue<T>(..)` inside `ButtonStyleButton.build`: a local
       // function with type parameters of its own. A Rust closure cannot be
       // generic, and a nested `fn` cannot see the enclosing locals this one
-      // reads. Emitted as a closure it named a `T` nothing declared -- 36
-      // rustc errors that were really this one refusal.
+      // reads. Erasing the parameters to their bounds (ws832) puts the right
+      // signature on the *declaration* and leaves the call site unadapted:
+      // the argument closure still returns `Option<f64>` where the erased
+      // slot wants `Option<Rc<dyn Object>>`, because `_argument` with no
+      // callee does not set the expected return. The whole shape needs the
+      // call site too, so it waits for a round of its own.
       if (node.function.typeParameters.isNotEmpty) {
         throw Unsupported('generic local function', _sample(node));
       }

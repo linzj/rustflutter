@@ -2108,3 +2108,37 @@ by spelling the parameter the way the caller writes it.
 ws830's one added stub, cleared by spelling `toEncodable` the way the
 caller writes it: `Object? Function(Object?)`, and an `Object?` here is the
 handle whose null is the `Null` object rather than an `Option`.
+
+## ws832 -- `const Stream()`, `stdout`, and a generic local function that needs its call site too
+
+    bin/run_chain.sh:  203 stubbed (was 202), 64 refusals (was 69), 64 crates
+
+Five refusals cleared by two small rules, both tables of the kind the
+prelude already keeps.
+
+**`const Stream()`** is `dart:async`'s abstract base constructor, which
+carries nothing, and a stream with no events is exactly what the prelude's
+ready stream is when nothing filled it. `_preludeConstInstances` maps it,
+and only for a constant with *no fields*: one that carries some is a
+different object and the shapes would have to agree.
+
+**`stdout` / `stdin`** are getters the CFE lowers to calls, and
+`supportsAnsiEscapes` is all the gallery asks of them. A program with no
+terminal answers no, and so does the prelude; the stdioansi fixture agrees
+with Dart under a pipe, which is the same answer for the same reason.
+
+The stub added is `LicenseRegistry.licenses`, which stopped being refused
+and now wants `StreamController` -- a real one, with listeners and a queue.
+Recorded, not attempted.
+
+**A generic local function was tried and reverted.** A Rust closure cannot
+be generic and a nested `fn` cannot see the enclosing locals one reads, so
+the shape that fits is the one covariant class parameters already use:
+erase the parameter to its bound and convert at the call. Erasing it puts
+the right signature on the declaration -- `effective` took `Rc<dyn
+Fn(Option<Style>) -> Result<Option<Rc<dyn Object>>, _>>` -- and left the
+call site unadapted: the argument closure still returned `Option<f64>`,
+and the result still came back as `Option<Rc<dyn Object>>` into an
+`Option<f64>` binding. `_argument` with no callee does not set the expected
+return, which is where the adaptation would have come from. The refusal
+stands with that written next to it.
