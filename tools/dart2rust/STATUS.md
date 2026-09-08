@@ -1086,3 +1086,8 @@ All eight are `Board`'s: `cast`, `elementAt`, `first`, `where`, `skip`,
 prelude answers them.
 
 Grouped, from ws747: 433 -> 280 stubbed, 183 -> 130 refusals, 64 crates.
+
+## ws778 — an await is typed by its future (280 → 277)
+
+    ws777 280 stubbed
+    ws778 277 stubbed, 130 refusals, 64 crates   -3, 0 new

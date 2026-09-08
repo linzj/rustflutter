@@ -4568,6 +4568,12 @@ class KernelFrontend implements TypeWorld {
         if (value == null) {
           throw Unsupported('`?.` with no receiver', _sample(node));
         }
+        // `null?.m` is `null`: type flow analysis folds an always-null
+        // value into the literal, and walking the access from there left a
+        // `None.as_ref().map(|it| ..)` whose closure parameter had no type
+        // to be inferred from (8 "type annotations needed" at ws777). The
+        // whole access is the null the receiver is.
+        if (_isNull(value)) return _nullLiteral();
         final lowered = expression(value);
         // `x?.m` on a `dynamic` (an `Object?`, ws502): its null is the
         // `Null` object, asked by the prelude (`dart_nullable`), and the
