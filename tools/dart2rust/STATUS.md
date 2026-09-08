@@ -780,3 +780,17 @@ that now agrees with Dart:
 
 Both are silent-wrong-answer bugs, not compile errors: neither shows in
 the stub count.
+
+## ws763 — the constructor rules (297 → 298)
+
+    ws762 297 stubbed, 130 refusals, 64 crates
+    ws763 298 stubbed, 130 refusals, 64 crates   4 gone, 5 new
+
++1, and the five new ones are code that had never run before: a generic
+base's constructor body now runs, so `HeapPriorityQueue._grow`,
+`IterableEquality.hash` and `_SettingsListItem.initState` are reached and
+meet the projection and collection edges that were always there. The four
+that went are the ones the same rule fixed.
+
+The number is not the point of this round. `TweenSequence` builds its
+intervals again.

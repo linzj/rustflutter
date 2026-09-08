@@ -548,6 +548,19 @@ class RustBackend {
 
   String expr(IrExpr e) {
     return switch (e) {
+      // A `null` whose slot is known is a `None` of that type: type flow
+      // analysis folds an always-null value into the literal, and the
+      // `None` left behind had nothing to infer from -- `None.as_ref()
+      // .map(|it| ..)` was E0282 (8 "type annotations needed" at ws762).
+      IrLiteral(type: final literalType)
+          when literalType.name == 'Null' &&
+              e.rustType != null &&
+              isNullable(e.rustType!) &&
+              !e.rustType!.projected &&
+              !_mentionsUnknown(e.rustType!) &&
+              e.rustType!.name != 'Null' &&
+              e.rustType!.name != 'dynamic' =>
+        'None::<${type(nonNull(e.rustType!))}>',
       IrLiteral(:final value, :final type) => _literal(value, type),
       // A captured shared field is a cell handle, not the value: reading it
       // is `f.get()`. The local is only a local in the closure's own text.
@@ -4316,6 +4329,11 @@ class RustBackend {
     // `whereType<T>()`: each element asked for a `T` through the cast
     // table -- a trait object, a struct's own handle -- or `Any` for a
     // scalar; the ones that answer, collected.
+    // `whereType<T>()` over an `Iterable<T?>`: the elements that are there
+    // (see the front end). A clone, because `iter()` hands out references.
+    if (name == '!where_present' && args.isEmpty) {
+      return '$receiver.iter().filter_map(|v| v.clone()).collect::<Vec<_>>()';
+    }
     if (name == '!where_type' && args.isEmpty && typeArguments.length == 1) {
       final wanted = typeArguments.single;
       final spelledArgs = wanted.arguments.isEmpty

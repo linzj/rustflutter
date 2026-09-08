@@ -6227,7 +6227,31 @@ class KernelFrontend implements TypeWorld {
       if (name == 'whereType' &&
           args.isEmpty &&
           node.arguments.types.length == 1) {
-        final wanted = _type(node.arguments.types.single);
+        final wantedDart = node.arguments.types.single;
+        // `whereType<T>()` over an `Iterable<T?>` is the elements that are
+        // there: no runtime test says more than that, and for a function
+        // type there is no test at all -- `dart_cast_to::<Function>` named
+        // a type nothing declares (`whereType<ImageErrorListener>()` over
+        // the listeners' `onError` in `ImageStreamCompleter.reportError`,
+        // ws762).
+        final receiverType = _staticType(node.receiver);
+        final element =
+            receiverType is InterfaceType &&
+                receiverType.typeArguments.length == 1
+            ? receiverType.typeArguments.single
+            : null;
+        if (element != null &&
+            element.nullability == Nullability.nullable &&
+            element.withDeclaredNullability(Nullability.nonNullable) ==
+                wantedDart) {
+          final kept = _type(wantedDart);
+          return IrCall(
+            _listReceiver(node.receiver, name),
+            '!where_present',
+            const [],
+          )..rustType = IrType('List', arguments: [kept]);
+        }
+        final wanted = _type(wantedDart);
         return IrCall(
           _listReceiver(node.receiver, name),
           '!where_type',
