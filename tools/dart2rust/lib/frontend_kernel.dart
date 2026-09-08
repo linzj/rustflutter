@@ -10205,14 +10205,25 @@ class KernelFrontend implements TypeWorld {
     // (`SlottedContainerRenderObjectMixin._addDiagnostics`, 5 at ws764).
     if (callee.isAbstract) {
       final owner = callee.enclosingClass;
+      if (owner == null) return false;
       final env = typeEnvironment;
-      if (owner == null || env == null) return false;
-      final concrete = env.hierarchy.getDispatchTarget(owner, callee.name);
+      final concrete = env == null
+          ? null
+          : env.hierarchy.getDispatchTarget(owner, callee.name);
       if (concrete is Procedure &&
           !concrete.isAbstract &&
           !identical(concrete, callee)) {
         return _fillsParameter(concrete, index);
       }
+      // A mixin *declaration* keeps only the hollow signature -- the
+      // dispatch target inside it is the abstract member itself -- and the
+      // body the CFE moved into an application of the mixin is the one
+      // that fills (`_appliedBody`, as the trait's default takes it). The
+      // parameter came out `&mut` from the body and the call handed it a
+      // copy (`SlottedContainerRenderObjectMixin._addDiagnostics`, 5 at
+      // ws786).
+      final applied = _appliedBody(owner, callee);
+      if (applied != null) return _fillsParameter(applied, index);
       return false;
     }
     final own = callee.isStatic || callee.enclosingClass == null;
