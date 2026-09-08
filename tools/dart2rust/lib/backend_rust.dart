@@ -4103,6 +4103,8 @@ class RustBackend {
     'index_where',
     'skip_while_dart',
     'take_while_dart',
+    // `Map.map`: the transform's failure comes out (ws811).
+    'map_entries',
     // `replaceAllMapped`: the callback's failure comes out (ws811).
     'replace_all_mapped',
     // `removeWhere`/`retainWhere`: the test's failure comes out.
@@ -4129,6 +4131,7 @@ class RustBackend {
     'reduce_dart',
     'skip_while_dart',
     'take_while_dart',
+    'map_entries',
   };
 
   /// A function value at one of those slots: the function behind an `Rc`
@@ -4710,7 +4713,15 @@ class RustBackend {
     // parameter, which is always a handle here -- is the function itself
     // or a loan of it (`_history.lastWhere(_RouteEntry.isPresentPredicate)`
     // and `_History.indexWhere(test)`, 2 at ws811).
-    if (_preludeLends.contains(_identifier(name))) {
+    // ..only on a receiver the prelude owns: a translated class may
+    // declare a method of the same name, and `_History.indexWhere(test)`
+    // takes the handle its own signature spells (`NavigatorState
+    // .finalizeRoute`, +1 at ws812).
+    final preludeReceiver =
+        target != null &&
+        target is! IrThis &&
+        (receiverClass == null || library[receiverClass] == null);
+    if (preludeReceiver && _preludeLends.contains(_identifier(name))) {
       args = [for (final a in args) _lentFunction(a)];
     }
     // A call reaching an `async fn` *inherently* is its `DartFuture`, no
@@ -8765,6 +8776,9 @@ class RustBackend {
     'dart_shr',
     'dart_ushr',
     'vec_of_nulls',
+    // `math.max`/`math.min` as values (`_mathValueNames`).
+    'dart_max_of',
+    'dart_min_of',
     'dart_native',
     'dart_native_as',
     'future_ready',

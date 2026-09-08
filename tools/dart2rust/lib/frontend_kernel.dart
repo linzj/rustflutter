@@ -26,6 +26,11 @@ import 'dart:io' show Platform, stderr;
 
 import 'ir.dart';
 
+/// `dart:math`'s functions that have no name to tear off: a *call* to one
+/// becomes an inherent method of the receiver (`f64::max`, `Ord::max`), so
+/// the value is the prelude's free function of the same meaning.
+const _mathValueNames = {'max': 'dart_max_of', 'min': 'dart_min_of'};
+
 /// Dart operators that are binary, spelled as Kernel names them.
 const _binaryOperators = {
   '+',
@@ -2012,10 +2017,12 @@ class KernelFrontend implements TypeWorld {
       )..rustType = _type(type).returns;
     }
     if (node is LocalFunctionInvocation) {
-      final name = node.variable.cosmeticName;
-      if (name == null) {
-        throw Unsupported('call of an unnamed local function', _sample(node));
-      }
+      // The name the declaration gave it (see `FunctionDeclaration`): a
+      // CFE temporary's is kept by identity, not by the text.
+      final written = node.variable.cosmeticName;
+      final name = (written == null || written.startsWith('#'))
+          ? _nameFor(node.variable)
+          : written;
       // A local function is declared as a closure, so its named parameters
       // are in type order there too.
       return IrCallValue(
@@ -10903,10 +10910,28 @@ class KernelFrontend implements TypeWorld {
       // A top-level or static function used as a value. Rust names the
       // function; nothing is captured, so none of the ownership question that
       // an *instance* tear-off raises applies here.
+      // ..`dart:math`'s `max`/`min` by the prelude's free functions: a
+      // *call* to them is the receiver's own `max` (an inherent method of
+      // `f64` and of `Ord`), and an inherent method is no name to hand on
+      // (`_sliderPartSizes.map(..).reduce(math.max)`, 7 at ws811).
+      final torn = constant.target;
+      final mathName = _mathValueNames[torn.name.text];
+      if (mathName != null &&
+          torn.enclosingClass == null &&
+          torn.enclosingLibrary.importUri.toString() == 'dart:math') {
+        return IrFunctionRef(null, mathName)..rustType = _functionRefType(torn);
+      }
       return IrFunctionRef(
         constant.target.enclosingClass?.name,
         constant.target.name.text,
       )..rustType = _functionRefType(constant.target);
+    }
+    if (constant is InstantiationConstant) {
+      // A generic function torn off at a type (`math.max<double>` handed to
+      // `reduce`): the tear-off itself. Rust's function items are named,
+      // not instantiated at a value -- the slot's own type is what says
+      // which instantiation this is (7 refusals at ws811).
+      return _constant(constant.tearOffConstant, node);
     }
     if (constant is ConstructorTearOffConstant) {
       // A constructor or factory used as a value: the associated function
@@ -12205,10 +12230,16 @@ class KernelFrontend implements TypeWorld {
       // A named function written inside a body. Rust has no nested `fn` that
       // can see the enclosing locals, so it becomes a closure bound to a
       // local -- which is what Dart's is.
-      final name = node.variable.cosmeticName;
-      if (name == null || name.startsWith('#')) {
-        throw Unsupported('local function with no name', _sample(node));
-      }
+      // A temporary the CFE invented, as `_declare` treats one: `late
+      // final x = ..` inside a body is a `#x#initializer()` local function
+      // beside the cell and its flag, and `#` is not a character the
+      // backend can carry. It gets the same `__tN` a temporary gets, by
+      // identity, and both `LocalFunctionInvocation` and `VariableGet`
+      // find it again the same way (7 refusals at ws811).
+      final written = node.variable.cosmeticName;
+      final name = (written == null || written.startsWith('#'))
+          ? _nameFor(node.variable)
+          : written;
       // `T effectiveValue<T>(..)` inside `ButtonStyleButton.build`: a local
       // function with type parameters of its own. A Rust closure cannot be
       // generic, and a nested `fn` cannot see the enclosing locals this one

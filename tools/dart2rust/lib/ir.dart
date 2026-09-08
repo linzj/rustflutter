@@ -1083,14 +1083,18 @@ const mapMethodNames = <String, String>{
   // `removeWhere(test)`: the entries that pass dropped, in place, as a
   // list's is (`ThemeData`, `_RestorationInformation`; 2 at ws810).
   'removeWhere': 'remove_where',
+  // `map(transform)`: the entries the transform returns, in that order
+  // (3 refusals at ws811). Named apart from `Iterable.map`, whose Rust
+  // name is a step of an iterator chain.
+  'map': 'map_entries',
 };
 
 /// `Map` members that depend on iteration order and are still not translated.
 ///
-/// `map` builds a new map out of `MapEntry`s the closure returns, which is a
-/// shape of its own rather than a name; the ordered container did not settle
-/// it. The other five are translated now.
-const orderedMapMembers = <String>{'map'};
+/// Empty since ws811: `map` builds a new map out of the `MapEntry`s its
+/// callback returns, in the order it returns them, and the prelude's `Map`
+/// is insertion ordered -- which is what used to make it untranslatable.
+const orderedMapMembers = <String>{};
 
 /// Dart's `List` and `Iterable` methods in Rust's spelling.
 ///

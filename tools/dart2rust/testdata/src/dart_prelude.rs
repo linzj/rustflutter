@@ -495,6 +495,18 @@ impl DartNum for f64 {
     }
 }
 
+/// `math.max` / `math.min` as *values*: `sizes.reduce(math.max)` hands the
+/// function itself, and the call form is an inherent method of the receiver
+/// (`f64::max`, `Ord::max`) -- a method is no name to hand on. `Result`,
+/// like every other function value here.
+pub fn dart_max_of<T: DartNum>(a: T, b: T) -> Result<T, DartError> {
+    Ok(a.dart_max(b))
+}
+
+pub fn dart_min_of<T: DartNum>(a: T, b: T) -> Result<T, DartError> {
+    Ok(a.dart_min(b))
+}
+
 pub trait DartNullable: Sized {
     /// Not `Clone` by itself -- `Vec<T>` is one only for `T: Clone` --
     /// so a declaration that clones a `T?` asks `DartNullable<Or: Clone>`.

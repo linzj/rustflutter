@@ -1593,3 +1593,39 @@ Refusals down 28; stubbed up 8, all of them members that now translate
 and then fail to compile for reasons of their own -- the cost of turning
 a refusal into a compile error, and the eight are the next census. Net
 unfinished members: 341 -> 321.
+
+## ws812 -- the prelude's own gaps, and a callback slot that only calls
+
+The eight stubs ws811 added were the price of turning refusals into
+compile errors; this round paid most of it back and took the "no method
+named X" census with it. Two rules.
+
+**The prelude was missing names Dart has.** `truncateToDouble`,
+`toStringAsPrecision`, `String.runes`, `String.replaceAllMapped`,
+`Pattern.allMatches` (the literal case as well as the regexp one),
+`DateTime.isAtSameMomentAs`, `toList` on a `Vec`, and `toSet`/`firstWhere`
+on a `Set` -- an `Iterable` method the set had no answer for. The
+preludegaps fixture runs all of them against Dart, `toStringAsPrecision`
+in its three regimes (exponential low, decimal, trailing zeros kept).
+
+Two things were wrong beside the names. `_preludeFailing` is keyed by the
+*Rust* name, and a method the front end maps by table arrives spelled
+`first_where` while one the backend only snake-cases arrives spelled
+`replaceAllMapped` -- the second kind never matched, so its `?` was never
+appended. It is asked both ways now.
+
+**A prelude callback slot that only calls what it is given is `impl Fn`,
+and an `Rc<dyn Fn>` is not one.** A closure written at the call site is
+already the closure; a tear-off `coerce` put behind an `Rc`, or a
+function-typed local or parameter -- always a handle here -- is not.
+`_preludeLends` names those slots, and the argument becomes the function
+itself (`Rc::new(f)` -> `f`) or a loan of the handle (`&*h`, since
+`&dyn Fn(..)` implements `Fn(..)`). The lentfn fixture.
+
+    bin/run_chain.sh:  209 stubbed (was 219), 102 refusals, 64 crates
+    11 cleared, 1 added
+
+The one added was the rule reading a name it did not own: `_History`
+declares its own `indexWhere`, whose Rust name is `index_where`, and its
+signature takes the handle. `_preludeLends` now asks only on a receiver
+whose class the library does not know.
