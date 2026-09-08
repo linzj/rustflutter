@@ -1357,6 +1357,26 @@ class KernelFrontend implements TypeWorld {
   static final bool _erasureOff =
       Platform.environment['DART2RUST_ERASURE_OFF'] == '1';
 
+  /// Whether the *shape* of a lowering says the value is out of its
+  /// `Option`, whatever type was recorded for it.
+  ///
+  /// A null check, a downcast and a cast all hand back the value itself;
+  /// only a `Some` (and a plain read of a nullable place) is still in the
+  /// `Option`. `_widenedInto` asks this where nothing recorded a type --
+  /// `a!.dart_cast_any::<Rc<X>>()` reaching `_handleOf` records none, and
+  /// treating that as "may already be an Option" left the `Some` off at
+  /// every `lerp` (`BoxBorder.lerp`, ws772).
+  static bool _unwrapped(IrExpr e) => switch (e) {
+    IrNullCheck() => true,
+    IrDowncast() => true,
+    IrCastTo() => true,
+    IrNew() => true,
+    IrCall(:final target, :final name, :final args)
+        when name == 'clone' && args.isEmpty && target != null =>
+      _unwrapped(target),
+    _ => false,
+  };
+
   IrType? _erasedRead(Member target, DartType? declared) {
     if (_erasureOff) return null;
     if (declared == null || declared is TypeParameterType) return null;
@@ -9829,7 +9849,7 @@ class KernelFrontend implements TypeWorld {
     // 433 stubbed at ws745).
     final atHand = lowered.rustType;
     if (actual.nullability == Nullability.nullable &&
-        (atHand == null || isNullable(atHand))) {
+        (atHand == null ? !_unwrapped(lowered) : isNullable(atHand))) {
       return lowered;
     }
     if (actual is DynamicType || actual is NullType) return lowered;

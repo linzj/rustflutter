@@ -964,3 +964,25 @@ hands back a handle with no recorded type -- and `_widenedInto` treats an
 unknown type as "may already be an Option" and skips the wrap. That guard
 is the pattern behind this whole family; typing the three promoted reads
 one at a time is chipping at it.
+
+## run773 — the render tree's *structure* matches the reference
+
+    DART2RUST_OS=android
+    walk 708 lines against the reference's 708
+    RenderErrorBox 0, _RenderSnapshotWidget 0
+    identical prefix: 43 lines
+    ignoring `size=` and `offset=`: **2 differing lines**, and they are
+    one node: `RenderAnnotatedRegion<SystemUiOverlayStyle>` against our
+    `RenderAnnotatedRegion`
+
+So the node type sequence -- 708 of them, the whole gallery home page --
+is the reference's, once the run presents the platform the reference was
+captured on. That is Goal 3's first half.
+
+What is left is the numbers. 510 lines differ on `size=`, and the root of
+it is text: **32 `RenderParagraph`s measure `Size(0.0, 0.0)`** here and
+none does in the reference. Their zero sizes propagate into every
+ancestor's, which is most of the 510.
+
+Next: why a paragraph measures zero, and `runtimeType` of a generic class
+spelling its type arguments.
