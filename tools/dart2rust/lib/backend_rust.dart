@@ -2937,12 +2937,14 @@ class RustBackend {
         'super.$name(...)',
       );
     }
+    // An operator counts: `_emitSuperFns` writes a free function for every
+    // non-static member, an operator's under the name `superFn` gives it
+    // (`inline_span_super_op_eq`), and whether that function came out is
+    // `_superFnEmits`'s question below -- which is the one this used to
+    // pre-empt by refusing every `super.==` outright (5 refusals: `TextSpan`,
+    // `WidgetSpan`, `_BodyBoxConstraints`, `_FileSpan`, `ColorSwatch`, ws877).
     final provides = baseClass.methods.any(
-      (m) =>
-          m.operator == null &&
-          m.name == name &&
-          !m.isStatic &&
-          m.isSetter == isSetter,
+      (m) => m.name == name && !m.isStatic && m.isSetter == isSetter,
     );
     if (!provides) {
       // The base's own version was refused, or is abstract and has no body to
@@ -3021,11 +3023,7 @@ class RustBackend {
     final known = _superFnProbes[key];
     if (known != null) return known;
     final method = baseClass.methods.firstWhere(
-      (m) =>
-          m.operator == null &&
-          m.name == name &&
-          !m.isStatic &&
-          m.isSetter == isSetter,
+      (m) => m.name == name && !m.isStatic && m.isSetter == isSetter,
     );
     final probe = RustBackend(baseClass, library: library);
     final ok = probe._member(key, () => probe._emitSuperFn(method));
