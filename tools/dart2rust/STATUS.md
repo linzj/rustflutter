@@ -908,3 +908,12 @@ was for. The distinction that matters is the one Kernel does draw:
 `T?` is `nullable`, a bare `T` is not. Rejecting only `nullable` keeps
 `Map<K, V>.[]` out and lets `transform` in -- checked in the translation,
 both ways, before measuring this time.
+
+## ws770 — 288, and the erasure rule earns its keep
+
+    ws769 289 stubbed
+    ws770 288 stubbed, 130 refusals, 64 crates   -1, 0 new
+
+The one that went is `TweenSequence._evaluateAt` -- the run ruler's
+current stop. Grouped, from ws747: 433 -> 288 stubbed, 183 -> 130
+refusals, 64 crates throughout.
