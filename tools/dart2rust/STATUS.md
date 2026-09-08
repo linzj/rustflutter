@@ -292,8 +292,9 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
           expected/found 归并,一轮一条规则,量整组
   ws808   221 / 130
   ws847   201 /  60
-  ws876   153 /  57
+  ws876   152 /  57
   ws877   152 /  52
+  ws878   152 /  49
 
 运行尺子(接上):
   run763  错误盒可读(dart_boxed:抛出的错误能打印了)
@@ -376,8 +377,6 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 
 | 轮 | 规则 / 读数 | 数 |
 |---|---|---|
-| run818 | the reading still holds | — |
-| ws819 | a function value handed to translated code is the handle | stub **202**,拒绝 88,可达 64 |
 | ws820 | `x is DateTime`, and one convention for a callback slot | stub **201**,拒绝 85,可达 64 |
 | ws821 | `.indexed`, `unawaited`, and what identity cannot answer | stub **202**,拒绝 80,可达 64 |
 | ws822 | `Map.addEntries`, and two rules that measured to nothing | stub **202**,拒绝 79,可达 64 |
@@ -414,8 +413,10 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 | ws873 | identity on a nullable slot asks the spelling, not the class table | stub **159**,拒绝 57,可达 64 |
 | ws874 | a method body falls into the null of its own type, once | stub **156**,拒绝 57,可达 64 |
 | ws875 | a scalar stands in an interface slot it implements | stub **154**,拒绝 57,可达 64 |
-| ws876 | `a ?? b` is an object where Dart says `Object`, not its text | stub **153**,拒绝 57,可达 64 |
+| ws876 | `a ?? b` is an object where Dart says `Object`, not its text | stub **152**,拒绝 57,可达 64 |
 | ws877 | a super call reaches an operator, as it reaches any other member | stub **152**,拒绝 52,可达 64 |
+| run877 | the reading, after ws875-ws877 | — |
+| ws878 | `identityHashCode` on a handle is the address behind it | stub **152**,拒绝 49,可达 64 |
 
 ## 下一步(2026-09-05 重铺)
 
@@ -462,9 +463,9 @@ trait 泛型方法**已解**(擦除孪生 `m__erased`,ws482/ws494)。6 仍是 **
 
 
 **(2026-09-09 校注)** 本节六条与〈当前队头〉自 09-05 起未动,现状以〈活账〉窗口
-末行为准:**ws877 152 stub / 52 拒绝 / 64 crate 全可达**,运行尺子 run874
-**708 行对 708 行、0 类型差异、0 panic、196 帧**。六条里 1(`todo!` 剩员)仍未再量;
-2(拒绝)804 → **52**;3(Result 记账债)仍挂,并且长出了新的一面——见〈已知欠账〉
+末行为准:**ws878 152 stub / 49 拒绝 / 64 crate 全可达**,运行尺子 run877
+**708 行对 708 行、0 类型差异、0 panic、197 帧**。六条里 1(`todo!` 剩员)仍未再量;
+2(拒绝)804 → **49**;3(Result 记账债)仍挂,并且长出了新的一面——见〈已知欠账〉
 里 99.05% 的函数带着 `Result` 而只有 6.9% 会失败;4、5 已解(见 09-07 校注);
 6 的 `runtime/` crate 存在且已是无头引擎,`Dart_*` 仍 0/168。
 **队头现在不是一张类别表**:剩下的 152 个 stub 是长尾(最大的一个形状只有两个成员),
@@ -970,33 +971,3 @@ make the same decisions the gallery makes. That is worth trying before
 concluding anything about the method -- the harness already gives multiple
 files, the AOT pipeline and a whole-package emission, which is more than
 the four attempts above used.
-
-run877 holds the ruler after ws875-ws877: 708 walk lines, 0 type-only
-differences, 508 as printed, no `RenderErrorBox`, 197 frames drawn and 0
-panicked.
-
-## ws878 -- `identityHashCode` on a handle is the address behind it
-
-    bin/run_chain.sh:  152 stubbed (unchanged), 49 refusals (was 52), 64 crates
-
-`identityHashCode(x)` was refused wholesale as a top-level function nobody
-wrote. It is the hash of the object's *identity*, and identity here is the
-address behind the handle -- the same one `_identical` compares and the one
-`Expando` keys by. So a handle has an answer, and the prelude gives it one:
-
-    pub trait DartIdentityHash { fn dart_identity_hash_code(&self) -> i64; }
-    impl<O: Object + ?Sized + 'static> DartIdentityHash for std::rc::Rc<O>
-
-A value class does not: it is copied into each slot, and two copies of one
-Dart object would answer differently. Those stay refused, which is the same
-answer `identical` gives on one (`_identical`'s census, ws828).
-
-Dart's null is one value with one hash, and an `Object`/`dynamic` slot
-holds it as a fresh `Null` each time `dart_null_object` writes one, so the
-impl answers `2011` for it -- the hash `RcHashCode` already gives `None`.
-
-`idhash` asks the three things the gallery's callers ask: that one object
-hashes the same twice, that two objects hash differently, and that an
-`Object? value` field holding null hashes the same twice. At HEAD it is the
-gallery's refusal verbatim, twice; with the rule both ends print
-`true false true false true`.
