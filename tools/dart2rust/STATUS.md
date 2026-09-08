@@ -2597,3 +2597,47 @@ with Dart, and does not produce the adapter at all. What stands in for a
 fixture here is the emission read before and after (`material_text_form_
 field.rs:264`, `.map(|it| ..)` becoming `.map(|it| -> Rc<dyn Fn(..)> ..)`)
 and the chain's own answer: exactly the two members, nothing added.
+
+## ws859/860 -- a trait that implements one of the prelude's has it above it
+
+    bin/run_chain.sh:  189 stubbed (was 193), 57 refusals (unchanged), 64 crates
+
+`CharacterRange` implements `Iterator<String>` and does not redeclare
+`current`, so on `dyn CharacterRange` there was no such method and four
+members that walk graphemes -- `_transposeCharacters`,
+`_updateSelectionRects`, `truncate`, `getTrailingTextBoundaryAt` -- did
+not compile. ws816 tried the obvious fix, the supertrait, and lost 33
+crates; the reason was recorded at the time and is what this round starts
+from.
+
+Two halves, because the supertrait alone is what ws816 was:
+
+  * **The forwarding impl fills the defaults.** `CharacterRange.moveNext(
+    [int count = 1])` widens `Iterator.moveNext()`, and `_canForward`
+    withheld the whole `impl DartIterator<String>` over the arity -- so a
+    supertrait nothing satisfied took `characters_below` out, and with it
+    everything above. It forwards with the declared default now
+    (`self.move_next(1)`), which is what the interface means by the call
+    and what `IrParam.defaultValue` has been carrying for translated
+    bases since ws793.
+
+  * **The prelude's interface is a supertrait, unless it names this trait.**
+    The cycle the old comment warns about is `Comparable<Self>`;
+    `Iterator<String>` is not one, and only `CharacterRange` gained a
+    supertrait in the whole gallery.
+
+The iterwide fixture -- an `abstract class Range implements Iterator<String>`
+that redeclares `moveNext([int count = 1])`, walked through the interface --
+does not compile at HEAD with the same "no method named `current`" the
+gallery had. It also found what the chain could not: `r.moveNext()` through
+the object names both the trait's and the supertrait's, with no inherent
+method to win (E0034). So a call that *widened* the supertrait's is
+qualified with the receiver's own trait, the way a name two translated
+traits declare already is (ws462). A name merely inherited is left alone --
+it is not ambiguous, and naming the subtrait for it would not resolve.
+Both ends of the fixture say `a,b,c 3`.
+
+run860 holds the ruler: 708 walk lines, 0 type-only differences, 508 as
+printed, no `RenderErrorBox`, 196 frames drawn and 0 panicked. Four members
+that walk graphemes now run where they used to panic, and the walk did not
+move.

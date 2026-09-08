@@ -4944,6 +4944,34 @@ class RustBackend {
       final chosen = _accessorQualifier(name);
       if (chosen != null && library.isAbstract(chosen)) qualifier = chosen;
     }
+    // A trait with one of the prelude's above it declares a name the
+    // supertrait declares too -- `CharacterRange.moveNext([count])` over
+    // `Iterator`'s `moveNext()` -- and a call through the object names
+    // both, with no inherent method to win (E0034, the iterwide fixture).
+    // The receiver's own trait says which is meant, as it does for two
+    // translated traits just above (ws859).
+    if (qualifier == null && target != null) {
+      final on = receiverClass ?? target.rustType?.name;
+      final owner = on == null ? null : library[on];
+      // Only where the trait *widened* the name: the call takes arguments
+      // the supertrait's does not, so both are in scope and neither wins.
+      // A name it merely inherits (`current`) is on the supertrait alone,
+      // is not ambiguous, and naming the subtrait for it would not even
+      // resolve.
+      if (owner != null && owner.isAbstract) {
+        for (final i in _preludeInterfacesOf(owner)) {
+          if (i.arguments.any((a) => a.name == on)) continue;
+          for (final s in _preludeInterfaces[i.name] ?? const <String>[]) {
+            if (!s.startsWith('${_identifier(name)}(')) continue;
+            final inside = s.substring(s.indexOf('(') + 1, s.indexOf(')'));
+            final theirs = inside.split(',').length - 1;
+            if (args.length != theirs) qualifier = on;
+            break;
+          }
+          if (qualifier != null) break;
+        }
+      }
+    }
     if (qualifier != null) {
       // See `IrCall.qualifier`. `self`/`this_` are already references; a
       // closure's `__me` is a handle, as is any receiver typed by a trait
@@ -6973,6 +7001,16 @@ class RustBackend {
             i.name != 'Object' &&
             !_preludeInterfaces.containsKey(i.name))
           _traitPath(i),
+      // ..and the prelude's after all, where the instantiation does not
+      // name this trait: the cycle above is `Comparable<Self>`, and
+      // `CharacterRange implements Iterator<String>` is not one. Without
+      // it `current()` -- which `CharacterRange` inherits and does not
+      // redeclare -- is on no `dyn CharacterRange` (4 at ws859). The
+      // implementers' forwarding impls satisfy it (`_emitPreludeInterfaces`).
+      for (final i in cls.interfaces)
+        if (_preludeInterfaces.containsKey(i.name) &&
+            !i.arguments.any((a) => a.name == cls.name))
+          '${i.name}${i.arguments.isEmpty ? '' : '<${i.arguments.map(type).join(', ')}>'}',
     }.toList();
     // A trait object compares by identity (`DartEq`), as `dyn Object` does.
     _line(
@@ -10331,19 +10369,29 @@ class RustBackend {
   /// trait, `self.compare_to(other)` names two candidates and neither wins
   /// (E0034); with another arity -- `moveNext(int count)` against the
   /// prelude's `move_next()` -- it is the wrong method. 6 at ws815.
-  bool _canForward(String call) {
+  String? _forwardingCall(String call) {
     final open = call.indexOf('(');
     final name = call.substring(0, open);
     final inside = call.substring(open + 1, call.length - 1).trim();
-    final count = inside.isEmpty ? 0 : inside.split(',').length;
-    return cls.methods.any(
-      (m) =>
-          !m.isStatic &&
-          !m.isSetter &&
-          m.operator == null &&
-          snake(m.name) == name &&
-          m.params.length == count,
-    );
+    final given = inside.isEmpty
+        ? const <String>[]
+        : [for (final a in inside.split(',')) a.trim()];
+    for (final m in cls.methods) {
+      if (m.isStatic || m.isSetter || m.operator != null) continue;
+      if (snake(m.name) != name) continue;
+      if (m.params.length == given.length) return call;
+      // An override that *widens* the interface -- `CharacterRange
+      // .moveNext([int count = 1])` where the prelude's `Iterator` says
+      // `move_next()` -- is forwarded to with its own defaults, which is
+      // what the interface means by the call. Withheld instead, the impl
+      // was missing and `current()` was on no `dyn CharacterRange` (4 at
+      // ws859; the defaults are what `IrParam.defaultValue` is for).
+      if (m.params.length < given.length) continue;
+      final extra = m.params.skip(given.length).toList();
+      if (extra.any((p) => p.defaultValue == null)) continue;
+      return '$name(${[for (final a in given) a, for (final p in extra) expr(p.defaultValue!)].join(', ')})';
+    }
+    return null;
   }
 
   void _emitPreludeInterfaces() {
@@ -10351,9 +10399,15 @@ class RustBackend {
       final methods = _preludeInterfaces[i.name];
       if (methods == null) continue;
       // Every call it would make has to land on a method of this class.
+      final calls = <int, String>{};
       var forwards = true;
       for (var k = 1; k < methods.length; k += 2) {
-        if (!_canForward(methods[k])) forwards = false;
+        final call = _forwardingCall(methods[k]);
+        if (call == null) {
+          forwards = false;
+        } else {
+          calls[k] = call;
+        }
       }
       if (!forwards) continue;
       final args = i.arguments.map((a) => type(a)).toList();
@@ -10373,7 +10427,7 @@ class RustBackend {
           _indent++;
           // The class's own method returns `Result`; the prelude trait's
           // signature is fixed.
-          _line('self.${methods[k + 1]}${_resultModel ? '.unwrap()' : ''}');
+          _line('self.${calls[k + 1]}${_resultModel ? '.unwrap()' : ''}');
           _indent--;
           _line('}');
         }
