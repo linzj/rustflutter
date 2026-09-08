@@ -2890,3 +2890,26 @@ nothing fails. With `final gap = n > 0 ? 16 : 0` and `final overflow =
 n > 3 ? 30 * scaleOf(scale) : 0` beside it, HEAD gives the gallery's own
 "`if` and `else` have incompatible types" and both ends say
 `140.0 80.0 64.0`.
+
+## ws868 -- an arm that never arrives is one whether or not a `Some` is on it
+
+    bin/run_chain.sh:  172 stubbed (was 175), 57 refusals (unchanged), 64 crates
+
+ws589 taught the conditional to spell its own type when one arm diverges:
+`if c { None } else { unreachable!() }` leaves `None`'s `T` to the never
+type otherwise. `_diverges` looked through an `IrBlockValue` for that and
+not through the `Some` a *nullable* slot puts on, so
+`shadows == null ? null : shadows!.length` -- whose second arm the tree
+shaker removed, because nothing in the gallery ever gives `IconThemeData`
+a shadow list -- read as a conditional whose arms both arrive, and the
+`None` was left to the fallback. Three `hashCode`s: `IconThemeData`,
+`SemanticsData` and `Gradient`.
+
+The divsome fixture needs TFA to do the removing: a class whose
+constructor always sets the field to `null`, hashed through a
+`x == null ? null : x.length`. HEAD gives the gallery's own "this function
+depends on never type fallback being `()`" and both ends say `true false`.
+
+run868 holds the ruler after ws867 and ws868: 708 walk lines, 0 type-only
+differences, 508 as printed, no `RenderErrorBox`, 200 frames drawn and 0
+panicked.

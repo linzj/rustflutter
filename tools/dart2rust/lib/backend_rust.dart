@@ -7804,7 +7804,13 @@ class RustBackend {
       identical(value, IrLiteral.unreachable) ||
       value is IrThrowValue ||
       value.rustType?.name == 'Never' ||
-      (value is IrBlockValue && _diverges(value.value));
+      (value is IrBlockValue && _diverges(value.value)) ||
+      // ..and inside the `Some` a nullable slot puts on: an arm TFA
+      // removed is wrapped before it is an arm, so the conditional read
+      // as one that arrives and its `None` was left to the never-type
+      // fallback (`hashCode` over a `List<Shadow>?` the tree shaker
+      // emptied, 3 at ws868).
+      (value is IrSome && _diverges(value.value));
 
   /// The turbofish `dart_boxed` needs where nothing else says the type:
   /// `Null` for a value that never arrives, a literal collection's own
