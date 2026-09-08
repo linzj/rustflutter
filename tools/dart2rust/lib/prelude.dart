@@ -3807,6 +3807,36 @@ impl<T: DartEq + Clone> DartListEq<T> for Vec<T> {
 /// look if one of them starts iterating.
 pub type SplayTreeMap<K, V> = Map<K, V>;
 
+/// What a *sorted* map promises, computed rather than kept: the prelude's
+/// `Map` holds its entries in insertion order (see `SplayTreeMap` above),
+/// so the smallest and largest key are found by looking. Only where the
+/// key can be ordered, which is what asking for them means.
+impl<K: Clone + PartialOrd, V> Map<K, V> {
+    /// `SplayTreeMap.firstKey()`: the smallest key, or null when empty.
+    pub fn first_key(&self) -> Option<K> {
+        self.entries
+            .iter()
+            .map(|(k, _)| k)
+            .fold(None::<&K>, |best, k| match best {
+                Some(b) if !(k < b) => Some(b),
+                _ => Some(k),
+            })
+            .cloned()
+    }
+
+    /// `SplayTreeMap.lastKey()`: the largest key, or null when empty.
+    pub fn last_key(&self) -> Option<K> {
+        self.entries
+            .iter()
+            .map(|(k, _)| k)
+            .fold(None::<&K>, |best, k| match best {
+                Some(b) if !(k > b) => Some(b),
+                _ => Some(k),
+            })
+            .cloned()
+    }
+}
+
 /// `dart:developer`'s `Timeline`: the tracing calls upstream sprinkles into
 /// layout and paint. There is no observatory to send them to, so they are
 /// no-ops with the right shapes -- 24 `startSync`/`finishSync` pairs would

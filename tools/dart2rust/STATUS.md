@@ -305,12 +305,10 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 - 第 86 轮:那 14 个错误该留着(否定结果)。
 - 第 102/103 轮:`Rc<Self>` 的价钱由 fixture 定的形状。
 
-## 活账:ws/run 表(窗口约 40 行,ws687 起;更老的在 git)
+## 活账:ws/run 表(窗口约 40 行,ws688 起;更老的在 git)
 
 | 轮 | 第一个停点 / 读数 | 处理 |
 |---|---|---|
-| ws687 | 链：stub **480**（-2：`BorderRadius.all`/`horizontal`），拒绝 183，可达 64。 | run687 |
-| run687 | 过了边框半径，进 `_SettingsListItemState.initState`：`widget` 向下转型 `SettingsListItem<<T as DartNullable>::Or>` 拿到 `None`——state 是 `_SettingsListItemState::<Option<T>>` 建的（`createState() => _SettingsListItemState<T?>()`），`T = double?` 时成了 `Option<Option<f64>>`，Dart 的 `T?` 在 `T = double?` 时只有一层。构造器/常量/转型的类型实参走 `_erasedArguments` 没进 `_nested`，`T?` 没投影成 `<T as DartNullable>::Or`（类类型走的 `_type` 自己包了 `_nested`）。修（通用）：`_erasedArguments` 本身就是"类型实参"，深度计数放进它。夹具 nullarg SAME。 | 链 ws688 |
 | ws688 | 链：stub **481**（+1：`RestorableEnumN::new`——`extends RestorableValue<T?>` 的 `T?` 现在投影了，基类字段 `T? _value = null` 的跨投影 `IrNullableOf` 在按子类实参替换时被丢掉（替换规则：实参可空就丢转换），槽却仍是 `<T as DartNullable>::Or`，裸 `None` 进不去），拒绝 183，可达 64。修（通用）：实参是**投影的**可空 `T?` 时转换保留。夹具 nullsuper SAME。 | 链 ws689 |
 | ws689 | 链：stub **480**（-1，回到 ws687），拒绝 183，可达 64。 | run689 |
 | run689 | `initState` 过了（state 现在是 `_SettingsListItemState<Option<f64>>`）。停在 `_SettingsListItemState.build` 的 stub：「type mismatch in closure arguments」——`onChanged: (newOption) => ..` 传给 `RadioListTile<T?>`：槽是 `Fn(<T as DartNullable>::Or)`，闭包参数拼成 `Option<T>`（闭包参数走 `_paramType`，深度 0 不投影）。修（通用，三处）：闭包参数与方法参数同样是"边"——`T?` 拼投影、体内序言重绑成 `Option<T>`（`_withEdgeParams` 加 `positional` 覆盖）；`_typeKept` 把投影的可空实参 `U?` 代进 `T?` 时保持投影（rustc 把 `<<U as Or> as Or>::Or` 归一成 `<U as Or>::Or`）；`_crossing` 对可空的 `U?` 绑定也按 `_projectedSlot` 判（此前假定"可空实参的槽就是 Option"，`_erasedArguments` 投影后不再成立）；backend `IrNullableOf(IrLocal)` 读时 `.clone()`（prelude 迭代器给闭包的是 `&T`）。夹具 closureedge SAME；nullarg/nullsuper/ctornull/outparam/qualgeneric 回归 SAME。链 ws690 已发未读。 | 链 ws690 |
@@ -348,7 +346,9 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 | ws713–717 | `RenderFlex.performLayout`/`_computeSizes` 的拒绝是「`is` against `Function`/`Record`」——CFE 把记录解构模式（`final (nextChild, topLeftChild) = ..`）降成「拿每个字段跟它本来就有的类型做 `is`」，函数类型和 Record 都不是 `Any` 问得出来的。修（通用，四条）：① 操作数的静态类型是所问类型的子类型时，Dart 自己的子类型关系就是答案，拼 `true`（与上面字面量那条同源）；扩展类型走**表示类型**（`_AscentDescent` 就是 `(double, double)?`）。② 只差一个 `?`、且所问类型没有运行期测试（记录/函数类型）时，测试就是那个空检查——类的情形留给原来的 `is`，它的收窄这条看不见（`is_none` 打到 `Rc<Border>` 上，ws716）。③ 记录字段读按**记录持有的**类型定型，不按模式提升后的 `Object?`（Rust 元组里仍是 `f64`），可空记录读经 unwrap（Dart 只允许提升后读）。④ `_clonedWhenPassed` 穿过扩展类型（`_AxisSize` 就是 `Size`，不克隆就被第一个实参移走）。夹具 recdestr2 SAME。链 **449**（与 ws713 同一组），拒绝 **183 → 174**。 | run717 |
 | run717 | `_computeSizes` 过了。停在 `_AscentDescent operator +` 的拒绝：仍是 `is` against `Record`。 | 链 ws718 |
 | ws718 | 修 run717：所问的类型也要擦——扩展类型在运行期没有身份，`x is _AscentDescent` 问的就是表示类型。链 **449**（同一组），拒绝 **173**。 | run718 |
-| run718 | 整个 `RenderFlex` 布局过了。停在 `SliverMultiBoxAdaptorElement.didFinishLayout` 的拒绝：`Map.firstKey`（`_childElements` 是 `SplayTreeMap<int, Element?>`，prelude 没有按键排序的首/末键）。 | 下一轮 |
+| run718 | 整个 `RenderFlex` 布局过了。停在 `SliverMultiBoxAdaptorElement.didFinishLayout` 的拒绝：`Map.firstKey`（`_childElements` 是 `SplayTreeMap<int, Element?>`，prelude 没有按键排序的首/末键）。 | 链 ws719 |
+| ws719 | 修 run718：prelude 的 `Map` 按插入序存（`SplayTreeMap` 就是它的别名），排序映射承诺的首/末键**算出来**——`impl<K: Clone + PartialOrd, V> Map<K, V>` 上的 `first_key`/`last_key`，只有键可比时才有这两个方法；`mapMethodNames` 加两条。夹具 sortedmap SAME。链 **449**（同一组），拒绝 **170**。 | run719 |
+| run719 | 过了 sliver 的 `didFinishLayout`。停在 `_PageViewState.build` 的 stub：「multiple applicable items in scope」。 | 下一轮 |
 
 ## 下一步(2026-09-05 重铺)
 
