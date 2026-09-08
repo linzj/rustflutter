@@ -1148,3 +1148,15 @@ The trait now declares `iterator` (the front end, from
 (the backend, the same walk `_emitToList` writes for a struct). Every
 implementor has an `iterator` of its own, so the impl forwards it like any
 other trait method.
+
+## ws783 — the abstract Iterable's walk (264 → 259)
+
+    ws782 264 stubbed
+    ws783 259 stubbed, 130 refusals, 64 crates   -6, 1 new
+
+The six are the text-field code's `Characters` calls. The one new is
+`TypedDataBuffer`, where a supertrait declares `iterator` too and the
+default body's bare `self.iterator()` was ambiguous; it goes through this
+trait explicitly now.
+
+Grouped, from ws747: **433 -> 259** stubbed, 183 -> 130 refusals.

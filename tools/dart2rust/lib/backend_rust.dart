@@ -7032,9 +7032,13 @@ class RustBackend {
         .where((m) => m.name == 'iterator' && m.isGetter && !m.isStatic)
         .firstOrNull;
     if (getter == null || getter.returnType.name != 'DartIterator') return;
+    // Through *this* trait: a supertrait may declare `iterator` too, and a
+    // bare `self.iterator()` is then ambiguous (`TypedDataBuffer`, E0034 at
+    // ws783).
+    final own = '<Self as ${cls.name}${_useArguments(cls)}>::iterator(self)';
     final fetched = _resultModel
-        ? 'match self.iterator() { Ok(__it) => __it, Err(__e) => panic!("uncaught Dart exception: {}", dart_str(&__e)) }'
-        : 'self.iterator()';
+        ? 'match $own { Ok(__it) => __it, Err(__e) => panic!("uncaught Dart exception: {}", dart_str(&__e)) }'
+        : own;
     final element_ = type(element);
     _line(
       'fn __to_list(&self) -> Vec<$element_> { '
