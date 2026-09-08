@@ -2317,27 +2317,13 @@ class KernelFrontend implements TypeWorld {
       // .as_ref().map(|it| ..)` on a `None` with no element type (8 "type
       // annotations needed" at ws813). The branch that runs is the whole
       // conditional.
-      // ..by the operand's *type* as well as its shape: type flow analysis
-      // narrows a value it proved always null to `Null` without rewriting
-      // the read, so the test is still `x == null` over something that can
-      // only be null (`WidgetStateTextStyle`'s `package == null ? ..`, 3 of
-      // the 8 "type annotations needed" at ws841).
-      bool alwaysNull(Expression e) {
-        if (_isNull(e)) return true;
-        try {
-          return _staticType(e) is NullType;
-        } on Object {
-          return false;
-        }
-      }
-
-      if (condition is EqualsNull && alwaysNull(condition.expression)) {
+      if (condition is EqualsNull && _isNull(condition.expression)) {
         final taken = node.then;
         return _widened(taken, node.staticType, expression(taken));
       }
       if (condition is Not) {
         final inner = condition.operand;
-        if (inner is EqualsNull && alwaysNull(inner.expression)) {
+        if (inner is EqualsNull && _isNull(inner.expression)) {
           final taken = node.otherwise;
           return _widened(taken, node.staticType, expression(taken));
         }
@@ -2364,11 +2350,26 @@ class KernelFrontend implements TypeWorld {
           IrStaticCall(null, 'dart_str', [expression(node.otherwise)]),
         );
       }
+      // ..and the same question asked of what the condition *lowered to*:
+      // type flow analysis folds a value it proved always null into the
+      // literal somewhere below the read, so the Kernel node is still a
+      // field access while the IR is `None`. Both arms were lowered anyway,
+      // and the dead one had nothing to infer its types from -- `None
+      // .as_ref().map(|it| ..)` (`WidgetStateTextStyle`, 3 of the 8 "type
+      // annotations needed" at ws841). Lowered once, so nothing is
+      // evaluated twice.
+      final lowered = _condition(condition);
+      if (lowered is IrIsNull) {
+        final operand = lowered.operand;
+        if (operand is IrLiteral && operand.type.name == 'Null') {
+          return _widened(node.then, staticType, expression(node.then));
+        }
+      }
       // Each branch widens into the conditional's own type: `m == null ?
       // null : hashAll(m)` is an `Option`, and the second branch an `i64`
       // until it is wrapped (4 `if` and `else` have incompatible types).
       return IrConditional(
-        _condition(condition),
+        lowered,
         _widened(node.then, staticType, expression(node.then)),
         _widened(node.otherwise, staticType, expression(node.otherwise)),
       );
