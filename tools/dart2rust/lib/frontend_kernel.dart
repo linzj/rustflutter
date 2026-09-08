@@ -2317,13 +2317,27 @@ class KernelFrontend implements TypeWorld {
       // .as_ref().map(|it| ..)` on a `None` with no element type (8 "type
       // annotations needed" at ws813). The branch that runs is the whole
       // conditional.
-      if (condition is EqualsNull && _isNull(condition.expression)) {
+      // ..by the operand's *type* as well as its shape: type flow analysis
+      // narrows a value it proved always null to `Null` without rewriting
+      // the read, so the test is still `x == null` over something that can
+      // only be null (`WidgetStateTextStyle`'s `package == null ? ..`, 3 of
+      // the 8 "type annotations needed" at ws841).
+      bool alwaysNull(Expression e) {
+        if (_isNull(e)) return true;
+        try {
+          return _staticType(e) is NullType;
+        } on Object {
+          return false;
+        }
+      }
+
+      if (condition is EqualsNull && alwaysNull(condition.expression)) {
         final taken = node.then;
         return _widened(taken, node.staticType, expression(taken));
       }
       if (condition is Not) {
         final inner = condition.operand;
-        if (inner is EqualsNull && _isNull(inner.expression)) {
+        if (inner is EqualsNull && alwaysNull(inner.expression)) {
           final taken = node.otherwise;
           return _widened(taken, node.staticType, expression(taken));
         }
