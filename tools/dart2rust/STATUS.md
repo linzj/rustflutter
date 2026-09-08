@@ -1022,3 +1022,15 @@ Two further facts for whoever picks this up:
 * `ref_render_walk.txt` (6 lines) is a *first-frame* capture, not a prefix
   of the settled one: our settled walk agrees with it for 5 of its 6 lines
   and then has the subtree the first frame did not have yet.
+
+## The run's own panic: an erased twin of an `async` method
+
+`DefaultProcessTextService.queryTextActions` is the run's first panic (the
+app survives it). `MethodChannel.invokeMethod<T>` returns `Future<T?>`;
+the erased twin returns `DartFuture<<Rc<dyn Object> as DartNullable>::Or>`
+and the cast at the call site asks for `DartFuture<Rc<dyn Object>>` -- the
+`Option` is gone, because the call's *recorded* type is `Future<dynamic>`:
+the top-bound rule that reads a `T?` of a top-bounded parameter as
+`Option<Rc<dyn Object>>` only looks at a bare return, not at one inside a
+`Future`. The cast target should come from the method's own return
+instantiated, not from the recorded type. Left for the next round.
