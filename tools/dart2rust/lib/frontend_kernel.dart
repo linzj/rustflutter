@@ -9646,6 +9646,25 @@ class KernelFrontend implements TypeWorld {
       if (prelude && slot != null && slot.projected) {
         slot = IrType(slot.name, nullable: true, arguments: slot.arguments);
       }
+      // A translated callee's `T?` is spelled `<T as DartNullable>::Or`
+      // (`_edgeType`); `_type` spells the plain `Option<T>` a *body* works
+      // with. At an argument edge the callee's own spelling is the slot --
+      // without it the coercion below made the `Some(..)` a body wants and
+      // returned, so the projection rule in this method's tail never ran
+      // (`AsyncSnapshot.withData` through its redirecting `this._(..)`, and
+      // `_OverridableActionMixin._getOverrideAction`; 7 at ws786).
+      if (!prelude &&
+          slot != null &&
+          !slot.projected &&
+          _argumentEdge &&
+          _projectedSlot(param)) {
+        slot = IrType(
+          slot.name,
+          nullable: true,
+          projected: true,
+          arguments: slot.arguments,
+        );
+      }
       if (slot != null) {
         // A local handed on is shared, as below: the clone comes first so
         // the coercion wraps the clone, not the local.
