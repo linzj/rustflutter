@@ -1497,3 +1497,26 @@ frame, begin and end, with the wall clock. That is what found this --
 Against `ref_render_walk.txt` (a *first-frame* capture, 6 lines) ours agrees
 on 5 of 6; the sixth is where a settled tree and a first frame part company,
 as before.
+
+## ws808 / run809 — the reading, through the documented commands
+
+    bin/run_chain.sh:  221 stubbed, 130 refusals, 64 reachable crates
+                       (the same stub set as ws803: the runtime and prelude
+                        changes are compile-neutral)
+
+    DART2RUST_OS=android DART2RUST_DUMP_RENDER_TREE=1 bin/run_main.sh:
+                       exit 0, budget spent with main pending
+                       191 frame(s) drawn, 0 panicked
+                       2806 platform messages
+                       render tree 708 lines, RenderErrorBox 0
+
+    diff ref_render_walk_settled.txt walk, ignoring size=/offset=:    0
+    diff ref_render_walk_settled.txt walk, as printed:              508
+
+Every one of the 508 is a `size=`/`offset=` on a node whose *type* and
+place in the tree are right, and they all trace back to the 32
+`RenderParagraph`s that measure `Size(0.0, 0.0)`: the headless runtime
+answers no `Paragraph::*` native, and the native bridge hands an instance
+native no receiver, so a host cannot model per-paragraph state. Those two
+are the text gap, unchanged and still the only thing between this walk and
+the reference.
