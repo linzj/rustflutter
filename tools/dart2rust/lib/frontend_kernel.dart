@@ -8341,7 +8341,10 @@ class KernelFrontend implements TypeWorld {
     // `1000000000000000000 as f64` does not fit one (`NumberFormat.
     // _numberOfIntegerDigits`, 4 at ws777).
     if (e is IrLiteral && e.type.name == 'int') {
-      return IrLiteral('${e.value}.0', const IrType('double'))
+      // Suffixed: two unsuffixed float literals make an *ambiguous*
+      // `{float}`, and a method on that does not resolve
+      // (`(1000000.0 / 60.0).round()`, E0689 at ws779).
+      return IrLiteral('${e.value}.0_f64', const IrType('double'))
         ..rustType = const IrType('double');
     }
     return IrCast(e, 'f64')..rustType = const IrType('double');
