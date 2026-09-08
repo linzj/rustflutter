@@ -351,6 +351,12 @@ pub trait DartInt {
     fn is_odd(&self) -> bool;
     fn to_radix_string(&self, radix: i64) -> String;
     fn to_unsigned(&self, width: i64) -> i64;
+    /// `~x`: Dart's bitwise complement of an int, which on the 64-bit
+    /// two's-complement `i64` an int is here is Rust's `!`
+    /// (`_ch` in crypto's SHA-256, `_mergeModifiers` in the Linux raw
+    /// keyboard: 3 at ws791). Rust spells `!` as a prefix operator and
+    /// this output calls the operator by its Dart name, so it is a method.
+    fn bit_not(&self) -> i64;
 }
 
 impl DartInt for i64 {
@@ -362,6 +368,10 @@ impl DartInt for i64 {
     }
     fn hash_code(&self) -> i64 {
         *self
+    }
+
+    fn bit_not(&self) -> i64 {
+        !*self
     }
 
     fn trunc(&self) -> i64 {
