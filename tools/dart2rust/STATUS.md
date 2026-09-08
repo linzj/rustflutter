@@ -1898,3 +1898,37 @@ became a silent wrong answer, which is the one trade this compiler does
 not make, so the methods are reverted and the stub stands. The fixture is
 the evidence for whoever routes `IrSetter` through the mutating-call path:
 a local (`local.last = 9`) is already right, only a field is not.
+
+## ws823 -- `x is Function` is a test on a signature, not on being a function
+
+    bin/run_chain.sh:  203 stubbed (was 202), 78 refusals (was 79), 64 crates
+
+One refusal cleared and one stub added, and then both reverted, because
+the rule was answering a different question from the one asked.
+
+`x is Function` looked like the easy end of the `is` census: the prelude
+makes function objects, so asking whether an object is one is a downcast
+to `DartFunction`. The fixture agreed (`fn fn text other`). But the `is`
+lowering is handed a *name*, and every function type -- `void Function()`,
+`String Function(String)`, `_ListStringArgFunction` -- arrives under the
+name `Function`. So the rule answered "is it a function at all" where Dart
+asked "does it have this signature", and `dart:ui`'s `_runMain`, whose
+whole body is
+
+    if (userMainFunction is _ListStringArgFunction) { userMainFunction(args); }
+    else { userMainFunction(); }
+
+took the one-argument branch for a zero-argument `main`. The fnpromote
+fixture caught it: `run(() => 1, 'hi')` returned `one:` where Dart returns
+`none`, and the adapter then threw a `StateError` on the arity.
+
+Arity alone would discriminate both gallery sites, and arity alone is a
+guess -- Dart checks the parameter and return types too. So `is Function`
+is reverted with the promotion rule it needed (a function-typed promotion
+has to build the closure that calls the object dynamically; correct in
+itself, and unreachable without the test that motivated it). The refusal
+stands, and what it needs is written down: the `is` lowering has to carry
+the function *type*, not the name `Function`.
+
+The tree is back at ws822's translator, whose reading is 202 stubbed,
+79 refusals, 64 reachable crates.
