@@ -8154,10 +8154,20 @@ class KernelFrontend implements TypeWorld {
     FunctionNode? callee,
     IrExpr lowered,
   ) {
-    if (param is! InterfaceType || param.classNode.name != 'num')
-      return lowered;
+    if (param is! InterfaceType) return lowered;
+    final slot = param.classNode.name;
+    if (slot != 'num' && slot != 'double') return lowered;
     // Already an `f64` -- `coerce` cast it (`((1 as f64) as f64)`, ws356).
     if (lowered.rustType?.name == 'double') return lowered;
+    // An integer *literal* where a `double` goes is a double, whoever
+    // declares the slot: that is Dart's rule about the literal, not about
+    // the callee (`lerpDouble(split, 1, transformed)` in `Split.transform`,
+    // ws763). A `num` slot keeps the callee test below, where an `int` is
+    // still an `int` unless the callee's `num` is this output's `f64`.
+    if (slot == 'double') {
+      if (value is! IntLiteral) return lowered;
+      return _toF64(lowered)..rustType = const IrType('double');
+    }
     // A literal, or a value whose static type is `int` (a translated
     // callee's `num` is an `f64`, so either is cast).
     final given = _staticType(value);
@@ -8308,7 +8318,7 @@ class KernelFrontend implements TypeWorld {
           .substituteType(declared);
     }
     try {
-      return _typeKept(substituted, _genericArgs);
+      return _typeKept(substituted, _genericArgs, byTurbofish: true);
     } on Unsupported {
       return null;
     }
@@ -8434,17 +8444,23 @@ class KernelFrontend implements TypeWorld {
   /// to `Color?` into `Color?` and Rust's `Option<T>` does not: that is
   /// `Option<Option<Rc<dyn Color>>>` here (the `WidgetStateProperty<
   /// Color?>.lerp` family, 66 mismatches at ws384).
-  IrType _typeKept(DartType t, Map<TypeParameter, DartType> kept) {
+  IrType _typeKept(
+    DartType t,
+    Map<TypeParameter, DartType> kept, {
+    bool byTurbofish = false,
+  }) {
     if (t is TypeParameterType && kept.containsKey(t.parameter)) {
       // What is put in is a type argument: a `U?` there is projected.
       final arg = _typeNested(kept[t.parameter]!);
       if (t.nullability != Nullability.nullable) {
-        // The callee's own parameter, instantiated by what the turbofish
-        // spells -- and the turbofish spells the plain `Option<T>`, so the
-        // slot is that and not the projection this declaration uses for its
-        // own edges (`entry.complete<T?>(result)` in `Navigator.removeRoute`,
-        // 14 at ws761).
-        return arg.projected
+        // A generic *method*'s own parameter is instantiated by what its
+        // turbofish spells, and that is the plain `Option<T>` -- so the slot
+        // is that and not the projection this declaration uses for its own
+        // edges (`entry.complete<T?>(result)` in `Navigator.removeRoute`, 14
+        // at ws761). A *class*'s instantiation is not spelled that way: the
+        // struct is named `SettingsListItem<<T as DartNullable>::Or>` and
+        // its fields keep the projection (ws763).
+        return byTurbofish && arg.projected
             ? IrType(arg.name, nullable: true, arguments: arg.arguments)
             : arg;
       }

@@ -794,3 +794,18 @@ that went are the ones the same rule fixed.
 
 The number is not the point of this round. `TweenSequence` builds its
 intervals again.
+
+## run764 — the error boxes are gone, and a panic took the tree with it
+
+The two constructor rules did what they were for: `TweenSequence` builds
+its intervals, the `Bad state:` line is gone and `RenderErrorBox` is 0.
+
+But the walk is 138 lines against 708: `_SettingsListItemState.initState`
+panics, and the settings list -- most of the home page -- never builds.
+That stub is one of ws763's five new ones, and it is the genargproj rule
+overreaching: a generic *method*'s parameter is instantiated by what its
+turbofish spells (the plain `Option<T>`), but a *class*'s instantiation is
+not -- the struct is named `SettingsListItem<<T as DartNullable>::Or>` and
+its fields keep the projection. Narrowed to the turbofish case; the
+`Map::from(.. from_option(k) ..)` the state built over its widget's
+`optionsMap` is gone.
