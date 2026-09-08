@@ -11498,7 +11498,7 @@ class KernelFrontend implements TypeWorld {
       if (caught == null) {
         throw Unsupported('rethrow outside a catch', _sample(node));
       }
-      return IrThrow(IrLocal(caught));
+      return IrThrow(IrLocal(caught)..rustType = _caughtType);
     }
     if (node is ExpressionStatement && node.expression is Throw) {
       // Before the general `ExpressionStatement` case below, not after: the
@@ -11871,12 +11871,29 @@ class KernelFrontend implements TypeWorld {
 
     final guard = clause.guard;
     final outerCaught = _caught;
+    final outerCaughtType = _caughtType;
     _caught = error;
+    // The type the clause narrowed to (`on FlutterError catch (e)`): a
+    // `rethrow` throws that value, and the error type it goes back into is
+    // `Rc<dyn Object>` -- untyped, the widening rule in `_boxedThrow` had
+    // nothing to look at, and `return Err(error)` handed a `FlutterError`
+    // where the handle goes (`AssetBundleImageProvider._loadAsync`, the
+    // whole image path, run745).
+    _caughtType = guard is InterfaceType && guard.classNode.name != 'Object'
+        ? (() {
+            try {
+              return _type(guard);
+            } on Unsupported {
+              return null;
+            }
+          })()
+        : null;
     final IrStmt handler;
     try {
       handler = statement(clause.body);
     } finally {
       _caught = outerCaught;
+      _caughtType = outerCaughtType;
     }
     return IrTryCatch(
       statement(node.body),
@@ -11924,6 +11941,9 @@ class KernelFrontend implements TypeWorld {
 
   /// The error the enclosing `catch` bound, for a `rethrow` to name.
   String? _caught;
+
+  /// The type the catch clause narrowed the caught value to, for `rethrow`.
+  IrType? _caughtType;
 
   /// Whether the function whose body is being lowered returns nothing.
   var _voidReturn = false;

@@ -699,3 +699,17 @@ inherited `Tween<T>.begin=` became `Option<Rc<dyn Object>>` where the
 `Vec<Rc<dyn Object>>`. It also fixed none of the ten `cannot find type`
 it was written for. Reverted; the `return this` rule beside it goes on to
 ws760 with the rest.
+
+## ws760 — four rules, and the scheduler's own bill (325 → 299)
+
+    ws759 325 stubbed (the reverted rule), 130 refusals
+    ws760 299 stubbed, 130 refusals, 64 crates   16 gone, 1 new
+
+The four: a trait's accessor converts the method it reaches, an operator
+forwarder binds its `Output` instead of mapping a `Result` it never had,
+`future_none::<T>` is spelled, and `Timer.periodic` hands its callback the
+timer as Dart's does. The one new stub is the prelude's own
+`run_until_idle`: the `due` vector still spelled the old 0-argument
+callback type. Fixed with the rethrow rules below.
+
+Under 300 for the first time; 433 -> 299 grouped, refusals 183 -> 130.

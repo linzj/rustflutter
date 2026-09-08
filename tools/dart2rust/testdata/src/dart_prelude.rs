@@ -7320,7 +7320,7 @@ pub fn run_until_idle() -> bool {
             }
         }
         let now = std::time::Instant::now();
-        let due: Vec<(i64, std::rc::Rc<dyn Fn() -> Result<(), DartError>>)> = {
+        let due: Vec<(i64, std::rc::Rc<dyn Fn(Timer) -> Result<(), DartError>>)> = {
             let scheduler = (**SCHEDULER).borrow();
             scheduler
                 .timers

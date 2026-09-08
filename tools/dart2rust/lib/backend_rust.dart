@@ -8350,7 +8350,15 @@ class RustBackend {
         !valueType.isFunction &&
         (library[valueType.name] != null ||
             _preludeClasses.contains(valueType.name))) {
-      return '(${_handleOf(value)} as std::rc::Rc<dyn Object>)';
+      // ..behind a handle where the class is spelled by value: an `Rc`
+      // around the struct, since only a handle unsizes to `dyn Object`.
+      final held = library[valueType.name];
+      final counted = held?.counted ?? false;
+      final abstract = library.isAbstract(valueType.name);
+      final handle = counted || abstract
+          ? _handleOf(value)
+          : 'dart_object(${_handleOf(value)})';
+      return '($handle as std::rc::Rc<dyn Object>)';
     }
     return thrown;
   }
