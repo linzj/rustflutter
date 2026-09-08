@@ -3355,6 +3355,20 @@ class RustBackend {
       final test = _isTest(inner, target, negated);
       return '(match ${expr(operand)}.clone() { Some(__v) => $test, None => $negated })';
     }
+    // `x is Future` where `x` is a `FutureOr<T>`: the prelude spells Dart's
+    // sum as an enum of its two cases, so the question is which case the
+    // value holds. Not the rule below: the blanket `runtime_type` of a
+    // `FutureOr` reports the sum itself (`FutureOr`), so asking it named
+    // no future and answered `false` for one (ws853).
+    final sum = operand.rustType;
+    if (sum != null &&
+        sum.name == 'FutureOr' &&
+        name == 'Future' &&
+        library[name] == null) {
+      final read = _optionRead(operand) ?? expr(operand);
+      final test = 'matches!(&$read, FutureOr::Future(_))';
+      return negated ? '!$test' : test;
+    }
     // A prelude *generic* class answers `is` by the runtime type it
     // reports: a `DartFuture<T>` is a `Future` whatever `T` is, and a
     // downcast would have to name the one instantiation it was boxed as.

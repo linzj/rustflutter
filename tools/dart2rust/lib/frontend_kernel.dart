@@ -13049,6 +13049,15 @@ class KernelFrontend implements TypeWorld {
       // synthetic classes, not something upstream wrote. Private classes do
       // not -- see the note where `_refusePrivate` used to be.
       if (cls.isAnonymousMixin) continue;
+      // A class that *is* the prelude's future (`_futureLike`): `_type`
+      // spells every value of it `Future<T>` and `_construct` makes one
+      // with `future_ready`, so nothing here ever holds the struct and
+      // nothing can call its members -- a `then` on one of its values is
+      // the prelude's. Emitting it translated members no call reaches:
+      // `SynchronousFuture.then`, refused for the `is Future<R>` its body
+      // asks, and `whenComplete`, which returns `this` where the prelude's
+      // future goes (ws853).
+      if (_futureLike(cls)) continue;
       // `lowerClass` guards each *member*, and its own header is not a member:
       // the superclass's type arguments and the mixin list are lowered before
       // any member is, and a refusal there had nowhere to go but out of the

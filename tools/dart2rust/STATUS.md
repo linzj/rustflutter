@@ -2374,3 +2374,64 @@ With the test exact, the promotion ws823 reverted with it comes back: after
 one-argument tear-off, a zero-argument one, and a closure of neither
 signature -- and sixteen existing function-value fixtures beside it,
 because this changed how every function reaches an `Object` slot.
+
+## ws852 -- a prelude generic answers `is` by the runtime type it reports
+
+    bin/run_chain.sh:  202 stubbed (was 201), 58 refusals (was 59), 64 crates
+
+`x is Future` cannot be a downcast: a `DartFuture<T>` is boxed as the one
+instantiation it happened to be, and the question is about all of them. The
+blanket `runtime_type` on the prelude's struct answers it -- `DartFuture` --
+and the isfuture fixture agreed with Dart on a handle holding a future, a
+string and an int.
+
+It bought one refusal and cost one stub, and the trade was worse than the
+numbers say. The member it unblocked, `SynchronousFuture.whenComplete`,
+asks `result is Future` of a `FutureOr<dynamic>`, and the prelude spells
+Dart's sum as an *enum* whose blanket `runtime_type` reports `FutureOr`:
+the test would have answered `false` for a future. It never got that far --
+the member stopped compiling on the next line, `return this`, a class
+returning itself where the prelude's future struct goes -- so what shipped
+was a stub and not a wrong answer. ws853 has both halves.
+
+## ws853 -- a class that *is* the prelude's future has no members of its own
+
+    bin/run_chain.sh:  201 stubbed (was 202), 57 refusals (was 58), 64 crates
+
+Since ws482 a class that implements `dart:async`'s `Future` and carries its
+value *is* the prelude's future here: `_type` spells every value of one
+`Future<T>`, and constructing it is `future_ready`. Both halves were in
+place; the conclusion was not. Nothing in the program ever holds the
+struct, so nothing can reach its members -- `f.then(..)` on such a value is
+`DartFuture::then`, the prelude's. The front end was translating them all
+the same, and the two that did not compile were being counted:
+`SynchronousFuture.then`, refused for the `is Future<R>` its body asks, and
+`whenComplete`, stubbed at ws852. They are not gaps. The class is skipped.
+
+The second half is the `is` that dead member asked, which is a real rule
+for the code that stays: `x is Future` where `x` is a `FutureOr<T>` asks
+which case the sum holds, and the enum answers exactly --
+`matches!(&x, FutureOr::Future(_))`. The runtime-type rule keeps the cases
+it is right for, a handle.
+
+The futureclass fixture is a `Now<T> implements Future<T>` in full --
+`then`, `catchError`, `whenComplete`, `asStream`, `timeout` -- asked three
+questions: whether a value of it is a `Future` (yes), whether a `FutureOr`
+holding a future is (yes), and whether one holding an `int` is (no). Both
+ends say `future future value`.
+
+What this does *not* cover is the other class in the tree that implements
+`Future`: `TickerFuture`, which is a `Future<void>` with no type parameter
+and no value to be constructed with, so `_futureLike` does not hold and it
+stays a class of its own. Five stubs wait on it -- three `await
+controller.forward()`, two tear-offs of `reverse` into a `void Function()`
+-- and clearing them means giving the prelude's future a delegate: a class
+that implements `Future` becomes one through the only thing the interface
+promises, its own `then`, called at the first poll rather than at the wrap
+(`SynchronousFuture.then` hands back another one of them, and starting
+eagerly would not bottom out).
+
+run853 says nothing moved: 708 walk lines, 0 type-only differences, 508 as
+printed, no `RenderErrorBox`, 200 frames drawn and 0 panicked. Removing a
+class the program never held is invisible from the outside, which is the
+point.
