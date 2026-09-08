@@ -286,6 +286,12 @@ pub trait DartDouble {
     fn round_to_double(&self) -> f64;
     fn floor_to_double(&self) -> f64;
     fn ceil_to_double(&self) -> f64;
+    /// `truncateToDouble()`: the integer part, still a double.
+    fn truncate_to_double(&self) -> f64;
+    /// `toStringAsPrecision(n)`: `n` significant digits, in Dart's
+    /// spelling -- exponential outside `1e-4 <= |x| < 1e21`, and the
+    /// decimal form with its trailing zeros kept otherwise.
+    fn to_string_as_precision(&self, digits: i64) -> String;
     fn hash_code(&self) -> i64;
 }
 
@@ -309,6 +315,34 @@ impl DartDouble for f64 {
     }
     fn to_string_as_fixed(&self, digits: i64) -> String {
         format!("{:.*}", digits.max(0) as usize, self)
+    }
+
+    fn truncate_to_double(&self) -> f64 {
+        f64::trunc(*self)
+    }
+
+    fn to_string_as_precision(&self, digits: i64) -> String {
+        let digits = digits.clamp(1, 21) as usize;
+        if !self.is_finite() {
+            return dart_double_str(*self);
+        }
+        if *self == 0.0 {
+            return format!("{:.*}", digits - 1, 0.0);
+        }
+        // Dart switches to exponential when the value's exponent falls
+        // outside the digits it was asked for, as ECMA-262's
+        // `toPrecision` does; the decimal form keeps its trailing zeros.
+        let exponent = self.abs().log10().floor() as i64;
+        if exponent < -6 || exponent >= digits as i64 {
+            let text = format!("{:.*e}", digits - 1, self);
+            // Rust writes `1.5e2`; Dart writes `1.5e+2`.
+            return match text.split_once('e') {
+                Some((m, e)) if !e.starts_with('-') => format!("{}e+{}", m, e),
+                _ => text,
+            };
+        }
+        let after = (digits as i64 - 1 - exponent).max(0) as usize;
+        format!("{:.*}", after, self)
     }
 
     fn is_na_n(&self) -> bool {
@@ -1795,6 +1829,31 @@ impl<T: Clone> Set<T> {    /// `LinkedHashSet.of(elements)` / `Set.of(elements)`
         self.items.clone()
     }
 
+    /// `toSet()` on a set: a copy, as `toList` is.
+    pub fn to_set(&self) -> Set<T> {
+        self.clone()
+    }
+
+    /// `firstWhere(test)` / `firstWhere(test, orElse: f)`, as a list's are:
+    /// an `Iterable` method the set answers over its own order.
+    pub fn first_where<F: Fn(T) -> Result<bool, DartError>>(&self, test: F) -> Result<T, DartError> {
+        for x in self.items.iter() {
+            if test(x.clone())? {
+                return Ok(x.clone());
+            }
+        }
+        panic!("uncaught Dart exception: Bad state: No element")
+    }
+
+    pub fn first_where_or<F: Fn(T) -> Result<bool, DartError>, G: Fn() -> Result<T, DartError>>(&self, test: F, or_else: G) -> Result<T, DartError> {
+        for x in self.items.iter() {
+            if test(x.clone())? {
+                return Ok(x.clone());
+            }
+        }
+        or_else()
+    }
+
     pub fn iter(&self) -> std::slice::Iter<'_, T> {
         self.items.iter()
     }
@@ -2116,6 +2175,12 @@ impl DateTime {
 
     pub fn is_before(&self, other: DateTime) -> bool {
         self.microseconds_since_epoch < other.microseconds_since_epoch
+    }
+
+    /// `isAtSameMomentAs(other)`: the same instant, whatever zone either
+    /// one says it is in -- which is what Dart compares.
+    pub fn is_at_same_moment_as(&self, other: DateTime) -> bool {
+        self.microseconds_since_epoch == other.microseconds_since_epoch
     }
 
     pub fn is_after(&self, other: DateTime) -> bool {
@@ -2511,6 +2576,37 @@ impl<K: Clone, V: Clone> Map<K, V> {    /// `Map.of(other)`: a copy with the sam
             f(key.clone(), value.clone())?;
         }
         Ok(())
+    }
+
+    /// `removeWhere(test)`: the entries that pass dropped, in order, in
+    /// place. The index is rebuilt rather than patched: the positions of
+    /// everything after a removal move.
+    pub fn remove_where(&mut self, test: impl Fn(K, V) -> Result<bool, DartError>) -> Result<(), DartError> {
+        let mut kept: Vec<(K, V)> = Vec::with_capacity(self.entries.len());
+        for (key, value) in std::mem::take(&mut self.entries) {
+            if !test(key.clone(), value.clone())? {
+                kept.push((key, value));
+            }
+        }
+        self.entries = kept;
+        *self.index.borrow_mut() = None;
+        Ok(())
+    }
+
+    /// `map(transform)`: a new map of the entries the transform returns,
+    /// in the order it returns them, a later key replacing an earlier one
+    /// (`Map.from` on the pairs). The prelude's `Map` is insertion
+    /// ordered, which is what used to make this untranslatable.
+    pub fn map_entries<K2: DartEq + Clone, V2: Clone>(
+        &self,
+        transform: impl Fn(K, V) -> Result<MapEntry<K2, V2>, DartError>,
+    ) -> Result<Map<K2, V2>, DartError> {
+        let mut out: Map<K2, V2> = Map { entries: Vec::new(), index: Default::default() };
+        for (key, value) in &self.entries {
+            let entry = transform(key.clone(), value.clone())?;
+            out.insert(entry.key, entry.value);
+        }
+        Ok(out)
     }
 
 }
@@ -3861,6 +3957,38 @@ pub trait DartList<T> {
     fn retain_where<F: Fn(T) -> Result<bool, DartError>>(&mut self, test: F) -> Result<(), DartError>;
     /// `insertAll(index, iterable)`: the items in order from `index` on.
     fn insert_all(&mut self, index: i64, items: Vec<T>);
+    /// `fold(initial, combine)`: the accumulator threaded through the
+    /// elements in order, the combine's failure carried out.
+    fn fold_dart<R: Clone, F: Fn(R, T) -> Result<R, DartError>>(&self, initial: R, combine: F) -> Result<R, DartError>;
+    /// `reduce(combine)`: `fold` seeded with the first element; Dart's
+    /// `StateError` for an empty iterable.
+    fn reduce_dart<F: Fn(T, T) -> Result<T, DartError>>(&self, combine: F) -> Result<T, DartError>;
+    /// `removeRange(start, end)`: that range dropped, in place.
+    fn remove_range(&mut self, start: i64, end: i64);
+    /// `fillRange(start, end, [fill])`: every slot of the range set to one
+    /// value. Dart declares `fill` as `E?` and the front end fills the
+    /// slot, so it arrives as an `Option`; Dart itself throws for a null
+    /// fill into a `List<E>`, and so does this.
+    fn fill_range(&mut self, start: i64, end: i64, fill: Option<T>);
+    /// `indexWhere(test, [start])`: the first index at or after `start`
+    /// whose element passes, -1 when none does.
+    fn index_where<F: Fn(T) -> Result<bool, DartError>>(&self, test: F, start: i64) -> Result<i64, DartError>;
+    /// `lastWhere(test)` / `lastWhere(test, orElse: f)`, as `firstWhere` is.
+    fn last_where<F: Fn(T) -> Result<bool, DartError>>(&self, test: F) -> Result<T, DartError>;
+    fn last_where_or<F: Fn(T) -> Result<bool, DartError>, G: Fn() -> Result<T, DartError>>(&self, test: F, or_else: G) -> Result<T, DartError>;
+    /// `followedBy(other)`: this iterable's elements then the other's.
+    fn followed_by(&self, other: Vec<T>) -> Vec<T>;
+    /// `skipWhile(test)` / `takeWhile(test)`: lazy upstream, collected here
+    /// as `skip`/`take` are.
+    fn skip_while_dart<F: Fn(T) -> Result<bool, DartError>>(&self, test: F) -> Result<Vec<T>, DartError>;
+    fn take_while_dart<F: Fn(T) -> Result<bool, DartError>>(&self, test: F) -> Result<Vec<T>, DartError>;
+    /// `asMap()`: index -> element, in order. Dart's is a lazy view; a
+    /// `Map` here, which keeps that order.
+    fn as_map(&self) -> Map<i64, T>;
+    /// `toList()` on something that is a list already -- an `Iterable`
+    /// getter whose Rust type is the `Vec` itself (`SemanticsData.
+    /// transform`, `String.runes`). A copy, as Dart's is.
+    fn to_list(&self) -> Vec<T>;
     /// `dart:collection`'s `IterableExtensions`: `firstOrNull`,
     /// `lastOrNull`, `singleOrNull`, `elementAtOrNull`.
     /// `single`: the one element; Dart's `StateError` for none or more.
@@ -4016,6 +4144,110 @@ impl<T: Clone> DartList<T> for Vec<T> {
     }
     fn take_dart(&self, n: i64) -> Vec<T> {
         self.iter().take(n.max(0) as usize).cloned().collect()
+    }
+
+    fn fold_dart<R: Clone, F: Fn(R, T) -> Result<R, DartError>>(&self, initial: R, combine: F) -> Result<R, DartError> {
+        let mut out = initial;
+        for x in self.iter() {
+            out = combine(out, x.clone())?;
+        }
+        Ok(out)
+    }
+
+    fn reduce_dart<F: Fn(T, T) -> Result<T, DartError>>(&self, combine: F) -> Result<T, DartError> {
+        let mut items = self.iter();
+        let mut out = match items.next() {
+            Some(first) => first.clone(),
+            None => panic!("uncaught Dart exception: Bad state: No element"),
+        };
+        for x in items {
+            out = combine(out, x.clone())?;
+        }
+        Ok(out)
+    }
+
+    fn remove_range(&mut self, start: i64, end: i64) {
+        let (start, end) = (start.max(0) as usize, end.max(0) as usize);
+        let end = end.min(self.len());
+        if start < end {
+            self.drain(start..end);
+        }
+    }
+
+    fn fill_range(&mut self, start: i64, end: i64, fill: Option<T>) {
+        let fill = fill.unwrap_or_else(|| {
+            panic!("uncaught Dart exception: type 'Null' is not a subtype of the list's element type")
+        });
+        let (start, end) = (start.max(0) as usize, end.max(0) as usize);
+        let end = end.min(self.len());
+        for i in start..end {
+            self[i] = fill.clone();
+        }
+    }
+
+    fn index_where<F: Fn(T) -> Result<bool, DartError>>(&self, test: F, start: i64) -> Result<i64, DartError> {
+        for i in (start.max(0) as usize)..self.len() {
+            if test(self[i].clone())? {
+                return Ok(i as i64);
+            }
+        }
+        Ok(-1)
+    }
+
+    fn last_where<F: Fn(T) -> Result<bool, DartError>>(&self, test: F) -> Result<T, DartError> {
+        for x in self.iter().rev() {
+            if test(x.clone())? {
+                return Ok(x.clone());
+            }
+        }
+        panic!("uncaught Dart exception: Bad state: No element")
+    }
+
+    fn last_where_or<F: Fn(T) -> Result<bool, DartError>, G: Fn() -> Result<T, DartError>>(&self, test: F, or_else: G) -> Result<T, DartError> {
+        for x in self.iter().rev() {
+            if test(x.clone())? {
+                return Ok(x.clone());
+            }
+        }
+        or_else()
+    }
+
+    fn followed_by(&self, other: Vec<T>) -> Vec<T> {
+        let mut out = self.clone();
+        out.extend(other);
+        out
+    }
+
+    fn skip_while_dart<F: Fn(T) -> Result<bool, DartError>>(&self, test: F) -> Result<Vec<T>, DartError> {
+        let mut out: Vec<T> = Vec::new();
+        let mut skipping = true;
+        for x in self.iter() {
+            if skipping && test(x.clone())? {
+                continue;
+            }
+            skipping = false;
+            out.push(x.clone());
+        }
+        Ok(out)
+    }
+
+    fn take_while_dart<F: Fn(T) -> Result<bool, DartError>>(&self, test: F) -> Result<Vec<T>, DartError> {
+        let mut out: Vec<T> = Vec::new();
+        for x in self.iter() {
+            if !test(x.clone())? {
+                break;
+            }
+            out.push(x.clone());
+        }
+        Ok(out)
+    }
+
+    fn as_map(&self) -> Map<i64, T> {
+        Map { entries: self.iter().cloned().enumerate().map(|(i, v)| (i as i64, v)).collect(), index: Default::default() }
+    }
+
+    fn to_list(&self) -> Vec<T> {
+        self.clone()
     }
 
 }
@@ -4249,6 +4481,52 @@ impl Pattern {
     }
     pub fn of_regexp(regexp: RegExp) -> Pattern {
         Pattern { text: None, regexp: Some(regexp) }
+    }
+
+    /// `allMatches(input, [start])`: the regexp's matches where the
+    /// pattern is one, and the literal's non-overlapping occurrences
+    /// otherwise -- which is what `String` as a `Pattern` means
+    /// (`FilteringTextInputFormatter.formatEditUpdate`, ws810).
+    pub fn all_matches(&self, input: String, start: i64) -> Vec<RegExpMatch> {
+        if let Some(regexp) = &self.regexp {
+            return regexp.all_matches(input, start);
+        }
+        let Some(text) = &self.text else { return Vec::new() };
+        let chars: Vec<char> = input.chars().collect();
+        let needle: Vec<char> = text.chars().collect();
+        let mut out = Vec::new();
+        let mut at = start.max(0) as usize;
+        // An empty literal matches at every position, including the end,
+        // as Dart's does.
+        if needle.is_empty() {
+            while at <= chars.len() {
+                out.push(RegExpMatch {
+                    input: input.clone(),
+                    start: at as i64,
+                    end: at as i64,
+                    groups: vec![Some((at as i64, at as i64))],
+                    names: Vec::new(),
+                });
+                at += 1;
+            }
+            return out;
+        }
+        while at + needle.len() <= chars.len() {
+            if chars[at..at + needle.len()] == needle[..] {
+                let end = at + needle.len();
+                out.push(RegExpMatch {
+                    input: input.clone(),
+                    start: at as i64,
+                    end: end as i64,
+                    groups: vec![Some((at as i64, end as i64))],
+                    names: Vec::new(),
+                });
+                at = end;
+            } else {
+                at += 1;
+            }
+        }
+        out
     }
 }
 
@@ -5571,6 +5849,13 @@ pub trait DartString {
     fn pad_left(&self, width: i64, padding: String) -> String;
     fn pad_right(&self, width: i64, padding: String) -> String;
     fn code_units(&self) -> Vec<i64>;
+    /// `runes`: the Unicode code points, where `codeUnits` gives UTF-16.
+    /// Dart's is a lazy `Runes`; a `Vec<i64>` here, as every other
+    /// iterable getter is.
+    fn runes(&self) -> Vec<i64>;
+    /// `replaceAllMapped(from, replace)`: every match replaced by what the
+    /// callback returns for it, the callback's failure carried out.
+    fn replace_all_mapped(&self, from: RegExp, replace: std::rc::Rc<dyn Fn(RegExpMatch) -> Result<String, DartError>>) -> Result<String, DartError>;
     /// `replaceRange(start, end, replacement)`: a new string.
     fn replace_range_dart(&self, start: i64, end: Option<i64>, replacement: String) -> String;
     /// `startsWith(pattern, index)`.
@@ -5697,6 +5982,28 @@ impl DartString for String {
 
     fn code_units(&self) -> Vec<i64> {
         self.encode_utf16().map(|u| u as i64).collect()
+    }
+
+    fn runes(&self) -> Vec<i64> {
+        self.chars().map(|c| c as i64).collect()
+    }
+
+    fn replace_all_mapped(&self, from: RegExp, replace: std::rc::Rc<dyn Fn(RegExpMatch) -> Result<String, DartError>>) -> Result<String, DartError> {
+        // Over the *characters*, as `RegExpMatch` counts its spans.
+        let chars: Vec<char> = self.chars().collect();
+        let mut out = String::new();
+        let mut at = 0usize;
+        for m in from.all_matches(self.clone(), 0) {
+            let (start, end) = (m.start.max(0) as usize, m.end.max(0) as usize);
+            if start < at {
+                continue;
+            }
+            out.extend(chars[at..start].iter());
+            out.push_str(&replace(m)?);
+            at = end.max(start);
+        }
+        out.extend(chars[at.min(chars.len())..].iter());
+        Ok(out)
     }
 
     fn hash_code(&self) -> i64 {

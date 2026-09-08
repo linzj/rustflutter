@@ -4094,6 +4094,17 @@ class RustBackend {
     'sort_by_dart',
     'first_where',
     'first_where_or',
+    'last_where',
+    'last_where_or',
+    // `fold`/`reduce`/`indexWhere`/`skipWhile`/`takeWhile`: the combine's
+    // or the test's failure comes out, as `firstWhere`'s does (ws810).
+    'fold_dart',
+    'reduce_dart',
+    'index_where',
+    'skip_while_dart',
+    'take_while_dart',
+    // `replaceAllMapped`: the callback's failure comes out (ws811).
+    'replace_all_mapped',
     // `removeWhere`/`retainWhere`: the test's failure comes out.
     'remove_where',
     'retain_where',
@@ -4104,6 +4115,34 @@ class RustBackend {
     'run_unary_guarded',
     'run_unary',
   };
+
+  /// The prelude methods whose callback parameter is `impl Fn`: it is
+  /// called and dropped, never kept. The rest (`remove_where`, `update`,
+  /// `put_if_absent`) declare an `Rc<dyn Fn>` and take the handle.
+  static const _preludeLends = {
+    'first_where',
+    'first_where_or',
+    'last_where',
+    'last_where_or',
+    'index_where',
+    'fold_dart',
+    'reduce_dart',
+    'skip_while_dart',
+    'take_while_dart',
+  };
+
+  /// A function value at one of those slots: the function behind an `Rc`
+  /// `coerce` added, or a loan of the handle. A closure is already one.
+  static IrExpr _lentFunction(IrExpr a) {
+    final t = a.rustType;
+    if (t == null || !t.isFunction || a is IrClosure) return a;
+    // `Rc::new(f)` -> `f`: a function item is an `impl Fn` already.
+    if (a is IrCall && a.name == '!rc' && a.args.isEmpty && a.target != null) {
+      return a.target!;
+    }
+    // ..and a handle is lent: `&dyn Fn(..)` implements `Fn(..)`.
+    return IrCall(a, '!fn_ref', const [])..rustType = t;
+  }
 
   /// ..and its static functions.
   static const _preludeFailingStatics = {'generate', '_invoke1_with_return'};
@@ -4655,7 +4694,25 @@ class RustBackend {
     // A translated callee returns `Result`: `?` inside a function, and
     // `.unwrap()` where there is none around (a static's initialiser).
     // An awaited call is not `?`ed here but at the `.await`.
-    final failing = fails || (_resultModel && _preludeFailing.contains(name));
+    // By the *Rust* name as well as the Dart one: a prelude method the
+    // front end maps by table arrives spelled `first_where`, and one the
+    // backend only snake-cases arrives spelled `replaceAllMapped` -- and
+    // the second kind never matched (`MediaType.toString`, ws811).
+    final failing =
+        fails ||
+        (_resultModel &&
+            (_preludeFailing.contains(name) ||
+                _preludeFailing.contains(_identifier(name))));
+    // The prelude's callback slots that only *call* what they are given
+    // are `impl Fn`, and an `Rc<dyn Fn>` is not one. A closure written at
+    // the call site is already the closure; a function *value* -- a
+    // tear-off `coerce` put behind an `Rc`, or a function-typed local or
+    // parameter, which is always a handle here -- is the function itself
+    // or a loan of it (`_history.lastWhere(_RouteEntry.isPresentPredicate)`
+    // and `_History.indexWhere(test)`, 2 at ws811).
+    if (_preludeLends.contains(_identifier(name))) {
+      args = [for (final a in args) _lentFunction(a)];
+    }
     // A call reaching an `async fn` *inherently* is its `DartFuture`, no
     // `?`; one reaching it through a trait (`qualifier`, `asTrait` below)
     // gets the trait's `Result<DartFuture<T>, E>` and is unwrapped first,

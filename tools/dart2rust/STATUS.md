@@ -1575,3 +1575,21 @@ The mapret fixture, in both its expression-bodied and block-bodied forms.
       `UserAccountsDrawerHeader.build`, `FlutterErrorDetails.new`,
       `_SpellCheckSuggestionsToolbar._buildToolbarButtons`
     no new stubs
+
+## ws811 -- the `List` and `Map` methods the prelude never had
+
+The refusal census said the largest single group was a table gap: 32 of
+the 130 refusals were a `List` or `Map` method with no prelude name. This
+round wrote them: `fold`, `reduce`, `removeRange`, `fillRange`,
+`indexWhere`, `followedBy`, `skipWhile`, `takeWhile`, `asMap`, `toList`
+(on something already a `Vec`) in `DartList`, `removeWhere` on `Map`, and
+`lastWhere`/`lastWhere(orElse:)` through the same two-method shape
+`firstWhere` already had. The listgaps fixture runs all twelve and agrees
+with Dart.
+
+    bin/run_chain.sh:  219 stubbed (was 211), 102 refusals (was 130), 64 crates
+
+Refusals down 28; stubbed up 8, all of them members that now translate
+and then fail to compile for reasons of their own -- the cost of turning
+a refusal into a compile error, and the eight are the next census. Net
+unfinished members: 341 -> 321.

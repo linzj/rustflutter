@@ -6520,7 +6520,10 @@ class KernelFrontend implements TypeWorld {
             ? IrIterChain(source.source, [...source.steps, (step, args.single)])
             : IrIterChain(source, [(step, args.single)]);
       }
-      if (name == 'firstWhere' && args.length == 2) {
+      // `lastWhere` is the same shape read from the other end, and the
+      // same two prelude methods (`NavigatorState.pop`, ws810).
+      if ((name == 'firstWhere' || name == 'lastWhere') && args.length == 2) {
+        final where = name == 'firstWhere' ? 'first_where' : 'last_where';
         // `firstWhere(test)` throws when nothing matches; with `orElse` it
         // calls that instead. The omitted `orElse` arrives as `None`, and a
         // generic `impl Fn` parameter cannot take a `None`, so the two are
@@ -6537,7 +6540,7 @@ class KernelFrontend implements TypeWorld {
         given = _unboxed(given);
         return IrCall(
           _listReceiver(node.receiver, name),
-          omitted ? 'first_where' : 'first_where_or',
+          omitted ? where : '${where}_or',
           omitted ? [args[0]] : [args[0], given],
         );
       }

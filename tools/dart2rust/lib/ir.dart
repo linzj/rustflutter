@@ -1080,6 +1080,9 @@ const mapMethodNames = <String, String>{
   'lastKey': 'last_key',
   'lastKeyBefore': 'last_key_before',
   'firstKeyAfter': 'first_key_after',
+  // `removeWhere(test)`: the entries that pass dropped, in place, as a
+  // list's is (`ThemeData`, `_RestorationInformation`; 2 at ws810).
+  'removeWhere': 'remove_where',
 };
 
 /// `Map` members that depend on iteration order and are still not translated.
@@ -1155,6 +1158,25 @@ const listMethodNames = <String, String>{
   // Dart's `cast` re-types a list and copies nothing. Rust's types are
   // already what they are, so it is the receiver.
   'cast': '!cast',
+  // `fold(initial, combine)` / `reduce(combine)`, in the prelude's
+  // `DartList`: the accumulator threaded through, the combine's failure
+  // carried out (13 refusals at ws810).
+  'fold': 'fold_dart',
+  'reduce': 'reduce_dart',
+  // `removeRange(start, end)` / `fillRange(start, end, fill)`: in place.
+  'removeRange': 'remove_range',
+  'fillRange': 'fill_range',
+  // `indexWhere(test, [start])`: -1 when none matches, as `indexOf` is.
+  'indexWhere': 'index_where',
+  // `followedBy(other)`: both iterables in order, a `Vec` here as
+  // `skip`/`take` are.
+  'followedBy': 'followed_by',
+  // `skipWhile(test)` / `takeWhile(test)`, collected.
+  'skipWhile': 'skip_while_dart',
+  'takeWhile': 'take_while_dart',
+  // `asMap()`: index -> element. Dart's is a lazy view; the prelude's
+  // `Map` keeps the order it is filled in.
+  'asMap': 'as_map',
 };
 
 /// The steps of an iterator chain, in Rust's spelling.
