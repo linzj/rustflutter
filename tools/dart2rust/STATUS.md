@@ -809,3 +809,15 @@ not -- the struct is named `SettingsListItem<<T as DartNullable>::Or>` and
 its fields keep the projection. Narrowed to the turbofish case; the
 `Map::from(.. from_option(k) ..)` the state built over its widget's
 `optionsMap` is gone.
+
+## ws764 — the narrowing paid for itself (298 → 292)
+
+    ws763 298 stubbed, 130 refusals, 64 crates
+    ws764 292 stubbed, 130 refusals, 64 crates   -6, 0 new
+
+`cannot find type T` went from ten to six: the instantiation a generic
+class's constructor carries reaches the closure written for its
+function-typed parameter, and four gallery `build`s came back.
+
+Grouped, from ws747: 433 -> 292 stubbed, 183 -> 130 refusals, 64 crates
+throughout.
