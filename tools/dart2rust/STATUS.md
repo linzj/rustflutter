@@ -2435,3 +2435,42 @@ run853 says nothing moved: 708 walk lines, 0 type-only differences, 508 as
 printed, no `RenderErrorBox`, 200 frames drawn and 0 panicked. Removing a
 class the program never held is invisible from the outside, which is the
 point.
+
+## ws854 -- a tear-off adapter returns into its slot, like any other value
+
+    bin/run_chain.sh:  201 stubbed (unchanged), 57 refusals (unchanged), 64 crates
+
+`Timer(touchDelay, _controller.reverse)`: the method takes a named
+`{double? from}` and the slot takes none, so the front end writes an
+adapter -- a closure of the slot's shape calling the method with the
+default. It was declared to return what the *slot* returns and given a
+body returning what the *method* returns, with nothing in between, and
+`AnimationController.reverse` hands back a `TickerFuture` where the
+`void Function()` has `()`. Two members of `RawTooltip` were stubbed on it.
+
+Everything needed was already there: `coerce` drops a value into a `void`
+slot (ws538), and the adapter is the one place that was not asking. It asks
+now, and a return the rule cannot spell leaves the adapter as it was.
+
+The numbers did not move, and the error did: both members now fail on the
+*next* thing, a lifetime. The tear-off is made inside `show()`, a local
+function that already holds `this` as `__me`, and the handle the adapter
+takes (`__me.dart_self_ref().get()`) borrows that capture inside an
+`Rc<dyn Fn>` the `Timer` keeps. That is the round after this one. Kept
+rather than reverted because the fixture, not the chain, is the evidence
+here: voidtearoff4 does not compile without it.
+
+The voidtearoff4 fixture is that call in miniature -- a method with a named
+optional returning a class, torn off into the prelude's `Timer` -- and it
+fails to compile at HEAD and agrees with Dart with the rule. The twelve
+tear-off fixtures beside it (tearopt, tearnamed, teardef, instear, ctortear,
+supertear, tearcol, wheretear, voidslot, fnadapt, voidtearoff) still agree.
+
+One of them does not, and did not before this round either: **erasedtear
+loops forever**, at HEAD and here alike. Its `childAfter` asks
+`children.indexOf(child)` on a `List<Sliver>` whose elements are boxed
+values, `indexOf` does not find the child it was just handed, and the
+`while (child != null)` walk never advances past the first. That is the
+identity-on-a-value-class group (15 refusals, counted at ws849) showing up
+as a *run* rather than a refusal, and it is the sharpest evidence yet for
+what that group costs. Recorded, not fixed.

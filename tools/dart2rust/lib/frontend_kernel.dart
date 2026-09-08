@@ -9876,11 +9876,24 @@ class KernelFrontend implements TypeWorld {
         final init = declared?.initializer;
         args.add(init == null ? _nullLiteral() : expression(init));
       }
+      // What the adapter hands back goes into the slot's return by the
+      // coercion rule, as any value entering a slot does: the call inside
+      // returns what the *method* returns, and the adapter is declared to
+      // return what the *slot* does. Returned raw, a `TickerFuture` sat in
+      // the `Ok(..)` of a `void Function()` (`Timer(delay, _controller
+      // .reverse)`, 2 at ws854).
+      IrExpr returned = IrCallValue(lowered, args)
+        ..rustType = _type(given.returnType);
+      try {
+        returned = coerce(returned, _type(param.returnType));
+      } on Unsupported {
+        // Nothing to say about the two types: as it was.
+      }
       final adapter =
           IrCall(
               IrClosure(
                 params,
-                IrReturn(IrCallValue(lowered, args)),
+                IrReturn(returned),
                 _type(param.returnType),
                 // An instance tear-off holds its receiver: the adapter
                 // around it has to hold it too, or it borrows the local
