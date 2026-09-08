@@ -2041,3 +2041,41 @@ Refusals moved 71 -> 70 rather than 68: both multi-clause `try`s translate
 now, and one of the bodies they let through (`IOClient.send`) reaches an
 `is` against a class this compiler does not have, which is the group next
 door.
+
+## ws828 census -- what identity would cost, counted rather than guessed
+
+Two groups of refusals are the same question -- `identical` on something
+that is not a reference (5), and `super.==` / `super.hashCode` into
+`Object` (2 classes, whose refusal drags 6 more `super.==` calls into
+bases whose own `==` was refused for the same reason). Before deciding
+whether to change the model, both halves were counted over
+`app_aot_sig.dill`:
+
+    identical()/identityHashCode() operand classes:  239
+      215 Object, 40 Zone, 26 Endian, 25 List, 11 Color, 10 Uint32List,
+      then a long tail: every ThemeData family member, TextStyle,
+      BorderSide, RenderObject, SemanticsNode, MenuStyle, ButtonStyle, ..
+    classes whose member calls `super` into `Object`:  2
+      DiagnosticsNode, Widget
+
+The faithful fix for a value class is an identity *token*: a hidden field
+assigned at construction and carried through `clone`, because a clone in
+this model is not a new Dart object -- it is the same object being passed
+around, which is the model's whole premise. That is exactly Dart's
+identity, and it is why the address of a copy is not.
+
+It is also 239 classes. Every one of them would need the field, its
+constructors would need to assign it, its `const` instances would need the
+canonical value Dart's const canonicalisation implies, and the derived
+`PartialEq`/`Hash` would have to be replaced by hand-written impls that
+skip it -- on the whole `ThemeData` family, which is where const instances
+and structural equality both live. For eleven refusals. Not this stretch,
+and not without its own run of fixtures.
+
+The narrow half was tried: `super.==` into `Object` routed through the
+`_identical` machinery, so that it answers where that machinery can and
+refuses where it cannot. It refuses -- at the argument, which arrives as a
+value (`IrCall (Object)`) rather than a reference. The two halves are one
+wall, and the rule is reverted rather than left as a path that only ever
+says no. `super.hashCode` did translate on its own, and took a call
+resolution with it (`hash_code()?` on an `i64`), so it goes back too.

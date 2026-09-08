@@ -2864,9 +2864,11 @@ class RustBackend {
     // exactly this for a class that overrides nothing.
     //
     // Only `toString`. `super.hashCode` and `super.==` are identity on the
-    // object, which is a question about how objects are held -- the same
-    // ownership question as the closures -- and they are two calls between
-    // them, so they stay refused rather than guessed at.
+    // object, and identity is what a copied value class does not have --
+    // routing them through `_identical` at ws828 refused them again, at the
+    // argument (`IrCall (Object)`, not a reference). They stay refused, and
+    // the census that says why is in STATUS: 239 classes have their
+    // identity observed and only two reach `super` into `Object`.
     if (base == 'Object' && name == 'toString' && args.isEmpty) {
       return 'format!("Instance of \'{}\'", "${cls.name}")';
     }
