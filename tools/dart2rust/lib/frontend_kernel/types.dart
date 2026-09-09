@@ -116,6 +116,15 @@ augment class KernelFrontend {
         ),
       );
     }
+    // A *promoted* type parameter. Kernel writes `T% & Object` where an
+    // `if (x != null)` proved a `T?` non-null, and promotion changes what
+    // is *known*, not what is held: the spelling is the parameter's own,
+    // non-nullable. Spelling the promoted-to side instead would say
+    // `Object` where the value is a `T` (`UndoHistoryState._update`, one
+    // refusal at ws948).
+    if (type is IntersectionType) {
+      return _type(type.left.withDeclaredNullability(Nullability.nonNullable));
+    }
     if (type is VoidType) return const IrType('void');
     // The bottom type. Thirty in the gallery's dill: `noSuchMethod`s declared
     // `Never`, and a few `Foo<Never>`. The backend spells it two ways.
