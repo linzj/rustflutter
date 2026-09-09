@@ -394,7 +394,8 @@ augment class RustBackend {
               _preludeClasses.contains(type) =>
         '<$type as DartCoreAs>::dart_core_as(&${_optionRead(target) ?? expr(target)}).unwrap()',
       IrDowncast(:final target, :final type, :final arguments) =>
-        '${_asAny(target)}.downcast_ref::<${_downcastNames[type] ?? type}${arguments.isEmpty ? '' : '<${arguments.map(this.type).join(', ')}>'}>().unwrap()',
+        '${_asAny(target)}.downcast_ref::<${_downcastNames[type] ?? type}'
+            '${_downcastArguments(type, arguments)}>().unwrap()',
       IrDynamicDispatch(:final receiver, :final arms) => _dispatch(
         receiver,
         arms,

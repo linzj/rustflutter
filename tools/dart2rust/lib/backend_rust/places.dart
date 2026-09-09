@@ -273,6 +273,24 @@ augment class RustBackend {
     return null;
   }
 
+  /// The `<..>` of a downcast target. A collection written *raw* -- Dart's
+  /// bare `List` is a `List<dynamic>` -- reaches here with no arguments at
+  /// all, and `downcast_ref::<Vec>()` is no Rust type ("missing generics
+  /// for struct `Vec`", E0107; `PredictiveBackEvent.fromMap` casts a
+  /// platform message's field `as List?`, ws961). What a raw collection
+  /// holds is `dynamic`, so that is what is spelled.
+  static const _collectionArity = {'List': 1, 'Set': 1, 'Map': 2};
+
+  String _downcastArguments(String name, List<IrType> arguments) {
+    if (arguments.isNotEmpty) {
+      return '<${arguments.map(type).join(', ')}>';
+    }
+    final arity = _collectionArity[name];
+    if (arity == null) return '';
+    final spelled = type(const IrType('dynamic'));
+    return '<${List.filled(arity, spelled).join(', ')}>';
+  }
+
   String _asAny(IrExpr e) {
     final read = _optionRead(e);
     if (read != null) {
