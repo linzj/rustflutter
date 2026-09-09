@@ -540,14 +540,38 @@ class _FlowScan extends RecursiveVisitor {
 
   void _flow(Expression value, DartType slot) {
     final have = _typeOf(value);
+    final traced = _traceFlow;
+    if (traced != null &&
+        (traced.startsWith('@')
+            ? _where().contains(traced.substring(1))
+            : '$slot'.contains(traced))) {
+      // Printed *before* the null check: a slot this scan looked at whose
+      // value has no static type is silent otherwise, and "not visited"
+      // and "no type for the value" read the same from `_compare` alone.
+      stderr.writeln(
+        'TRACE_FLOW_SLOT ${_where()}: ${have ?? "<no type>"} -> $slot',
+      );
+    }
     if (have == null) return;
     _compare(have, slot);
   }
 
   /// `have` reaching a slot of `slot`: every parameter whose arguments
   /// differ between the two, at any depth, is used covariantly.
+  /// `DART2RUST_TRACE_FLOW=<ClassName>`: every value-into-slot this scan
+  /// looks at where either side names that class, whether or not it marks
+  /// anything. `TRACE_COVARIANT_SITE` only says what *was* marked, which
+  /// leaves "why was this one not" with nothing to read.
+  static final String? _traceFlow =
+      Platform.environment['DART2RUST_TRACE_FLOW'];
+
   void _compare(DartType have, DartType slot, [int depth = 0]) {
     if (depth > 6) return;
+    final traced = _traceFlow;
+    if (traced != null &&
+        ('$have'.contains(traced) || '$slot'.contains(traced))) {
+      stderr.writeln('TRACE_FLOW ${_where()}: $have -> $slot (depth $depth)');
+    }
     if (have is FutureOrType) return _compare(have.typeArgument, slot, depth);
     if (slot is FutureOrType) return _compare(have, slot.typeArgument, depth);
     if (have is InterfaceType && slot is InterfaceType) {

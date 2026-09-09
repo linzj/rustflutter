@@ -329,7 +329,14 @@ Future<void> main(List<String> args) async {
   ];
   final aliasMutated = aliasMutatedClasses(aliasScanned);
   // The type parameters used covariantly (`covariance.dart`): erased.
-  final covariant = covariantParameters(inPackage, typeEnvironment);
+  // ..over `aliasScanned`, not `inPackage`: a deduplicated mixin
+  // application's body is where a hollow mixin's methods live, and it is in
+  // `dart:mixin_deduplication`, whose uri no prefix matches. The alias
+  // census learned this at run672 and this one did not --
+  // `SchedulerBinding.scheduleTask` adds a `_TaskEntry<T>` to a
+  // `PriorityQueue<_TaskEntry<dynamic>>` and the scan never saw the member
+  // at all (`DART2RUST_TRACE_FLOW=@scheduleTask` printed nothing, ws953).
+  final covariant = covariantParameters(aliasScanned, typeEnvironment);
   for (final library in inPackage) {
     final frontend = KernelFrontend(
       library,
