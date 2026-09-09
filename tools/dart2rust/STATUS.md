@@ -429,6 +429,7 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 | ws886 | 把分析器重新变成门:前端迁到 analyzer 14.3(47→0 错),`check.sh` 摘掉 `|| true` 并给警告数加上限,双前端预言机重新点着 | 33 个 fixture 两侧全能生成(此前分析器那侧一个都不能——driver 自己编译不过);**生成的 Rust 一字未动**(926 模块 md5 e69150fe,拒绝仍 49);check.sh 干净退出,87 checks OK |
 | ws887 | 复审抓到 ws886 过度宣称:重生成的黄金按错误数收下,实为退步——全部退回,并给「黄金怎么验收」装尺子(`regen.py` 先问 `can_propagate()`);顺手清掉恒真式死码 `_computeFailing`/`_errorIn`/`_traitDeclares` | **生成的 Rust 仍一字未动**(926 模块 md5 e69150fe);analyze 86 条不变;check.sh 干净退出 |
 | ws888 | 复审指出 ws887 的门是字面绊线:`'fails:' not in ...` 被一行 TODO 注释就能打开。换成行为探针——真跑这一轮要用的每个 driver,输出里那个必失败的调用不带 `?` 就拒绝;`--anyway` 从 `testdata/src` 改写进 gitignore 的 `.agree/anyway/` | 探针 21 秒,两个 driver 都当场重现出 `Ok((self.checked(value) * 2.0))`;补上 TODO 注释后旧门放行、新门照拒;`git status` 零改动;check.sh 干净退出,86 条 / 87 checks |
+| ws889 | 两个 fixture driver 现在都发得出 `?`:`_fails` 开头那句 `if (throws == null)` 删掉——它收着一个 `ThrowsAnalysis` 却一行答案都不读,是穿着分析外衣的开关;分析器前端补上 `_callFails`(10 个调用点),两侧共用 `ir.dart` 的 `translatedLibrary`。**顺带撞见这一轮最大的一件事**:删掉那个「什么都不决定」的分析,gallery 输出动了 32,653 行——真正起作用的是它把每个 body 都读了一遍;dill 改成显式 `BinaryBuilder(disableLazyReading: true)` | gallery 仍是 e69150fe(926 模块 / 49 拒绝),eager 读 60 秒 / 1.29 GB;预言机 exit 0,曾经新分叉的 7 个(cascade/failure/freefn/ifnull/mutation/nullcheck/trycatch)重新一致,BEHIND 仍是 16;analyze 86 -> 80,check.sh 上限同步下调 |
 
 ## 下一步(2026-09-05 重铺)
 
@@ -725,6 +726,12 @@ ws601:  722 stub / 252 拒绝 / 63 crate 全可达(138 分区,延迟库合并后
      还老。`_resultModel` 却是 `true`,于是每个方法都返回 `Result` 而
      一个 `?` 都不生成——`Ok((self.doubled() + 1.0))`,拿 `Result<f64>`
      去加浮点。**这不是陈旧,是按构造就编不过。**
+     **ws889 修了,而且是反着修的**:该删的不是 driver 的沉默,是 `_fails`
+     开头那句 `if (throws == null)`。统一模型下「会不会 throw」不决定任何事
+     ——每个被翻译的函数都返回 `Result`——所以那个参数里没有信息,只有一个
+     开关。复审两轮(它一次,我一次)都读成「driver 必须建那个分析」,不必。
+     分析器前端另有 `_callFails`,10 个调用点,与 Kernel 侧共用
+     `ir.dart:translatedLibrary` 这半个决定。
   3. 那份重生成的黄金里还有两个形状:const 上下文里的运行时 downcast
      (`constinstance`,18 个 E0015/E0658)、trait 方法里的裸 `Vec<Object>`
      (`generic`,E0782)。**去 gallery 输出里搜过了,两种形状都是 0 次**
@@ -747,6 +754,22 @@ ws601:  722 stub / 252 拒绝 / 63 crate 全可达(138 分区,延迟库合并后
   矛盾重新焊进去。重生成那一轮的验收是 **crate 编过、146 个 test 跑绿**,
   不是错误数降低:ws886 那次错误数正是降的(139→79),一个「只许降」的
   棘轮会照样收下它。
+- **dill 的 body 什么时候读,决定这个编译器输出什么(ws889 发现,机制未明)**。
+  `loadComponentFromBinary` 把每个函数体留在 `lazyBuilder` 后面,第一个读
+  `FunctionNode.body` 的人触发它。这本该是不可见的,它不是:同一个 dill、
+  同一份源码,只差「lowering 之前有没有把 body 全读完」,926 个模块里
+  **32,653 行不同**——其中 32,026 行只差一个 `?`(读完才有),另外 627 行
+  更宽:一个调用一边是
+  `<AnimationController as Animation<f64>>::drive::<f64>(..)`、另一边是
+  `.drive(..)`,turbofish 一边 `then::<()>`、另一边 `then::<(), _>`。
+  **为什么会差,还不知道。** ws889 只做了三件事:复现(把 `ThrowsAnalysis.of`
+  换成一个空 `RecursiveVisitor` 走完全部 130,133 个成员,输出就回到
+  e69150fe)、把它变成显式的 `BinaryBuilder(disableLazyReading: true)`、
+  写在这里。
+  **ws885 以来每一次「逐字节相同」量的都是「先读完」那一版**,而在 ws889
+  之前,替它读的是一个答案没人读的分析。发现方式就是删掉那个分析。
+  下一步:先定哪一版是对的(627 行里 eager 显然知道得更多,但那不是证明),
+  再问为什么。
 - **值级断言的覆盖已塌到 6 个**:146 个黄金 `#[test]` 全黑之后,唯一
   「对 Dart 真值」的尺子只剩 `bin/fx.sh` 的 6 个 fixture,而且要手跑。
   `fixtures.py` 对「两个 driver 以同样方式配错」结构性失明(它们一致地

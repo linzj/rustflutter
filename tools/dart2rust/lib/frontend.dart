@@ -24,6 +24,43 @@ import 'ir.dart';
 /// declaration that induced it when it is not.
 bool _isSynthetic(Element element) => !identical(element, element.nonSynthetic);
 
+/// Whether a call to `element` yields a `Result` for the caller to `?`.
+///
+/// The twin of `KernelFrontend._fails`, over the analyzer's element model
+/// rather than Kernel's, and the two are held together by `bin/fixtures.py`:
+/// a call one marks and the other does not is a line of Rust that differs.
+/// The decision they share -- which libraries are translated -- is
+/// `translatedLibrary` in `ir.dart`; the exclusions below are this model's own
+/// spelling of the same three.
+///
+/// Absent until ws889. Every method's signature has carried `Result` since
+/// 2026-09-04 and no call this front end wrote ever propagated, so its output
+/// could not compile whatever the fixture said -- which is why 31 of the 32
+/// golden files were frozen at a version predating the model instead of being
+/// regenerated. Nothing reported it: the backend puts `Result` on the
+/// signature and the front end decides the `?`, and no ruler asked the two
+/// whether they agreed.
+bool _callFails(Element? element) {
+  if (element == null) return false;
+  // A field is a field; only a written `get x => ..` is a call, and every
+  // caller here has asked `_isSynthetic` before building one.
+  if (element is FieldElement) return false;
+  // `async` keeps its exceptions in the future: the `?` goes after the
+  // `.await`, not on the call.
+  if (element is ExecutableElement && element.firstFragment.isAsynchronous) {
+    return false;
+  }
+  // An operator Rust has a `std::ops` trait for keeps that trait's signature,
+  // with no `Result` in it, so a call of one never propagates.
+  if (element is MethodElement &&
+      element.isOperator &&
+      stdOperators.contains(element.name)) {
+    return false;
+  }
+  final uri = element.library?.uri;
+  return uri != null && translatedLibrary(uri);
+}
+
 class Frontend {
   Frontend(this.className);
 
@@ -270,7 +307,7 @@ class Frontend {
         // `isSynthetic` is. A synthetic accessor is the one the analyser made
         // up for a field; a real `get x => ...` is not synthetic.
         if (element is PropertyAccessorElement && !_isSynthetic(element)) {
-          return IrCall(null, node.name, const []);
+          return IrCall(null, node.name, const [], fails: _callFails(element));
         }
         return IrField(null, node.name);
       }
@@ -333,7 +370,9 @@ class Frontend {
       return IrClosure(
         params,
         IrReturn(
-          IrCall(null, node.name, [for (final p in params) IrLocal(p.name)]),
+          IrCall(null, node.name, [
+            for (final p in params) IrLocal(p.name),
+          ], fails: _callFails(element)),
         ),
         _type(element.returnType),
         holdsSelf: holds,
@@ -437,7 +476,12 @@ class Frontend {
     }
     final accessor = node.identifier.element;
     if (accessor is PropertyAccessorElement && !_isSynthetic(accessor)) {
-      return IrCall(expression(node.prefix), node.identifier.name, const []);
+      return IrCall(
+        expression(node.prefix),
+        node.identifier.name,
+        const [],
+        fails: _callFails(accessor),
+      );
     }
     return IrField(
       expression(node.prefix),
@@ -473,7 +517,12 @@ class Frontend {
     }
     final accessor = node.propertyName.element;
     if (accessor is PropertyAccessorElement && !_isSynthetic(accessor)) {
-      return IrCall(expression(target), node.propertyName.name, const []);
+      return IrCall(
+        expression(target),
+        node.propertyName.name,
+        const [],
+        fails: _callFails(accessor),
+      );
     }
     return IrField(
       expression(target),
@@ -486,7 +535,7 @@ class Frontend {
   IrExpr _memberOn(IrExpr receiver, SimpleIdentifier name) {
     final element = name.element;
     if (element is PropertyAccessorElement && !_isSynthetic(element)) {
-      return IrCall(receiver, name.name, const []);
+      return IrCall(receiver, name.name, const [], fails: _callFails(element));
     }
     return IrField(
       receiver,
@@ -554,6 +603,7 @@ class Frontend {
                 : null,
             section,
           ),
+          fails: _callFails(section.methodName.element),
         ),
       );
     }
@@ -898,6 +948,7 @@ class Frontend {
         owner is ClassElement ? (owner.name ?? '?') : '?',
         node.methodName.name,
         args,
+        fails: _callFails(element),
       );
     }
     if (node.methodName.name == 'identical' && args.length == 2) {
@@ -927,6 +978,7 @@ class Frontend {
         null,
         node.methodName.name,
         _arguments(node.argumentList, element, node),
+        fails: _callFails(element),
       );
     }
     if (element != null && element.enclosingElement is! ClassElement) {
@@ -942,7 +994,12 @@ class Frontend {
     if (node.isNullAware && target != null) {
       return IrNullAware(
         expression(target),
-        IrCall(IrBound(), node.methodName.name, args),
+        IrCall(
+          IrBound(),
+          node.methodName.name,
+          args,
+          fails: _callFails(node.methodName.element),
+        ),
       );
     }
     if (target is SuperExpression) {
@@ -964,6 +1021,7 @@ class Frontend {
       target == null ? null : expression(target),
       node.methodName.name,
       args,
+      fails: _callFails(element),
     );
   }
 

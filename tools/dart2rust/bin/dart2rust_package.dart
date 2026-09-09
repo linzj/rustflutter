@@ -30,11 +30,11 @@ import 'dart:io';
 import 'package:kernel/class_hierarchy.dart';
 import 'package:kernel/core_types.dart';
 import 'package:kernel/kernel.dart';
+import 'package:kernel/binary/ast_from_binary.dart';
 import 'package:kernel/type_environment.dart';
 
 import '../lib/backend_rust.dart';
 import '../lib/ir.dart';
-import '../lib/throws.dart';
 import '../lib/frontend_kernel.dart';
 import '../lib/alias_mutation.dart';
 import '../lib/covariance.dart';
@@ -127,7 +127,32 @@ Future<void> main(List<String> args) async {
     );
     exit(2);
   }
-  final component = loadComponentFromBinary(args[0]);
+  // Read the whole dill, bodies included, before anything looks at it.
+  //
+  // `loadComponentFromBinary` leaves every function body behind a
+  // `lazyBuilder` that the first reader of `FunctionNode.body` runs. That is
+  // meant to be invisible, and it is not: what this compiler emits depends on
+  // whether the bodies were all read before lowering started. Measured at
+  // ws889, on the same dill and the same sources, the only difference being
+  // when the bodies were read -- 32,653 lines of the 926 modules, of which
+  // 32,026 are a `?` that is there when the bodies were read up front and
+  // gone when they were not, and 627 are wider than that: a call that comes
+  // out `<AnimationController as Animation<f64>>::drive::<f64>(..)` one way
+  // and `.drive(..)` the other, a turbofish that is `then::<()>` one way and
+  // `then::<(), _>` the other. The eager reading is the one every output
+  // since ws885 was measured against.
+  //
+  // *Why* it differs is not known yet, and this is not the explanation --
+  // it is the reproduction, and the guard. Until ws889 the reading was done
+  // by accident: `ThrowsAnalysis.of` walked every member of every translated
+  // library, and its answers were read by one line of `KernelFrontend`, a
+  // null check. Deleting an analysis that decided nothing moved 32,653 lines
+  // of output, which is how this was found.
+  final component = Component();
+  BinaryBuilder(
+    File(args[0]).readAsBytesSync(),
+    disableLazyReading: true,
+  ).readComponent(component);
   // Once for the whole component: an enum's variants live in the
   // constants that name them, which can be in any library.
   final (enumValues, enumFields) = enumsIn(component);
@@ -229,23 +254,7 @@ Future<void> main(List<String> args) async {
   /// once from `dart:ui` and once from `painting` -- and a glob import of both
   /// makes every use of them ambiguous. 800 `E0659`s from ten names.
   final definedIn = <String, Set<String>>{};
-  // The Result model's failure analysis, over the whole component once.
-  final throwsAnalysis = typeEnvironment == null
-      ? null
-      : ThrowsAnalysis.of(
-          component,
-          typeEnvironment.hierarchy as ClosedWorldClassHierarchy,
-          prefixes,
-        );
-  if (throwsAnalysis != null) {
-    stderr.writeln(
-      'throws: ${throwsAnalysis.direct.length} direct, '
-      '${throwsAnalysis.failing.length} failing of ${throwsAnalysis.considered}',
-    );
-  }
-  final dynamicSlots = typeEnvironment == null
-      ? const <Field, List<InterfaceType>>{}
-      : dynamicSlotsIn(inPackage, typeEnvironment);
+  final dynamicSlots = dynamicSlotsIn(inPackage, typeEnvironment);
   // The closed world's instantiations of generic traits, gathered while
   // every library is lowered and read back for the wider impls
   // (`KernelFrontend.addWiderImpls`).
@@ -317,9 +326,7 @@ Future<void> main(List<String> args) async {
   ];
   final aliasMutated = aliasMutatedClasses(aliasScanned);
   // The type parameters used covariantly (`covariance.dart`): erased.
-  final covariant = typeEnvironment == null
-      ? const <TypeParameter>{}
-      : covariantParameters(inPackage, typeEnvironment);
+  final covariant = covariantParameters(inPackage, typeEnvironment);
   for (final library in inPackage) {
     final frontend = KernelFrontend(
       library,
@@ -331,7 +338,6 @@ Future<void> main(List<String> args) async {
       collidingClassNames: collidingClassNames,
       typeEnvironment: typeEnvironment,
       dynamicSlots: dynamicSlots,
-      throws: throwsAnalysis,
       open: openClasses,
       erase: Platform.environment['DART2RUST_ERASE'] != '0',
       eraseObjectBounded: Platform.environment['DART2RUST_ERASE_OBJECT'] == '1',

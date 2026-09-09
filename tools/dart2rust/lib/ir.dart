@@ -94,6 +94,20 @@ const stdOperators = {
   '>>',
 };
 
+/// Whether a member of this library is one the compiler translates, and so
+/// one whose Rust signature carries a `Result` for its callers to `?`.
+///
+/// Asked by both front ends -- `frontend_kernel.dart`'s `_fails` over a Kernel
+/// `Member`, `frontend.dart`'s over an analyzer `Element` -- and shared here
+/// because it is the half of that question that is a *decision* rather than a
+/// reading of an element model. `dart:ui` is translated with the package: it
+/// holds Color, Offset, Size and Rect, which round 39 measured as the four
+/// names the translated package reaches for most and never finds, and it is in
+/// the same dill with bodies. Every other `dart:` library is the prelude's,
+/// written by hand in Rust, and returns what Rust returns.
+bool translatedLibrary(Uri uri) =>
+    uri.scheme != 'dart' || uri.toString() == 'dart:ui';
+
 /// A parameter of a constructor or method.
 class IrParam {
   const IrParam(

@@ -13,6 +13,7 @@
 
 import 'dart:io';
 
+import 'package:kernel/binary/ast_from_binary.dart';
 import 'package:kernel/kernel.dart';
 
 import '../lib/backend_rust.dart';
@@ -33,7 +34,16 @@ Future<void> main(List<String> args) async {
     if (args[i] == '-o') out = args[i + 1];
   }
 
-  final component = loadComponentFromBinary(dill);
+  // Eagerly, bodies and all: `loadComponentFromBinary` leaves them behind a
+  // `lazyBuilder`, and what this compiler emits depends on whether they were
+  // read before lowering started (`dart2rust_package.dart` carries the
+  // measurement). The two front ends are compared byte for byte, so they have
+  // to read their input the same way.
+  final component = Component();
+  BinaryBuilder(
+    File(dill).readAsBytesSync(),
+    disableLazyReading: true,
+  ).readComponent(component);
 
   if (args.contains('--list')) {
     final matching = component.libraries

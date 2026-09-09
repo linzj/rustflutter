@@ -34,14 +34,14 @@ echo "== dart analyze =="
 # `|| true` -- which swallowed every *other* file's errors with it. The front
 # end was migrated and the count is zero, so the gate is real again.
 #
-# Warnings and infos do not fail on their own -- 86 of them stand (guards the
+# Warnings and infos do not fail on their own -- 80 of them stand (guards the
 # Kernel API's tightened nullability made dead, casts the analyser can prove
 # redundant, deprecations), and making them fatal in one step would fail every
 # commit until they are gone. They are a queue rather than a gate. But a queue
 # with no ruler is what let this file's `|| true` sit here, so the *count* is
 # the gate: it may fall, never rise, and when it falls this number comes down
 # with it in the same commit.
-analyze_ceiling=86
+analyze_ceiling=80
 analyze_out=$(dart analyze --no-fatal-warnings lib bin test 2>&1) || status_analyze=1
 printf '%s\n' "$analyze_out"
 issues=$(printf '%s\n' "$analyze_out" |

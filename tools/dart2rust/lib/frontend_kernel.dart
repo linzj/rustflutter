@@ -21,7 +21,6 @@ import 'package:kernel/type_environment.dart';
 
 import 'coerce.dart';
 import 'member_names.dart';
-import 'throws.dart';
 
 import 'dart:io' show Platform, stderr;
 
@@ -135,7 +134,6 @@ class KernelFrontend implements TypeWorld {
     this.elsewhere = const {},
     this.typeEnvironment,
     this.dynamicSlots = const {},
-    this.throws,
     this.open = const {},
     this.erase = false,
     this.eraseObjectBounded = false,
@@ -675,17 +673,29 @@ class KernelFrontend implements TypeWorld {
   /// The struct behind an open class's own instances.
   static String implName(String name) => '${name}Impl';
 
-  /// Which members can fail, over the whole program (`ThrowsAnalysis`);
-  /// null while the Result model is off.
-  final ThrowsAnalysis? throws;
-
   /// Whether a call to `target` yields a `Result` to propagate: a member
   /// of a translated library that is a function (a field's accessor is
   /// plain) and not `async` (its exceptions go into the future, and the
-  /// `?` goes after the `.await`). Uniform model: the analysis (`throws`)
-  /// no longer decides, it only gates the model.
+  /// `?` goes after the `.await`).
+  ///
+  /// Nothing here asks whether the callee can throw, and the name is the
+  /// last of when it did. Under the uniform model every translated function
+  /// returns `Result` whether or not anything in it can fail, so what a
+  /// caller needs to know is only whether the callee is one of those. It is
+  /// a question about the callee's *library and kind*, and it is answered
+  /// from those.
+  ///
+  /// This opened with `if (throws == null) return false` until ws889, taking
+  /// a `ThrowsAnalysis` the rest of the method never read. It cost two rounds
+  /// of misdiagnosis: a driver that did not build the analysis emitted every
+  /// signature as `Result` and propagated through none of them, and the
+  /// reading -- twice, mine and a reviewer's -- was "the driver must build
+  /// the analysis". It must not. There was no information in that argument,
+  /// only a switch wearing an analysis's name, and a front end that does not
+  /// mark its calls is wrong beside a backend whose `_resultModel` is a
+  /// `const true`. `ThrowsAnalysis` itself is a census and lives in
+  /// `bin/throws_census.dart`, which is the only thing that reads its answers.
   bool _fails(Member target) {
-    if (throws == null) return false;
     // A field read through an accessor call is a function call too; an
     // enum's carried fields are plain methods on the enum.
     if (target is Field) {
@@ -711,8 +721,7 @@ class KernelFrontend implements TypeWorld {
     // library: translated like the mixin's (`current_down` on
     // `_TapStatusTrackerMixin`, 40 calls without `?`).
     if (target.enclosingClass?.isAnonymousMixin ?? false) return true;
-    final uri = target.enclosingLibrary.importUri;
-    return uri.scheme != 'dart' || uri.toString() == 'dart:ui';
+    return translatedLibrary(target.enclosingLibrary.importUri);
   }
 
   /// Top-level `dynamic` fields whose runtime types the driver worked out
