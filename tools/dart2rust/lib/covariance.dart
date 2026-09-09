@@ -23,6 +23,11 @@ import 'package:kernel/class_hierarchy.dart';
 import 'package:kernel/type_algebra.dart';
 import 'package:kernel/type_environment.dart';
 
+/// Whether a hierarchy whose parameters disagree is made consistent by
+/// *raising* the unmarked side rather than dropping the marked one (see
+/// the loop that uses it). `DART2RUST_RAISE=0` drops, as before ws938.
+final bool _raise = Platform.environment['DART2RUST_RAISE'] != '0';
+
 bool _translated(Class c) {
   final uri = c.enclosingLibrary.importUri;
   return uri.scheme != 'dart' || uri.toString() == 'dart:ui';
@@ -142,6 +147,59 @@ Set<TypeParameter> covariantParameters(
           final belowMarked = found.contains(below) && erasable(below);
           final upMarked = found.contains(up) && erasable(up);
           if (belowMarked != upMarked) {
+            // All or nothing along a hierarchy, and the direction is *on*
+            // wherever both sides can be: a parameter marked below and
+            // passed straight into the supertype's is the same parameter,
+            // so erasing both keeps the chain whole where dropping both
+            // throws away a mark a real flow site made.
+            // `_InheritedProviderScopeElement<T> implements
+            // InheritedContext<T>` was that: marked below (`element = this`
+            // into an `_InheritedProviderScopeElement<T?>` slot), unmarked
+            // above, both dropped, and six of provider's members then had
+            // an `X<T>` where `X<T?>` was declared (`DART2RUST_RAISE=0`
+            // turns this off and drops as before).
+            // ..and only where *every* subtype that passes its own
+            // parameter into this position is already marked. With one of
+            // them unmarked, raising erases a supertype for a subtype that
+            // never asked: `Animatable.T` went that way at ws938 (`Tween`
+            // marked, `TweenSequence` and `_ChainedEvaluation` not), and
+            // `Tween<double>`'s values went behind `Rc<dyn Object>` -- 7
+            // more stubs against the 6 it cleared. `InheritedContext<T>`
+            // has one subtype passing a parameter through, and it is the
+            // marked one.
+            bool everyBelowMarked(Class aboveClass, int at) {
+              for (final c in classes) {
+                for (final st in _supertypesOf(c)) {
+                  if (st.classNode != aboveClass) continue;
+                  if (at >= st.typeArguments.length) continue;
+                  final a = st.typeArguments[at];
+                  if (a is! TypeParameterType) continue;
+                  if (!c.typeParameters.contains(a.parameter)) continue;
+                  if (!found.contains(a.parameter) || !erasable(a.parameter)) {
+                    return false;
+                  }
+                }
+              }
+              return true;
+            }
+
+            final unmarked = belowMarked ? up : below;
+            if (_raise &&
+                erasable(unmarked) &&
+                !dropped.contains(unmarked) &&
+                (!belowMarked || everyBelowMarked(above.classNode, i))) {
+              if (Platform.environment['DART2RUST_TRACE_COVARIANT'] != null) {
+                stderr.writeln(
+                  'TRACE_COVARIANT_RAISE '
+                  '${(belowMarked ? above.classNode : cls).name}'
+                  '<${unmarked.name}> with '
+                  '${(belowMarked ? cls : above.classNode).name}',
+                );
+              }
+              found.add(unmarked);
+              changed = true;
+              continue;
+            }
             if (Platform.environment['DART2RUST_TRACE_COVARIANT'] != null &&
                 (found.contains(below) || found.contains(up))) {
               stderr.writeln(
