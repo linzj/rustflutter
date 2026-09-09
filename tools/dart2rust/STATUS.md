@@ -566,7 +566,6 @@ Dart 的循环变量是同一个对象。加 `mut` 只是把「诚实地 panic �
 | 轮 | 规则 / 读数 | 数 |
 |---|---|---|
 | run877 | the reading, after ws875-ws877 | — |
-| ws896 | 模块图的边是从生成文本正则回扫出来的,连字符串和注释一起扫:五个翻译文案里的单词("Header"、"Sac a main")就是五条真边。扫描前剥掉注释与字面量;再加一条配对规则——只有当一个「所有定义处都是 `fn`」的名字在本模块**既被绑定、又从未被调用/走路径**时才不算引用 | 拒绝 38、stub **147**(未升)、可达 64 → 67;`merged_gallery_scc` 1,026,045 行拆成 `scc_gallery` 942,252(l10n)+ `gallery_above` 82,892(app,**-91.9%**);链尾 53s → 33s;先只用前半句时 rustc 当场给了 188 条 `cannot find value`(自由函数当值传),那正是配对规则的由来 |
 | ws899 | 黄金 44 个错里 28 个的根因是「夹具 driver 不是同一个编译器」:`dart2rust_kernel.dart` 一个 `TypeEnvironment` 都没建(前端里 34 处读它,全走 null 分支),`const Spacing._(3.0)` 的 `3.0` 因此退化成 `dynamic`,`const` 里发出一次拆箱。另一半:分析器前端一次实参加宽都不做,补上「进对象槽就装箱」(`IrUpcast`,由后端选 `dart_boxed`/`dart_object`/句柄) | testdata **44 → 16** 错;oracle exit 0、BEHIND 16 → 14(`constdirect`/`named_args` 真追上);十个 fx 夹具全 AGREE;gallery 逐字节未动(md5 1aee02ea,拒绝仍 38)——这一轮没碰生产路径 |
 | ws900 | `use` 行一直是从**生成出来的文本**用正则回扫猜出来的,而后端发射时明明知道每个引用指向哪个库——`_ReferenceCollector._member` 手里就是答案,却只留下库和类名、把成员名扔了。改成一次遍历(`referencesOf`)同时交出库、类名、成员,`use` 行照账本写;文本侧十二条补丁一次删完(`_code`/`_identifiersIn`/`_calledIn`/`_boundIn`/`_packageOf`/`everyDefinitionIsAFunction`/`visible`/同包兜底/Dart import 列表/`pub use` 再导出)。账本盖不到的只有**编译器自己发明的名字**,各自在发明处记一笔:`superFn` 与它的 trait 界、类头的 supertrait、`implName`、抽象类的静态、宽 impl 与动态槽两次普查、`_genericOnTrait` 选中的体、被应用的 mixin 体 | stub **147**(未升)、拒绝 38、可达 **67 → 69**、`cargo check --workspace` **0 error**;`dart2rust_package.dart` −290 行;widgets crate 325,924 → 402,903 行(**变大,记债**);oracle exit 0 / BEHIND 14;**run900 红**——账本把 `scheduleMicrotask` 从 `dart:ui` 的空实现改绑到 prelude,microtask 第一次真的跑起来,当场撞上 147 里早就有的那个 `_handle_focus_changed`(下一轮修) |
 | ws901 | run900 停在 `_handle_focus_changed`:`policy.invalidate_scope_data(..)` 要 `&mut self`,而 `policy` 是 `Rc<dyn FocusTraversalPolicy>`。两本普查读的不是同一批体——后端的 `_mutating` 读**降下来的 IR**(里面有 `_policy_data.remove(k)`),前端决定 `counted` 的 `_writesFieldInMethod` 只走类**声明**里的 procedures,而 CFE 把 mixin 的体拷进了匿名**应用**类。让它读同一批:自己的 + 上方匿名应用的 + (是 mixin 声明时)`applications` 里的。顺手把账本欠的三处收了:`_member` 现在也读被引用成员的签名类型(Rust 调用处没有推断——适配实参发射的是被调方的参数类型) | stub **147 → 135**(focus 那组 9 个 + 三处 import 3 个,一个新的都没加)、拒绝 38、可达 69、`cargo check` 0 error;夹具 `mixinmutmap` 先红后绿;oracle exit 0 / BEHIND 14;run901 仍红,但往前挪到了下一个桩(`Completer<void>.complete()`) |
@@ -606,6 +605,7 @@ Dart 的循环变量是同一个对象。加 `mut` 只是把「诚实地 panic �
 | ws965 | **建在「不返回」的操作数上的表达式,就是那个操作数**。Dart 先算操作数,所以后面那一步根本到不了;Rust 这边在 `!` 上既解析不出方法(E0282「cannot infer type」),也 await 不了(`()` is not a future)。AOT 编译器凡是证明某个值不可能存在,就在那里种一句自己的 throw,前端按**文本**认出来降成 `unreachable!()`。三处:调用的接收者、`await` 的操作数、以及**转换**的操作数——`dart_cast_to` 那条才是 `inputDecorationTheme` 真正走的路(先按调用改,量出来一个没清;看了未打桩的源码才知道是 `IrCastTo`)。另外按**字面量文本**认而不是按 `identical`:flattening 会重建整棵树,到后端的是副本。夹具 `deadoperand` 把 TFA 那句 marker 亲手写出来(夹具那么小,TFA 自己不会种,只会把整段折掉),覆盖裸的和绑定过的两种;它与 Dart 同输出,但**没能复现出块那一种**——那一种是 CFE 的表达式 `Let`,记在这里 | stub **96 → 93**(`DropdownMenuThemeData`/`DatePickerThemeData` 的 `inputDecorationTheme`,`_ContrastEvaluation._evaluate`)、拒绝 29、可达 69、0 error;run965 连采五次:707 行 / 类型差异 0 / 0 panic |
 | ws967 | **`Isolate.run(computation)`**:这里只有一个 isolate,所以那段计算就在这个 isolate 上派出去——而这正是 `Future(computation)` 已经在做的事,回调的形状(`FutureOr<R> Function()`)也一模一样,所以降成 `future_new(..)`。**不能**写成 prelude 那个 `Isolate<T>` 上的 `run`:那是给 `static` 用的包装,只是恰好和 `dart:isolate` 同名,`Isolate::run` 那个 `T` 无从推起(「no associated function named `run` found for struct `Isolate<_>`」)。夹具 `isolaterun` 先红(一模一样的 E0599)后绿——同步的夹具驱动不了事件循环,所以它验的是「调得出来、拿回来的是对的 future 类型」 | stub **93 → 92**(foundation 的 `compute`)、拒绝 29、可达 69、0 error;run967 连采五次:707 行 / 类型差异 0 / 0 panic |
 | ws968 | **`Object.hashAllUnordered(xs)` prelude 里没有**,调用名了一个没人写的函数(E0425)。补上:每个元素的 hash 用**可交换**的方式折进去(求和、异或、计数,和 SDK 自己那套一样),所以同样的元素换个顺序算出来一样。补完之后那个桩还在,原因换成了 mismatched types——`hashAll`/`hashAllUnordered` 收的是 `Iterable<Object?>`,而 prelude 那两个写的是 `Vec<T>`,`RenderObject.hashCode` 递进去的是个 `Set`;于是两个都改成收**任何能迭代的东西**(`IntoIterator`,`Set<T>` 早就实现了)。夹具 `hashunordered` 覆盖「换序相同」「不同元素不同」「有序的那个确实看顺序」和「收 `Set`」四条,先红后绿 | stub **92 → 91**(`RenderObject.hashCode`)、拒绝 29、可达 69、0 error;run968 连采五次:707 行 / 类型差异 0 / 0 panic |
+| ws969 | **字面量之间的算术,做接收者一样是没定住的**。`(1.5 * 0.35).sin()` 和 `1.5.sin()` 一样——里面没有一处说它是哪种浮点(E0689)。ws956 教会了这条规则穿过取负,这是另一种拼法:穿过 `+ - * /`,并且**两边都得是字面量**——只要有一个带类型的操作数,推导本来就有了。后缀写在**最左边那个字面量**上,一处就把整个表达式定住。夹具 `binaryfloatrecv` 覆盖全字面量的两种和带类型操作数的一种,先红(一模一样的 E0689)后绿 | stub **91 → 90**(`InkSparkle._updateFragmentShader`);第三轮的错误数 86 → 80,说明这条规则不止一处在用;拒绝 29、可达 69、0 error;run969 连采五次:707 行 / 类型差异 0 / 0 panic |
 
 ## 下一步(2026-09-05 重铺)
 
@@ -632,12 +632,12 @@ Dart 的循环变量是同一个对象。加 `mut` 只是把「诚实地 panic �
 trait 泛型方法**已解**(擦除孪生 `m__erased`,ws482/ws494)。6 仍是 **0/168**,
 但 `runtime/` crate 从 09-06 起存在(无头引擎层)。
 
-**(2026-09-10 校注)** 现状:**ws968 91 stub / 29 拒绝 / 69 crate 全可达 / 0 error**,
-运行尺子 run968 **707 行、类型差异 0、0 panic,连采五次一模一样**——尺子从 ws934
+**(2026-09-10 校注)** 现状:**ws969 90 stub / 29 拒绝 / 69 crate 全可达 / 0 error**,
+运行尺子 run969 **707 行、类型差异 0、0 panic,连采五次一模一样**——尺子从 ws934
 起不再抖(根因见〈已知欠账〉第一条),所以「读三次取多数」那套读法可以退休了,
 一次就算数;为了看住回归,每轮仍连采五次。
 
-**剩下的 91 个桩已经没有大簇了**,最大的一族是 3 个(`TickerFuture` 从 `Option`
+**剩下的 90 个桩已经没有大簇了**,最大的一族是 3 个(`TickerFuture` 从 `Option`
 里 await),其余都是一两个;而**拒绝这边还有一族 9 个**——win32 的 `_WindowsMessage`
 / `_WindowingInitRequest` 走 `dart:ffi` 的 `_loadInt32/_loadInt64/_loadPointer` 与
 `Struct` 的 `#fromTypedDataBase`,是 29 个拒绝里唯一还成簇的。按性价比排,下一步值得做的:

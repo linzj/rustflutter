@@ -15,6 +15,13 @@ augment class RustBackend {
   static bool _floatLiteralValue(IrExpr? e) => switch (e) {
     IrLiteral(:final type) => type.name == 'double',
     IrUnary(op: '-', :final operand) => _floatLiteralValue(operand),
+    // ..and arithmetic over them: `(1.5 * 0.35).sin()` is every bit as
+    // unpinned as `1.5.sin()`, since nothing in it says which float it is
+    // (`InkSparkle._updateFragmentShader`, ws969). Only when *both* sides
+    // are literals -- with a typed operand anywhere, inference has it.
+    IrBinary(:final op, :final left, :final right)
+        when const {'+', '-', '*', '/'}.contains(op) =>
+      _floatLiteralValue(left) && _floatLiteralValue(right),
     _ => false,
   };
 
@@ -24,6 +31,11 @@ augment class RustBackend {
   /// (an integer written as a double, ws779) would read `0.0_f64_f64`.
   String _suffixedFloat(IrExpr e) {
     if (e is IrUnary && e.op == '-') return '(-${_suffixedFloat(e.operand)})';
+    // One suffix pins the whole expression, so it goes on the left-hand
+    // literal and the rest is spelled as it stands.
+    if (e is IrBinary) {
+      return '(${_suffixedFloat(e.left)} ${e.op} ${expr(e.right)})';
+    }
     final text = _receiver(e);
     return text.endsWith('_f64') ? '($text)' : '(${text}_f64)';
   }
