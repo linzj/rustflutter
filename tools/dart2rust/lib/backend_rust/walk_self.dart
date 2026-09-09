@@ -83,6 +83,21 @@ class _WalkSelf {
     _ => null,
   };
 
+  /// The place under a promotion: `x!` and `x.clone()!` both name `x`.
+  /// Exactly the two peels `_mutPlace` makes to find what a mutating call
+  /// acts on; null when the expression is not a promotion at all.
+  static IrExpr? _underPromotion(IrExpr? e) {
+    if (e is! IrNullCheck) return null;
+    final operand = e.operand;
+    if (operand is IrCall &&
+        operand.name == 'clone' &&
+        operand.args.isEmpty &&
+        operand.target != null) {
+      return operand.target;
+    }
+    return operand;
+  }
+
   /// Locals written by an assignment used for its value.
   final assignedLocals = <String>{};
 
@@ -245,7 +260,16 @@ class _WalkSelf {
         // Any local a method is called on may be changed by it: the callee's
         // receiver is unknown here, and `rotation.setFromRotation(r)` on an
         // immutable parameter was E0596. An unneeded `mut` is a warning.
-        if (target is IrLocal) receiverLocals.add(target.name);
+        // ..and a receiver reached through a promotion is still that
+        // local. `resolvedPadding!.add(x)` is emitted as the *place* it
+        // names -- `resolved_padding.as_mut().unwrap()`, which `_mutPlace`
+        // reaches by peeling the `!` and the clone a read is -- and nothing
+        // here peeled them, so the binding was not written `let mut`
+        // (`ButtonStyleButton.build`, ws893). It only shows where the local
+        // is read nowhere else: one plain receiver anywhere else marks it
+        // and hides this, which is how the fixture passed on its first try.
+        final receiver = _underPromotion(target) ?? target;
+        if (receiver is IrLocal) receiverLocals.add(receiver.name);
         if (_mutatingListMethods.contains(name)) {
           // A call on a value read out of one of this object's collections
           // acts on the collection (`_heldSlot`): `m[k]!.add(v)` writes the
