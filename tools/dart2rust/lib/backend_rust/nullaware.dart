@@ -312,6 +312,17 @@ augment class RustBackend {
         'Future.$name(..)',
       );
     }
+    // `Isolate.run(computation)`: there is one isolate here, so the
+    // computation is spawned on this one -- which is what
+    // `Future(computation)` already is, and its callback has the same
+    // `FutureOr<R> Function()` shape. Named here rather than written as a
+    // `run` on the prelude's `Isolate<T>`, which is an unrelated wrapper
+    // for a `static` that happens to share the name `dart:isolate` uses:
+    // `Isolate::run` had no `T` to infer (`compute` in
+    // `foundation/_isolates_io.dart`, ws967).
+    if (owner == 'Isolate' && name == 'run' && args.isNotEmpty) {
+      return 'future_new(${expr(args.first)})';
+    }
     // `int.parse` and `double.parse`. Dart's throw on bad input and its
     // `tryParse` returns null, which is `ok()`; `unwrap()` keeps the throw
     // loud rather than turning it into a zero.
