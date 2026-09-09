@@ -415,11 +415,35 @@ augment class KernelFrontend {
       // uses (`_argumentsByType`). The call inside passes them on in the
       // *method's* declared order, which is the order the method was
       // emitted in. 23 tear-offs of methods with named parameters.
+      // The slot's parameter where the slot's is *narrower* than the
+      // method's. Dart's function subtyping is contravariant -- a `bool
+      // Function(Object?)` stands as a `bool Function(String)` -- and
+      // Rust's is not: the closure took `Rc<dyn Object>` where the
+      // prelude's `first_where` wanted the element ("type mismatch in
+      // closure arguments", E0631; `firstWhere(common.contains)` in
+      // `_ReadingOrderSortData.commonDirectionalityOf`, ws958). So the
+      // closure takes the slot's, and each is widened into the method's
+      // own on the way into the call.
+      //
+      // Taken once, for this tear-off: a tear-off inside the receiver is
+      // not the one the slot described.
+      final into = _expectedTearOff;
+      _expectedTearOff = null;
+      DartType? narrowed(int i) {
+        if (into == null ||
+            into.positionalParameters.length !=
+                fn.positionalParameters.length) {
+          return null;
+        }
+        final wanted = into.positionalParameters[i];
+        return wanted == positionalType(i) ? null : wanted;
+      }
+
       final params = [
         for (var i = 0; i < fn.positionalParameters.length; i++)
           IrParam(
             _paramName(fn.positionalParameters[i], 'a$i'),
-            _type(positionalType(i)),
+            _type(narrowed(i) ?? positionalType(i)),
           ),
         for (final p in _namedInTypeOrder(fn))
           IrParam(
@@ -473,10 +497,23 @@ augment class KernelFrontend {
         return IrType(put.name, nullable: true, projected: true);
       }
 
-      IrExpr passedOn(String name, IrType held, DartType declared) {
+      IrExpr passedOn(
+        String name,
+        IrType held,
+        DartType declared, {
+        bool narrowed = false,
+      }) {
         final arg = IrLocal(name)..rustType = held;
         final slot = calleeSlot(declared);
-        return slot == null ? arg : coerce(arg, slot);
+        if (slot != null) return coerce(arg, slot);
+        // ..and a parameter the slot narrowed goes back out to the
+        // method's own, which is what the call takes.
+        if (!narrowed) return arg;
+        try {
+          return coerce(arg, _type(declared));
+        } on Unsupported {
+          return arg;
+        }
       }
 
       final receiver = node.receiver;
@@ -512,11 +549,32 @@ augment class KernelFrontend {
               : fn.computeFunctionType(Nullability.nonNullable),
         );
         final tornReturns = _type(returnType);
+        // The generated call reads the closure's parameters as
+        // `VariableGet`s of the method's own variables, so the narrowing
+        // is recorded against those (`_retyped`): the read has the
+        // narrow type and the argument machinery widens it into the
+        // method's declared slot. Restored after, since the variables
+        // belong to the callee and not to this lowering.
+        final wasRetyped = <Variable, DartType?>{};
+        for (var i = 0; i < fn.positionalParameters.length; i++) {
+          final narrow = narrowed(i);
+          if (narrow == null) continue;
+          final p = fn.positionalParameters[i];
+          wasRetyped[p] = _retyped[p];
+          _retyped[p] = narrow;
+        }
         final IrExpr lowered;
         try {
           lowered = expression(call);
         } finally {
           receiver.parent = node;
+          wasRetyped.forEach((p, was) {
+            if (was == null) {
+              _retyped.remove(p);
+            } else {
+              _retyped[p] = was;
+            }
+          });
         }
         return IrClosure(
             params,
@@ -553,6 +611,7 @@ augment class KernelFrontend {
                 params[i].name,
                 params[i].type,
                 fn.positionalParameters[i].type,
+                narrowed: narrowed(i) != null,
               ),
             for (final p in fn.namedParameters)
               passedOn(

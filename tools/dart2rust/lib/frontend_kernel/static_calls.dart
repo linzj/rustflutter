@@ -936,8 +936,27 @@ augment class KernelFrontend {
     // it is what the expected type is for.
     var closure = value;
     while (closure is AsExpression) closure = closure.operand;
-    if (param is! FunctionType || closure is! FunctionExpression)
-      return lower();
+    if (param is! FunctionType) return lower();
+    // A *tear-off* into a function slot: Dart's function subtyping is
+    // contravariant -- `Set.contains(Object?)` stands as a `bool
+    // Function(String)` -- and Rust's is not, so the closure a tear-off
+    // becomes has to take the slot's parameters and widen each into the
+    // method's own on the way in. Kept apart from `_expectedFunction`,
+    // which is a closure literal's own inference and would change what a
+    // nested closure is lowered as.
+    if (closure is InstanceTearOff ||
+        closure is StaticTearOff ||
+        (closure is ConstantExpression &&
+            closure.constant is StaticTearOffConstant)) {
+      final wasTearOff = _expectedTearOff;
+      _expectedTearOff = param;
+      try {
+        return lower();
+      } finally {
+        _expectedTearOff = wasTearOff;
+      }
+    }
+    if (closure is! FunctionExpression) return lower();
     final was = _expectedReturn;
     final wasFunction = _expectedFunction;
     _expectedReturn = param.returnType;
@@ -956,6 +975,10 @@ augment class KernelFrontend {
   /// `dynamic` parameter by the CFE, and the `Rc<dyn Fn(String) -> String>`
   /// the list holds does not take an `Rc<dyn Object>`.
   FunctionType? _expectedFunction;
+
+  /// The function type a *tear-off* argument is landing in (see
+  /// `_withExpectedReturn`). Read once, by the tear-off itself.
+  FunctionType? _expectedTearOff;
 
   /// The return type the next lowered body should widen into, if a
   /// parameter's function type says so.
