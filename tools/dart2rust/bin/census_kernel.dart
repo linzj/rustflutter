@@ -16,7 +16,6 @@
 
 import 'dart:io';
 
-import 'package:kernel/ast.dart';
 import 'package:kernel/kernel.dart';
 
 import '../lib/backend_rust.dart';
@@ -31,7 +30,6 @@ String category(String refusal) {
 }
 
 /// Top-level constants are a library's, not a class's, and are counted apart.
-int _topLevel(IrLibrary library) => library.constants.length;
 
 void main(List<String> args) {
   if (args.isEmpty) {

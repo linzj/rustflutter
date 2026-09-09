@@ -92,7 +92,7 @@ Future<void> main(List<String> args) async {
 
     for (final declaration in resolved.unit.declarations) {
       if (declaration is! ClassDeclaration) continue;
-      final name = declaration.name.lexeme;
+      final name = declaration.namePart.typeName.lexeme;
       // Private classes counted too, now that they are translated. Skipping
       // them was why `CupertinoApp` could report zero refusals: its behaviour
       // lives in `_CupertinoAppState`, which the census never looked at.

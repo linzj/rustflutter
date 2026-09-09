@@ -426,6 +426,7 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 | ws883 | `_expressionRaw` 1,717 行一个方法拆成十段 run,`the_class` 再切四份;最大 part 1,452 | **生成的 Rust 仍与拆前逐字节相同**(md5 4429c8f1) |
 | ws884 | 拒绝回滚的名单补全(9→22 字段)并加 `bin/statecheck.py` 守住 | stub **152**,拒绝 49,可达 64;**生成的 Rust 一字未动**——是陷阱不是活 bug |
 | ws885 | mixin 的 super 函数要 `__Self` 是什么,trait 头上就得先是什么 | stub **150**,拒绝 49,可达 64;渲染树与 run877 逐字节相同(197 帧 0 panic) |
+| ws886 | 把分析器重新变成门:前端迁到 analyzer 14.3(47→0 错),`check.sh` 摘掉 `|| true` 并给警告数加上限,双前端预言机重新点着 | 33 个 fixture 两侧全能生成(此前分析器那侧一个都不能——driver 自己编译不过);**生成的 Rust 一字未动**(926 模块 md5 e69150fe,拒绝仍 49);check.sh 干净退出,87 checks OK |
 
 ## 下一步(2026-09-05 重铺)
 
@@ -681,11 +682,41 @@ ws601:  722 stub / 252 拒绝 / 63 crate 全可达(138 分区,延迟库合并后
   `_inPlace` 缺 `update_all`。补任何一条都会加宽哪些方法拿 `&mut self`,
   要过链子。`test/member_names_test.dart` 把这三个差集钉死了,补的时候
   测试会红,和量数的那次提交一起改。
-- **分析器前端不再编译**:`lib/frontend.dart` 有 49 个错,全是 analyzer
-  元素模型的 API 漂移;它的两个 driver(`bin/dart2rust.dart`、
-  `bin/census.dart`)同理。代价是 `bin/regen.py` 只有 `constinstance` 这
-  一个走 Kernel 的文件还能重生成,其余 35 个 `testdata/src/*.rs` 都不能。
-  留着还是删掉是项目决定,不是清理。
+- ~~**分析器前端不再编译**~~ —— ws886 迁完了。analyzer 14.3 把 AST 整个
+  重建过:`ClassDeclaration.name` → `namePart.typeName`、`.members` →
+  `body.members`、`NamedExpression` → `NamedArgument`、
+  `DefaultFormalParameter` 没了(默认值挂在参数自己身上)、
+  `Element.isSynthetic` 换成 `nonSynthetic`。47 个错清零,两个 driver
+  一并修好,预言机重新点着。接替它的欠账在下面。
+
+**(2026-09-09 新增,ws886 量出来的)**
+
+- **内核前端已经走在前面 16 个 fixture**:预言机熄火的那段时间,内核那侧
+  接着走了几百轮。重新点着的那一小时量的:33 个里 14 个逐字相同、3 个
+  已声明差异(`// DIFFERS:`)、16 个是内核侧领先——构造器的
+  `let mut __new` 与 `dart_register`、字段初始化的 `.clone()`、参数上的
+  `mut`、闭包拿到类型、调用处的擦除拆包。没有一条是两边对 Dart 的理解
+  不同。名单钉在 `bin/fixtures.py` 的 `BEHIND` 里:只允许变短;变长、或者
+  名单上的名字自己追上了,这个工具都会失败。补它们是一条队列,不是一轮。
+- **`branching` 的 `// REFUSES:` 过期了**:声明「case 中间的 break 一律
+  拒绝」,但 CFE 把 switch 包成 `LabeledStatement`,内核前端照 `IrLabeled`
+  译成 `'__l0: { match .. break '__l0 .. }`——是对的,读过生成的 Rust。
+  熄火期间长出来的能力,没人看见。已改成 `// DIFFERS:` 并写明两侧各自
+  怎么办。分析器那侧仍然拒绝。
+- **86 条 analyzer 警告/提示**:抽查三处 dead_code,都不是 bug,是 kernel
+  API 收紧可空性后剩下的多余守卫(`node.interfaceTarget` 不再可空、
+  `instantiate` 必返 `FunctionType`)。删掉不改变任何输出,但那是生产前端
+  里 40 处编辑,自己占一轮。`bin/check.sh` 的 `analyze_ceiling` 钉住这个
+  数:只能降,降了要在同一个提交里把它改小。
+- **第三把熄了的尺子:`testdata` 那个 cargo crate**。分析器前端一活,
+  `bin/regen.py` 就跟着活了,32 个 `testdata/src/*.rs` 全部重生成(+6021
+  /-975,冻了很久)。但这个 crate 两边都编不过——**冻着的那批 139 个错,
+  重生成的这批 79 个**,所以重生成是严格的改善,留下了。
+  根因是单一的、也不在生成的代码里:`src/lib.rs` 是 1,894 行手写的桩加
+  测试,还停在「方法不返回 `Result`」的年代,`Asserts::new(8.0).halved()`
+  于是成了在 `Result` 上找方法(196 个 E0599 + 105 个 E0308 大半是这一
+  条)。`dart_prelude.rs` 重生成后一字未变,是当前的。把那 1,894 行接上
+  `Result` 是独立一轮;79 是它的起点数。
 
 - **RegExp 无引擎**(intl 的某些路径依赖;目前没踩到)。
 - **typed_data 共享 buffer 视图**:`_eightBytesAsList` 是拷贝不是视图,

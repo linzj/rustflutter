@@ -85,7 +85,8 @@ Future<void> main(List<String> args) async {
 
   ClassDeclaration? target;
   for (final declaration in resolved.unit.declarations) {
-    if (declaration is ClassDeclaration && declaration.name.lexeme == wanted) {
+    if (declaration is ClassDeclaration &&
+        declaration.namePart.typeName.lexeme == wanted) {
       target = declaration;
       break;
     }

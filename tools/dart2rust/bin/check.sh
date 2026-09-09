@@ -28,14 +28,38 @@ python3 bin/statecheck.py || status_state=1
 
 echo
 echo "== dart analyze =="
-# Warnings do not fail the run yet: `lib/frontend.dart`, the analyzer front
-# end the Kernel one replaced, no longer compiles against the current
-# analyzer (49 errors, all API drift), and the count is the ruler for that.
-dart analyze --no-fatal-warnings lib bin test || true
+# An error fails the run. It could not before: `lib/frontend.dart`, the
+# analyzer front end the Kernel one is checked against, had stopped compiling
+# against analyzer 14's rebuilt AST (47 errors), so the gate was written as
+# `|| true` -- which swallowed every *other* file's errors with it. The front
+# end was migrated and the count is zero, so the gate is real again.
+#
+# Warnings and infos do not fail on their own -- 86 of them stand (guards the
+# Kernel API's tightened nullability made dead, casts the analyser can prove
+# redundant, deprecations), and making them fatal in one step would fail every
+# commit until they are gone. They are a queue rather than a gate. But a queue
+# with no ruler is what let this file's `|| true` sit here, so the *count* is
+# the gate: it may fall, never rise, and when it falls this number comes down
+# with it in the same commit.
+analyze_ceiling=86
+analyze_out=$(dart analyze --no-fatal-warnings lib bin test 2>&1) || status_analyze=1
+printf '%s\n' "$analyze_out"
+issues=$(printf '%s\n' "$analyze_out" |
+    sed -n 's/^\([0-9][0-9]*\) issues* found\.$/\1/p')
+[ -n "$issues" ] || issues=0
+if [ "$issues" -gt "$analyze_ceiling" ]; then
+    echo "$issues issues, and $analyze_ceiling is the ceiling: fix them, do" \
+         "not raise it" >&2
+    status_analyze=1
+elif [ "$issues" -lt "$analyze_ceiling" ]; then
+    echo "$issues issues, under the ceiling of $analyze_ceiling -- lower" \
+         "analyze_ceiling in bin/check.sh to $issues" >&2
+    status_analyze=1
+fi
 
 echo
 echo "== tests =="
-status=$(( ${status_fmt:-0} | ${status_state:-0} ))
+status=$(( ${status_fmt:-0} | ${status_state:-0} | ${status_analyze:-0} ))
 for t in test/*_test.dart; do
     dart run $DART2RUST_EXPERIMENTS "$t" || status=1
 done

@@ -42,24 +42,9 @@ class _WalkSelf {
   ///
   /// The `!` ones are the markers the backend spells out; they mutate exactly
   /// as the renamed ones do, and leaving them off here left the receiver
-  /// without its `mut`.
-  static const _mutatingListMethods = {
-    'push',
-    'extend',
-    'clear',
-    'pop',
-    'insert',
-    'remove',
-    '!map_remove',
-    '!insert',
-    '!remove_at',
-    // The ordered `Map`'s own mutators. `put_if_absent` may write, so it
-    // takes `&mut self`, and its receiver needs to say so; so does
-    // `update`, and `sort_natural` sorts in place.
-    'put_if_absent',
-    'update',
-    'sort_natural',
-  };
+  /// without its `mut`. The names live in `member_names.dart` with the other
+  /// four copies of this knowledge, and with what this one is missing.
+  static const _mutatingListMethods = mutatingWalkSelfRustNames;
 
   /// Locals a mutating call is made on -- `xs.insert(..)` needs `let mut xs`,
   /// and a parameter needs `mut xs` in the signature. Rust says this out loud

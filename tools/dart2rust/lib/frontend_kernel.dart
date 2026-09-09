@@ -27,16 +27,19 @@ import 'dart:io' show Platform, stderr;
 
 import 'ir.dart';
 
-// The class is one class in six files. Splitting it is the only thing
-// this does: each part holds one of the sections the file already had
-// (`// -- Expressions --`), moved without a character changed, and
-// `augment` puts them back together. The sections share 35 of the
-// class's 77 fields, so they are not separable objects; making them so
-// is the state-object round, not this one.
+// The class is one class in every file below but `visitors.dart`.
+// Splitting it is the only thing this does: each part holds one of the
+// sections the file already had (`// -- Expressions --`), moved without a
+// character changed, and `augment` puts them back together. The sections
+// share 35 of the class's 77 fields, so they are not separable objects;
+// making them so is the state-object round, not this one.
 //
 // `visitors.dart` is the rest of the file: the `RecursiveVisitor`s and
 // the whole-program queries, which are ordinary top-level declarations
 // and were never part of the class.
+//
+// Named rather than counted: the sentence said "six files" until
+// 2026-09-09, when there were eighteen of them.
 //
 // `augment` is behind `--enable-experiment=augmentations`, which
 // `bin/experiments.sh` is the one place that names.

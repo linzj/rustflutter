@@ -491,11 +491,6 @@ augment class KernelFrontend {
       e is ConstantExpression ||
       e is ThisExpression;
 
-  /// One local declaration, wherever it is written.
-  ///
-  /// A `for`'s variables are `VariableDeclaration`s and not `Statement`s in
-  /// this Kernel, so they cannot go through `statement` -- and the rule about
-  /// what a declaration becomes should be in one place regardless.
   /// Whether a member or parameter is the widget inspector's, not upstream's.
   ///
   /// A debug build runs the widget-creation-tracking transform, which gives
@@ -713,6 +708,11 @@ augment class KernelFrontend {
     );
   }
 
+  /// One local declaration, wherever it is written.
+  ///
+  /// A `for`'s variables are `VariableDeclaration`s and not `Statement`s in
+  /// this Kernel, so they cannot go through `statement` -- and the rule about
+  /// what a declaration becomes should be in one place regardless.
   IrStmt _declare(Variable variable, Node at) {
     final init = variable.initializer;
     if (init is InstanceGet && init.name.text == 'iterator') {

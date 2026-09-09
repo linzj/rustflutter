@@ -15,6 +15,15 @@ import 'package:analyzer/dart/element/type.dart';
 
 import 'ir.dart';
 
+/// Whether the analyser made this element up rather than reading it.
+///
+/// The question is asked all over this file -- a synthetic accessor *is* the
+/// field, a written `get x => ...` is a call -- and analyzer 14 dropped
+/// `Element.isSynthetic`. `nonSynthetic` is what its documentation offers in
+/// place of it: the element itself when the element is real, and the
+/// declaration that induced it when it is not.
+bool _isSynthetic(Element element) => !identical(element, element.nonSynthetic);
+
 class Frontend {
   Frontend(this.className);
 
@@ -90,7 +99,7 @@ class Frontend {
     if (node is NullLiteral) {
       return IrLiteral('null', const IrType('Null', nullable: true));
     }
-    if (node is ThisExpression) return const IrThis();
+    if (node is ThisExpression) return IrThis();
 
     if (node is SimpleIdentifier) return _identifier(node);
     if (node is PrefixedIdentifier) return _prefixed(node);
@@ -167,10 +176,12 @@ class Frontend {
       );
     }
     if (node is RecordLiteral) {
-      if (node.fields.any((f) => f is NamedExpression)) {
+      if (node.fields.any((f) => f is RecordLiteralNamedField)) {
         throw Unsupported('a record with named fields', node.toSource());
       }
-      return IrRecord([for (final f in node.fields) expression(f)]);
+      return IrRecord([
+        for (final f in node.fields) expression(f.fieldExpression),
+      ]);
     }
     if (node is SetOrMapLiteral) {
       if (!node.isMap) throw Unsupported('a set literal', node.toSource());
@@ -258,7 +269,7 @@ class Frontend {
         // accessor, so "is it a PropertyAccessorElement" is not the question --
         // `isSynthetic` is. A synthetic accessor is the one the analyser made
         // up for a field; a real `get x => ...` is not synthetic.
-        if (element is PropertyAccessorElement && !element.isSynthetic) {
+        if (element is PropertyAccessorElement && !_isSynthetic(element)) {
           return IrCall(null, node.name, const []);
         }
         return IrField(null, node.name);
@@ -278,7 +289,7 @@ class Frontend {
     // a field from a real getter -- so a non-synthetic top-level getter is a
     // computed `get foo => ...` and still stops.
     if (element is GetterElement &&
-        element.isSynthetic &&
+        _isSynthetic(element) &&
         (enclosingOf(element) == null)) {
       return IrTopLevel(node.name);
     }
@@ -288,7 +299,7 @@ class Frontend {
     // knowing it once rather than in both front ends.
     if (element.enclosingElement is EnumElement &&
         element is GetterElement &&
-        element.isSynthetic) {
+        _isSynthetic(element)) {
       return IrField(null, node.name, onEnum: true);
     }
     // A method used as a value: `applyTwice(scaled, x)`. In Rust that is a
@@ -425,7 +436,7 @@ class Frontend {
       return IrCall(expression(node.prefix), rust, const []);
     }
     final accessor = node.identifier.element;
-    if (accessor is PropertyAccessorElement && !accessor.isSynthetic) {
+    if (accessor is PropertyAccessorElement && !_isSynthetic(accessor)) {
       return IrCall(expression(node.prefix), node.identifier.name, const []);
     }
     return IrField(
@@ -457,11 +468,11 @@ class Frontend {
     if (node.isNullAware) {
       return IrNullAware(
         expression(target),
-        _memberOn(const IrBound(), node.propertyName),
+        _memberOn(IrBound(), node.propertyName),
       );
     }
     final accessor = node.propertyName.element;
-    if (accessor is PropertyAccessorElement && !accessor.isSynthetic) {
+    if (accessor is PropertyAccessorElement && !_isSynthetic(accessor)) {
       return IrCall(expression(target), node.propertyName.name, const []);
     }
     return IrField(
@@ -474,7 +485,7 @@ class Frontend {
   /// A getter or field read on an already-lowered receiver.
   IrExpr _memberOn(IrExpr receiver, SimpleIdentifier name) {
     final element = name.element;
-    if (element is PropertyAccessorElement && !element.isSynthetic) {
+    if (element is PropertyAccessorElement && !_isSynthetic(element)) {
       return IrCall(receiver, name.name, const []);
     }
     return IrField(
@@ -501,7 +512,7 @@ class Frontend {
         ),
         for (final section in node.cascadeSections) _cascadeStep(section),
       ];
-      return IrBlockValue(steps, const IrLocal(_cascadeName));
+      return IrBlockValue(steps, IrLocal(_cascadeName));
     } finally {
       _cascadeTarget = previous;
     }
@@ -513,9 +524,9 @@ class Frontend {
       if (target is PropertyAccess && section.operator.lexeme == '=') {
         final written = section.writeElement;
         final value = expression(section.rightHandSide);
-        if (written != null && !written.isSynthetic) {
+        if (written != null && !_isSynthetic(written)) {
           return IrSetter(
-            const IrLocal(_cascadeName),
+            IrLocal(_cascadeName),
             target.propertyName.name,
             value,
           );
@@ -523,7 +534,7 @@ class Frontend {
         return IrAssignField(
           target.propertyName.name,
           value,
-          target: const IrLocal(_cascadeName),
+          target: IrLocal(_cascadeName),
         );
       }
       throw Unsupported(
@@ -534,7 +545,7 @@ class Frontend {
     if (section is MethodInvocation) {
       return IrExprStmt(
         IrCall(
-          const IrLocal(_cascadeName),
+          IrLocal(_cascadeName),
           section.methodName.name,
           _arguments(
             section.argumentList,
@@ -585,10 +596,9 @@ class Frontend {
     }
     final params = <IrParam>[];
     for (final p in node.parameters?.parameters ?? const <FormalParameter>[]) {
-      final inner = p is DefaultFormalParameter ? p.parameter : p;
-      final name = inner.name?.lexeme;
+      final name = p.name?.lexeme;
       if (name == null) throw Unsupported('unnamed parameter', p.toSource());
-      params.add(IrParam(name, _type(inner.declaredFragment?.element.type)));
+      params.add(IrParam(name, _type(p.declaredFragment?.element.type)));
     }
     final was = _captured;
     // A counted class's closure keeps the object itself. See `holdsSelf`.
@@ -735,10 +745,10 @@ class Frontend {
     final positional = <Expression>[];
     final named = <String, Expression>{};
     for (final argument in list.arguments) {
-      if (argument is NamedExpression) {
-        named[argument.name.label.name] = argument.expression;
+      if (argument is NamedArgument) {
+        named[argument.name.lexeme] = argument.argumentExpression;
       } else {
-        positional.add(argument);
+        positional.add(argument.argumentExpression);
       }
     }
     // Not `if (named.isEmpty) return positional`. That shortcut is wrong for a
@@ -792,7 +802,7 @@ class Frontend {
       throw Unsupported('default `$code` is not a literal', site.toSource());
     }
     if (param.type.nullabilitySuffix.name == 'question') {
-      return const IrLiteral('null', IrType('Null', nullable: true));
+      return IrLiteral('null', const IrType('Null', nullable: true));
     }
     throw Unsupported(
       'omitted parameter `${param.name}` has no default',
@@ -810,7 +820,7 @@ class Frontend {
       return IrLiteral(code, const IrType('bool'));
     }
     if (code == 'null') {
-      return const IrLiteral('null', IrType('Null', nullable: true));
+      return IrLiteral('null', const IrType('Null', nullable: true));
     }
     if (RegExp(r'^-?\d+$').hasMatch(code)) {
       return IrLiteral(code, const IrType('int'));
@@ -932,7 +942,7 @@ class Frontend {
     if (node.isNullAware && target != null) {
       return IrNullAware(
         expression(target),
-        IrCall(const IrBound(), node.methodName.name, args),
+        IrCall(IrBound(), node.methodName.name, args),
       );
     }
     if (target is SuperExpression) {
@@ -1106,7 +1116,7 @@ class Frontend {
           ),
         IrWhile(
           condition == null
-              ? const IrLiteral('true', IrType('bool'))
+              ? IrLiteral('true', const IrType('bool'))
               : expression(condition),
           IrBlock([
             loopBody,
@@ -1439,7 +1449,7 @@ class Frontend {
     if (written is LocalVariableElement || written is FormalParameterElement) {
       return (name, false);
     }
-    if (written != null && written.isSynthetic) return (name, true);
+    if (written != null && _isSynthetic(written)) return (name, true);
     return (name, true);
   }
 
@@ -1449,7 +1459,7 @@ class Frontend {
     if (written is LocalVariableElement || written is FormalParameterElement) {
       return false;
     }
-    return written != null && !written.isSynthetic;
+    return written != null && !_isSynthetic(written);
   }
 
   IrStmt body(FunctionBody node) {
@@ -1542,13 +1552,12 @@ class Frontend {
     final function = node.functionExpression;
     final params = <IrParam>[];
     for (final p in function.parameters?.parameters ?? const []) {
-      final inner = p is DefaultFormalParameter ? p.parameter : p;
-      final name = inner.name?.lexeme;
+      final name = p.name?.lexeme;
       if (name == null) throw Unsupported('unnamed parameter', p.toSource());
       params.add(
         IrParam(
           name,
-          _type(inner.declaredFragment?.element.type),
+          _type(p.declaredFragment?.element.type),
           named: p.isNamed,
         ),
       );
@@ -1583,14 +1592,14 @@ class Frontend {
     // same thing off the evaluated constants; the enum fixture holds the two
     // to the same answer.
     final carried = [
-      for (final member in node.members)
+      for (final member in node.body.members)
         if (member is FieldDeclaration && !member.isStatic)
           for (final v in member.fields.variables) v.name.lexeme,
     ];
     final valueFields = <String, Map<String, String>>{};
     var stateful = carried.isNotEmpty;
     if (stateful) {
-      for (final constant in node.constants) {
+      for (final constant in node.body.constants) {
         final args = constant.arguments?.argumentList.arguments ?? const [];
         if (args.length != carried.length) break;
         final own = <String, String>{};
@@ -1604,27 +1613,29 @@ class Frontend {
       }
       // All of them or none: a getter that covers some variants is not a
       // getter.
-      stateful = valueFields.length != node.constants.length;
+      stateful = valueFields.length != node.body.constants.length;
     }
     if (stateful) {
       refused.add('unsupported an enum whose values carry fields');
     }
     final cls = IrClass(
-      node.name.lexeme,
+      node.namePart.typeName.lexeme,
       isEnum: true,
       values: stateful
           ? const []
-          : [for (final c in node.constants) c.name.lexeme],
+          : [for (final c in node.body.constants) c.name.lexeme],
       valueFields: stateful ? const {} : valueFields,
       doc: _doc(node),
     );
     if (!stateful) {
-      for (final member in node.members) {
+      for (final member in node.body.members) {
         if (member is! MethodDeclaration) continue;
         try {
           _lowerMethod(cls, member);
         } on Unsupported catch (error) {
-          refused.add('${node.name.lexeme}.${member.name.lexeme}: $error');
+          refused.add(
+            '${node.namePart.typeName.lexeme}.${member.name.lexeme}: $error',
+          );
         }
       }
     }
@@ -1672,9 +1683,10 @@ class Frontend {
     _counted = calls.found;
     final element = node.declaredFragment?.element;
     final cls = IrClass(
-      node.name.lexeme,
+      node.namePart.typeName.lexeme,
       typeParameters: [
-        for (final p in node.typeParameters?.typeParameters ?? const [])
+        for (final p
+            in node.namePart.typeParameters?.typeParameters ?? const [])
           p.name.lexeme,
       ],
       counted: _counted,
@@ -1698,7 +1710,7 @@ class Frontend {
     _superclass = cls.superclass;
     final refused = <String>[];
 
-    for (final member in node.members) {
+    for (final member in node.body.members) {
       try {
         if (member is FieldDeclaration) {
           _lowerField(cls, member);
@@ -1763,12 +1775,11 @@ class Frontend {
     final params = <IrParam>[];
     final inits = <String, IrExpr>{};
     for (final p in member.parameters.parameters) {
-      final inner = p is DefaultFormalParameter ? p.parameter : p;
-      final name = inner.name?.lexeme;
+      final name = p.name?.lexeme;
       if (name == null) throw Unsupported('unnamed parameter', p.toSource());
-      final element = inner.declaredFragment?.element;
+      final element = p.declaredFragment?.element;
       params.add(IrParam(name, _type(element?.type), named: p.isNamed));
-      if (inner is FieldFormalParameter) {
+      if (p is FieldFormalParameter) {
         inits[name] = IrLocal(name);
       }
     }
@@ -1854,13 +1865,12 @@ class Frontend {
     final params = <IrParam>[];
     for (final p
         in member.parameters?.parameters ?? const <FormalParameter>[]) {
-      final inner = p is DefaultFormalParameter ? p.parameter : p;
-      final name = inner.name?.lexeme;
+      final name = p.name?.lexeme;
       if (name == null) throw Unsupported('unnamed parameter', p.toSource());
       params.add(
         IrParam(
           name,
-          _type(inner.declaredFragment?.element.type),
+          _type(p.declaredFragment?.element.type),
           named: p.isNamed,
           // Owned where the callee keeps it: see `IrParam.kept`.
           kept: _keptParameters.contains(
@@ -1953,8 +1963,7 @@ class _KeptParameters extends RecursiveAstVisitor<void> {
     if (name == null || params == null || body == null) return;
     for (var i = 0; i < params.parameters.length; i++) {
       final p = params.parameters[i];
-      final inner = p is DefaultFormalParameter ? p.parameter : p;
-      final declared = inner.declaredFragment?.element;
+      final declared = p.declaredFragment?.element;
       if (declared == null) continue;
       final walk = _ParameterEscapes(declared);
       body.accept(walk);
@@ -2029,7 +2038,7 @@ class _FinalFieldReads extends RecursiveAstVisitor<void> {
     // A synthetic getter *is* the field; a written one is a computed getter
     // and reads whatever it likes.
     final field = switch (element) {
-      GetterElement(isSynthetic: true) => element.variable,
+      GetterElement() when _isSynthetic(element) => element.variable,
       FieldElement() => element,
       _ => null,
     };
@@ -2141,8 +2150,8 @@ class _TouchedFields extends RecursiveAstVisitor<void> {
 
   void _look(Element? element) {
     final field = switch (element) {
-      GetterElement(isSynthetic: true) => element.variable,
-      SetterElement(isSynthetic: true) => element.variable,
+      GetterElement() when _isSynthetic(element) => element.variable,
+      SetterElement() when _isSynthetic(element) => element.variable,
       FieldElement() => element,
       _ => null,
     };
@@ -2184,20 +2193,6 @@ class _ThrownTypes extends RecursiveAstVisitor<void> {
     final type = node.expression.staticType;
     types.add(type?.element?.name ?? 'Object');
     super.visitThrowExpression(node);
-  }
-}
-
-/// The analyzer's half of the return-inside-try check. Nested functions are
-/// skipped: a `return` in a closure belongs to that closure.
-class _EarlyExit extends RecursiveAstVisitor<void> {
-  bool found = false;
-
-  @override
-  void visitFunctionExpression(FunctionExpression node) {}
-
-  @override
-  void visitReturnStatement(ReturnStatement node) {
-    found = true;
   }
 }
 

@@ -16,21 +16,20 @@ pub struct Guarded {
 }
 
 impl Guarded {
-    pub const fn new(limit: f64) -> Self {
-        Self { limit: limit }
+    pub const fn new(limit: f64) -> Result<Self, std::rc::Rc<dyn Object>> {
+        Ok({ Self { limit: limit } })
     }
 
-    pub fn checked(&self, value: f64) -> f64 {
+    pub fn checked(&self, value: f64) -> Result<f64, std::rc::Rc<dyn Object>> {
         if (value > self.limit) {
-            panic!(
-                "uncaught Dart exception: {:?}",
-                RangeError::new("over the limit".to_string())
-            );
+            return Err(dart_boxed(RangeError::new("over the limit".to_string())));
         }
-        value
+        Ok(value)
     }
 
-    pub fn recovered(&self, value: f64) -> f64 {
+    /// Catches, so this method does **not** return a Result. That is the whole
+    /// test: the failure stops here.
+    pub fn recovered(&self, value: f64) -> Result<f64, std::rc::Rc<dyn Object>> {
         let mut result: f64 = 0.0;
         match (|| -> Result<(), std::rc::Rc<dyn Object>> {
             result = self.checked(value);
@@ -41,10 +40,12 @@ impl Guarded {
                 result = (-1.0);
             }
         }
-        result
+        Ok(result)
     }
 
-    pub fn recovered_with_unused_trace(&self, value: f64) -> f64 {
+    /// A catch that binds a stack trace and never reads it. Free, since ignoring
+    /// something a Result does not carry costs nothing.
+    pub fn recovered_with_unused_trace(&self, value: f64) -> Result<f64, std::rc::Rc<dyn Object>> {
         let mut result: f64 = 0.0;
         match (|| -> Result<(), std::rc::Rc<dyn Object>> {
             result = self.checked(value);
@@ -56,32 +57,43 @@ impl Guarded {
                 result = (-2.0);
             }
         }
-        result
+        Ok(result)
     }
 
-    pub fn uncaught(&self, value: f64) -> f64 {
-        (self.checked(value) + 1.0)
+    /// Does not catch, so the failure keeps travelling and this one does return
+    /// a Result. The pair is the point: catching and not catching have to give
+    /// different signatures.
+    pub fn uncaught(&self, value: f64) -> Result<f64, std::rc::Rc<dyn Object>> {
+        Ok((self.checked(value) + 1.0))
     }
 
-    pub fn returns_from_inside_try(&self, value: f64) -> f64 {
-        match (|| -> Result<Option<f64>, std::rc::Rc<dyn Object>> {
-            return Ok(Some(self.checked(value)));
+    /// The fixture's sharpest case. The try body is emitted as a closure, so a
+    /// plain `return` here would leave the *closure* and the method would carry
+    /// on -- returning whatever came after, and compiling while it did it. So the
+    /// closure carries the control flow out as a value instead. If it did not,
+    /// this would return 0.0 for every input rather than the two below.
+    pub fn returns_from_inside_try(&self, value: f64) -> Result<f64, std::rc::Rc<dyn Object>> {
+        match (|| -> Result<Option<Result<f64, std::rc::Rc<dyn Object>>>, std::rc::Rc<dyn Object>> {
+            return Ok(Some(Ok(self.checked(value))));
             #[allow(unreachable_code)]
             Ok(None)
         })() {
             Ok(Some(__returned)) => return __returned,
             Ok(None) => unreachable!("the try body always returns"),
             Err(e) => {
-                return (-3.0);
+                return Ok((-3.0));
             }
         }
     }
 
-    pub fn returns_on_one_path(&self, value: f64) -> f64 {
+    /// A `return` on only *one* path through the try body. The other path falls
+    /// off the end of the closure, which is what `Ok(None)` is for -- without it
+    /// this case and the one above cannot be told apart.
+    pub fn returns_on_one_path(&self, value: f64) -> Result<f64, std::rc::Rc<dyn Object>> {
         let mut result: f64 = 0.0;
-        match (|| -> Result<Option<f64>, std::rc::Rc<dyn Object>> {
+        match (|| -> Result<Option<Result<f64, std::rc::Rc<dyn Object>>>, std::rc::Rc<dyn Object>> {
             if (value < 0.0) {
-                return Ok(Some((-4.0)));
+                return Ok(Some(Ok((-4.0))));
             }
             result = self.checked(value);
             #[allow(unreachable_code)]
@@ -93,16 +105,80 @@ impl Guarded {
                 result = (-5.0);
             }
         }
-        result
+        Ok(result)
+    }
+}
+
+impl FromDynamic for Guarded {
+    fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
+        value.dart_cast_any::<Self>()
+    }
+    fn from_same(value: &Self) -> Option<Self> {
+        Some(value.clone())
+    }
+}
+
+impl NativeAnswer for Guarded {
+    fn from_answer(answer: std::rc::Rc<dyn Object>, symbol: &str) -> Self {
+        match answer.dart_cast_any::<Self>() {
+            Some(value) => value,
+            None => panic!(
+                "native `{}` answered {:?} where Guarded was declared",
+                symbol, answer
+            ),
+        }
+    }
+    fn absent() -> Self {
+        panic!("native answered nothing where Guarded was declared")
+    }
+}
+
+impl DartNullable for Guarded {
+    type Or = Option<Self>;
+    fn option(or: Option<Self>) -> Option<Self> {
+        or
+    }
+    fn from_option(option: Option<Self>) -> Option<Self> {
+        option
+    }
+}
+
+impl DartEq for Guarded {
+    fn dart_eq(&self, other: &Self) -> bool {
+        self == other
     }
 }
 
 impl DartAny for Guarded {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
+    fn dart_to_string(&self) -> String {
+        format!("Instance of '{}'", "Guarded")
+    }
+    fn dart_eq_any(&self, other: &dyn std::any::Any) -> bool {
+        match other.downcast_ref::<Self>() {
+            Some(o) => self.dart_eq(o),
+            None => false,
+        }
+    }
+    fn dart_hash_any(&self) -> i64 {
+        self.dart_hash_code()
     }
     fn dart_runtime_type(&self) -> Type {
-        Type { name: "Guarded" }
+        Type::of("Guarded")
+    }
+    fn dart_cast(&self, __t: std::any::TypeId) -> Option<std::boxed::Box<dyn std::any::Any>> {
+        if __t == std::any::TypeId::of::<Self>()
+            || __t == std::any::TypeId::of::<std::rc::Rc<Self>>()
+        {
+            return Some(std::boxed::Box::new(std::rc::Rc::new(self.clone())));
+        }
+        if __t == std::any::TypeId::of::<dyn Object>()
+            || __t == std::any::TypeId::of::<std::rc::Rc<dyn Object>>()
+        {
+            return Some(std::boxed::Box::new(
+                std::rc::Rc::new(self.clone()) as std::rc::Rc<dyn Object>
+            ));
+        }
+        None
     }
 }
 
@@ -111,6 +187,8 @@ impl DartAny for Guarded {
 // Translated, not ported: this is the compiler's output, not a
 // hand-written re-expression. See tools/dart2rust/README.md.
 
+/// `finally` on its own class, because showing that the finalizer ran needs a
+/// field that can change and `Guarded` is const.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Tally {
     pub limit: f64,
@@ -118,29 +196,33 @@ pub struct Tally {
 }
 
 impl Tally {
-    pub fn new(limit: f64) -> Self {
-        Self {
-            limit: limit,
-            runs: 0,
-        }
-    }
-
-    pub fn checked(&self, value: f64) -> f64 {
-        if (value > self.limit) {
-            panic!(
-                "uncaught Dart exception: {:?}",
-                RangeError::new("over the limit".to_string())
-            );
-        }
-        value
-    }
-
-    pub fn counted(&mut self, value: f64) -> f64 {
-        let __finally = (|| -> Result<Option<f64>, std::convert::Infallible> {
-            if (value < 0.0) {
-                return Ok(Some((-6.0)));
+    pub fn new(limit: f64) -> Result<Self, std::rc::Rc<dyn Object>> {
+        dart_register::<Self>();
+        Ok({
+            Self {
+                limit: limit,
+                runs: 0,
             }
-            return Ok(Some(self.checked(value)));
+        })
+    }
+
+    pub fn checked(&self, value: f64) -> Result<f64, std::rc::Rc<dyn Object>> {
+        if (value > self.limit) {
+            return Err(dart_boxed(RangeError::new("over the limit".to_string())));
+        }
+        Ok(value)
+    }
+
+    /// Three ways out of the body -- returned early, returned a value that may
+    /// throw, and threw -- and `runs` has to go up on all three. A finalizer that
+    /// ran only on the ordinary path would pass a test that used just one of
+    /// them, which is why the test uses all three in sequence.
+    pub fn counted(&mut self, value: f64) -> Result<f64, std::rc::Rc<dyn Object>> {
+        let __finally = (|| -> Result<Option<Result<f64, std::rc::Rc<dyn Object>>>, std::rc::Rc<dyn Object>> {
+            if (value < 0.0) {
+                return Ok(Some(Ok((-6.0))));
+            }
+            return Ok(Some(Ok(self.checked(value))));
             #[allow(unreachable_code)]
             Ok(None)
         })();
@@ -148,16 +230,80 @@ impl Tally {
         match __finally {
             Ok(Some(__returned)) => return __returned,
             Ok(None) => unreachable!("the try body always returns"),
-            Err(__failed) => match __failed {},
+            Err(__failed) => return Err(__failed),
         }
     }
 }
 
+impl FromDynamic for Tally {
+    fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
+        value.dart_cast_any::<Self>()
+    }
+    fn from_same(value: &Self) -> Option<Self> {
+        Some(value.clone())
+    }
+}
+
+impl NativeAnswer for Tally {
+    fn from_answer(answer: std::rc::Rc<dyn Object>, symbol: &str) -> Self {
+        match answer.dart_cast_any::<Self>() {
+            Some(value) => value,
+            None => panic!(
+                "native `{}` answered {:?} where Tally was declared",
+                symbol, answer
+            ),
+        }
+    }
+    fn absent() -> Self {
+        panic!("native answered nothing where Tally was declared")
+    }
+}
+
+impl DartNullable for Tally {
+    type Or = Option<Self>;
+    fn option(or: Option<Self>) -> Option<Self> {
+        or
+    }
+    fn from_option(option: Option<Self>) -> Option<Self> {
+        option
+    }
+}
+
+impl DartEq for Tally {
+    fn dart_eq(&self, other: &Self) -> bool {
+        self == other
+    }
+}
+
 impl DartAny for Tally {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
+    fn dart_to_string(&self) -> String {
+        format!("Instance of '{}'", "Tally")
+    }
+    fn dart_eq_any(&self, other: &dyn std::any::Any) -> bool {
+        match other.downcast_ref::<Self>() {
+            Some(o) => self.dart_eq(o),
+            None => false,
+        }
+    }
+    fn dart_hash_any(&self) -> i64 {
+        self.dart_hash_code()
     }
     fn dart_runtime_type(&self) -> Type {
-        Type { name: "Tally" }
+        Type::of("Tally")
+    }
+    fn dart_cast(&self, __t: std::any::TypeId) -> Option<std::boxed::Box<dyn std::any::Any>> {
+        if __t == std::any::TypeId::of::<Self>()
+            || __t == std::any::TypeId::of::<std::rc::Rc<Self>>()
+        {
+            return Some(std::boxed::Box::new(std::rc::Rc::new(self.clone())));
+        }
+        if __t == std::any::TypeId::of::<dyn Object>()
+            || __t == std::any::TypeId::of::<std::rc::Rc<dyn Object>>()
+        {
+            return Some(std::boxed::Box::new(
+                std::rc::Rc::new(self.clone()) as std::rc::Rc<dyn Object>
+            ));
+        }
+        None
     }
 }

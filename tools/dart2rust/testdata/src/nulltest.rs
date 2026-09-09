@@ -1,3 +1,4 @@
+use crate::dart_prelude::Object;
 use crate::dart_prelude::*;
 use crate::DartAny;
 use crate::Type;
@@ -14,42 +15,116 @@ pub struct Maybe {
 }
 
 impl Maybe {
-    pub const fn new(value: Option<f64>, other: Option<f64>) -> Self {
-        Self {
-            value: value,
-            other: other,
-        }
+    pub const fn new(
+        value: Option<f64>,
+        other: Option<f64>,
+    ) -> Result<Self, std::rc::Rc<dyn Object>> {
+        Ok({
+            Self {
+                value: value,
+                other: other,
+            }
+        })
     }
 
-    pub fn is_missing(&self) -> bool {
-        self.value.is_none()
+    pub fn is_missing(&self) -> Result<bool, std::rc::Rc<dyn Object>> {
+        Ok(self.value.is_none())
     }
 
-    pub fn is_present(&self) -> bool {
-        (!self.value.is_none())
+    /// `!=`, which Kernel wraps in a negation.
+    pub fn is_present(&self) -> Result<bool, std::rc::Rc<dyn Object>> {
+        Ok((!self.value.is_none()))
     }
 
-    pub fn missing_on_the_left(&self) -> bool {
-        self.other.is_none()
+    /// `null` on the left, which Dart allows and which reads the same.
+    pub fn missing_on_the_left(&self) -> Result<bool, std::rc::Rc<dyn Object>> {
+        Ok(self.other.is_none())
     }
 
-    pub fn both_missing(&self) -> bool {
-        (self.value.is_none() && self.other.is_none())
+    /// Two of them, so an implementation that only looked at the first would be
+    /// caught.
+    pub fn both_missing(&self) -> Result<bool, std::rc::Rc<dyn Object>> {
+        Ok((self.value.is_none() && self.other.is_none()))
     }
 
-    pub fn resolve(&self, fallback: f64) -> f64 {
+    /// A null test guarding a null assertion -- the shape upstream uses most.
+    pub fn resolve(&self, fallback: f64) -> Result<f64, std::rc::Rc<dyn Object>> {
         if self.value.is_none() {
-            return fallback;
+            return Ok(fallback);
         }
-        self.value.unwrap()
+        Ok(self.value.unwrap())
+    }
+}
+
+impl FromDynamic for Maybe {
+    fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
+        value.dart_cast_any::<Self>()
+    }
+    fn from_same(value: &Self) -> Option<Self> {
+        Some(value.clone())
+    }
+}
+
+impl NativeAnswer for Maybe {
+    fn from_answer(answer: std::rc::Rc<dyn Object>, symbol: &str) -> Self {
+        match answer.dart_cast_any::<Self>() {
+            Some(value) => value,
+            None => panic!(
+                "native `{}` answered {:?} where Maybe was declared",
+                symbol, answer
+            ),
+        }
+    }
+    fn absent() -> Self {
+        panic!("native answered nothing where Maybe was declared")
+    }
+}
+
+impl DartNullable for Maybe {
+    type Or = Option<Self>;
+    fn option(or: Option<Self>) -> Option<Self> {
+        or
+    }
+    fn from_option(option: Option<Self>) -> Option<Self> {
+        option
+    }
+}
+
+impl DartEq for Maybe {
+    fn dart_eq(&self, other: &Self) -> bool {
+        self == other
     }
 }
 
 impl DartAny for Maybe {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
+    fn dart_to_string(&self) -> String {
+        format!("Instance of '{}'", "Maybe")
+    }
+    fn dart_eq_any(&self, other: &dyn std::any::Any) -> bool {
+        match other.downcast_ref::<Self>() {
+            Some(o) => self.dart_eq(o),
+            None => false,
+        }
+    }
+    fn dart_hash_any(&self) -> i64 {
+        self.dart_hash_code()
     }
     fn dart_runtime_type(&self) -> Type {
-        Type { name: "Maybe" }
+        Type::of("Maybe")
+    }
+    fn dart_cast(&self, __t: std::any::TypeId) -> Option<std::boxed::Box<dyn std::any::Any>> {
+        if __t == std::any::TypeId::of::<Self>()
+            || __t == std::any::TypeId::of::<std::rc::Rc<Self>>()
+        {
+            return Some(std::boxed::Box::new(std::rc::Rc::new(self.clone())));
+        }
+        if __t == std::any::TypeId::of::<dyn Object>()
+            || __t == std::any::TypeId::of::<std::rc::Rc<dyn Object>>()
+        {
+            return Some(std::boxed::Box::new(
+                std::rc::Rc::new(self.clone()) as std::rc::Rc<dyn Object>
+            ));
+        }
+        None
     }
 }

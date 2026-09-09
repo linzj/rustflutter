@@ -1,6 +1,5 @@
 part of '../frontend_kernel.dart';
 
-/// Whether a function body mentions `this` anywhere inside it.
 /// Whether a body is the FFI transform's plumbing around a `@Native`.
 bool _callsFfiNative(Statement body) {
   final finder = _FfiNativeFinder();
@@ -335,6 +334,8 @@ class _ThisWriteFinder extends RecursiveVisitor {
   }
 }
 
+/// Whether a function body mentions `this` anywhere inside it
+/// (`_reachesThis`, which is the only caller).
 class _ThisFinder extends RecursiveVisitor {
   bool found = false;
 

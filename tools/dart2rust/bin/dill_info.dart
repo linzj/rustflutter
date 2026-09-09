@@ -8,8 +8,6 @@
 //
 // If any answer is no, the Kernel front end is not worth writing.
 
-import 'dart:io';
-
 import 'package:kernel/ast.dart';
 import 'package:kernel/kernel.dart';
 

@@ -1,4 +1,4 @@
-// The four sets of receiver-changing member names, and the differences
+// The five sets of receiver-changing member names, and the differences
 // between them.
 //
 // These are the sets that had drifted apart while nothing could see them
@@ -75,6 +75,30 @@ void main() {
   );
   expectTrue(!inPlace.contains('update_all'), 'and updateAll is not (the gap)');
   expectTrue(!inPlace.contains('[]='), 'nor index assignment');
+
+  group('what _WalkSelf asks for');
+  // The fifth copy, gathered 2026-09-09. It decides which local gets `let mut`
+  // and which method takes `&mut self`, and it is far smaller than `_inPlace`.
+  // Both directions are written out, so folding the table into one place
+  // cannot turn into closing the gap without this test saying so.
+  expect(mutatingWalkSelfRustNames.length, 12, 'what _WalkSelf looks for');
+  expect(mutatingWalkSelfRustNames.difference(inPlace), {
+    '!insert',
+    '!remove_at',
+  }, "the backend's markers, which _inPlace never carried");
+  expect(
+    inPlace.difference(mutatingWalkSelfRustNames).length,
+    41,
+    'KNOWN GAP: 41 in-place names do not put `mut` on their receiver',
+  );
+  expectTrue(
+    inPlace.difference(mutatingWalkSelfRustNames).contains('add_all'),
+    '`xs.addAll(..)` among them',
+  );
+  expectTrue(
+    inPlace.difference(mutatingWalkSelfRustNames).contains('remove_where'),
+    'and `xs.removeWhere(..)`',
+  );
 
   report('member_names');
 }

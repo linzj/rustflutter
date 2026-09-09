@@ -1,3 +1,4 @@
+use crate::dart_prelude::Object;
 use crate::dart_prelude::*;
 use crate::DartAny;
 use crate::Type;
@@ -14,45 +15,123 @@ pub struct NullCheck {
 }
 
 impl NullCheck {
-    pub const fn new(maybe: Option<f64>, other: Option<f64>) -> Self {
-        Self {
-            maybe: maybe,
-            other: other,
-        }
+    pub const fn new(
+        maybe: Option<f64>,
+        other: Option<f64>,
+    ) -> Result<Self, std::rc::Rc<dyn Object>> {
+        Ok({
+            Self {
+                maybe: maybe,
+                other: other,
+            }
+        })
     }
 
-    pub fn doubled(&self) -> f64 {
-        (self.maybe.unwrap() * 2.0)
+    /// The plain case.
+    pub fn doubled(&self) -> Result<f64, std::rc::Rc<dyn Object>> {
+        Ok((self.maybe.unwrap() * 2.0))
     }
 
-    pub fn summed(&self) -> f64 {
-        (self.maybe.unwrap() + self.other.unwrap())
+    /// Two of them in one expression, so an implementation that unwrapped only
+    /// the first would still be caught.
+    pub fn summed(&self) -> Result<f64, std::rc::Rc<dyn Object>> {
+        Ok((self.maybe.unwrap() + self.other.unwrap()))
     }
 
-    pub fn via_call(&self) -> f64 {
-        (self.pick(true).unwrap() + self.pick(false).unwrap())
+    /// `!` on the *result* of something, not on a field.
+    pub fn via_call(&self) -> Result<f64, std::rc::Rc<dyn Object>> {
+        Ok((self.pick(true).unwrap() + self.pick(false).unwrap()))
     }
 
-    pub fn pick(&self, first: bool) -> Option<f64> {
+    pub fn pick(&self, first: bool) -> Result<Option<f64>, std::rc::Rc<dyn Object>> {
         if first {
-            return self.maybe;
+            return Ok(self.maybe);
         }
-        self.other
+        Ok(self.other)
     }
 
-    pub fn with_fallback(&self, fallback: f64) -> f64 {
-        (match self.other {
+    /// A null-aware fallback beside a `!`, so the two are not confused: `??`
+    /// supplies a default, `!` insists there is no need for one.
+    pub fn with_fallback(&self, fallback: f64) -> Result<f64, std::rc::Rc<dyn Object>> {
+        Ok((match {
+            let __scrutinee = self.other;
+            __scrutinee
+        } {
             Some(__value) => __value,
             None => fallback,
-        } + self.maybe.unwrap())
+        } + self.maybe.unwrap()))
+    }
+}
+
+impl FromDynamic for NullCheck {
+    fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
+        value.dart_cast_any::<Self>()
+    }
+    fn from_same(value: &Self) -> Option<Self> {
+        Some(value.clone())
+    }
+}
+
+impl NativeAnswer for NullCheck {
+    fn from_answer(answer: std::rc::Rc<dyn Object>, symbol: &str) -> Self {
+        match answer.dart_cast_any::<Self>() {
+            Some(value) => value,
+            None => panic!(
+                "native `{}` answered {:?} where NullCheck was declared",
+                symbol, answer
+            ),
+        }
+    }
+    fn absent() -> Self {
+        panic!("native answered nothing where NullCheck was declared")
+    }
+}
+
+impl DartNullable for NullCheck {
+    type Or = Option<Self>;
+    fn option(or: Option<Self>) -> Option<Self> {
+        or
+    }
+    fn from_option(option: Option<Self>) -> Option<Self> {
+        option
+    }
+}
+
+impl DartEq for NullCheck {
+    fn dart_eq(&self, other: &Self) -> bool {
+        self == other
     }
 }
 
 impl DartAny for NullCheck {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
+    fn dart_to_string(&self) -> String {
+        format!("Instance of '{}'", "NullCheck")
+    }
+    fn dart_eq_any(&self, other: &dyn std::any::Any) -> bool {
+        match other.downcast_ref::<Self>() {
+            Some(o) => self.dart_eq(o),
+            None => false,
+        }
+    }
+    fn dart_hash_any(&self) -> i64 {
+        self.dart_hash_code()
     }
     fn dart_runtime_type(&self) -> Type {
-        Type { name: "NullCheck" }
+        Type::of("NullCheck")
+    }
+    fn dart_cast(&self, __t: std::any::TypeId) -> Option<std::boxed::Box<dyn std::any::Any>> {
+        if __t == std::any::TypeId::of::<Self>()
+            || __t == std::any::TypeId::of::<std::rc::Rc<Self>>()
+        {
+            return Some(std::boxed::Box::new(std::rc::Rc::new(self.clone())));
+        }
+        if __t == std::any::TypeId::of::<dyn Object>()
+            || __t == std::any::TypeId::of::<std::rc::Rc<dyn Object>>()
+        {
+            return Some(std::boxed::Box::new(
+                std::rc::Rc::new(self.clone()) as std::rc::Rc<dyn Object>
+            ));
+        }
+        None
     }
 }

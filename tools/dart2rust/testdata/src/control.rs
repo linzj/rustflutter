@@ -1,3 +1,4 @@
+use crate::dart_prelude::Object;
 use crate::dart_prelude::*;
 use crate::DartAny;
 use crate::RangeError;
@@ -14,21 +15,25 @@ pub struct Sieve {
 }
 
 impl Sieve {
-    pub const fn new(limit: i64) -> Self {
-        Self { limit: limit }
+    pub const fn new(limit: i64) -> Result<Self, std::rc::Rc<dyn Object>> {
+        Ok({ Self { limit: limit } })
     }
 
-    pub fn at_least_one(&self, given: Option<i64>) -> i64 {
-        match given {
-            Some(__value) => __value,
-            None => panic!(
-                "uncaught Dart exception: {:?}",
-                RangeError::new("nothing given".to_string())
-            ),
-        }
+    /// `throw` in expression position -- the right side of `??`.
+    pub fn at_least_one(&self, given: Option<i64>) -> Result<i64, std::rc::Rc<dyn Object>> {
+        Ok(
+            match {
+                let __scrutinee = given.clone();
+                __scrutinee
+            } {
+                Some(__value) => __value,
+                None => return Err(dart_boxed(RangeError::new("nothing given".to_string()))),
+            },
+        )
     }
 
-    pub fn first_over(&self, bound: i64) -> i64 {
+    /// `break` leaves the loop, and the statement after it still runs.
+    pub fn first_over(&self, bound: i64) -> Result<i64, std::rc::Rc<dyn Object>> {
         let mut found: i64 = (-1);
         let mut i: i64 = 0;
         while (i < self.limit) {
@@ -39,10 +44,14 @@ impl Sieve {
             found = (-2);
             i = (i + 1);
         }
-        found
+        Ok(found)
     }
 
-    pub fn first_odd_over(&self, bound: i64) -> i64 {
+    /// Both in one loop, which is the case that needs the labels to be told
+    /// apart: the `continue` leaves the body block and lands on the update, and
+    /// the `break` has to cross that block to leave the loop -- which Rust will
+    /// not let an unlabelled `break` do.
+    pub fn first_odd_over(&self, bound: i64) -> Result<i64, std::rc::Rc<dyn Object>> {
         let mut found: i64 = (-1);
         let mut i: i64 = 0;
         '__l0: while (i < self.limit) {
@@ -57,10 +66,12 @@ impl Sieve {
             }
             i = (i + 1);
         }
-        found
+        Ok(found)
     }
 
-    pub fn odds_below(&self) -> i64 {
+    /// `continue` is the other half: Kernel spells it as a `break` out of a label
+    /// wrapped around the body rather than around the loop.
+    pub fn odds_below(&self) -> Result<i64, std::rc::Rc<dyn Object>> {
         let mut total: i64 = 0;
         let mut i: i64 = 0;
         while (i < self.limit) {
@@ -72,15 +83,79 @@ impl Sieve {
             }
             i = (i + 1);
         }
-        total
+        Ok(total)
+    }
+}
+
+impl FromDynamic for Sieve {
+    fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
+        value.dart_cast_any::<Self>()
+    }
+    fn from_same(value: &Self) -> Option<Self> {
+        Some(value.clone())
+    }
+}
+
+impl NativeAnswer for Sieve {
+    fn from_answer(answer: std::rc::Rc<dyn Object>, symbol: &str) -> Self {
+        match answer.dart_cast_any::<Self>() {
+            Some(value) => value,
+            None => panic!(
+                "native `{}` answered {:?} where Sieve was declared",
+                symbol, answer
+            ),
+        }
+    }
+    fn absent() -> Self {
+        panic!("native answered nothing where Sieve was declared")
+    }
+}
+
+impl DartNullable for Sieve {
+    type Or = Option<Self>;
+    fn option(or: Option<Self>) -> Option<Self> {
+        or
+    }
+    fn from_option(option: Option<Self>) -> Option<Self> {
+        option
+    }
+}
+
+impl DartEq for Sieve {
+    fn dart_eq(&self, other: &Self) -> bool {
+        self == other
     }
 }
 
 impl DartAny for Sieve {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
+    fn dart_to_string(&self) -> String {
+        format!("Instance of '{}'", "Sieve")
+    }
+    fn dart_eq_any(&self, other: &dyn std::any::Any) -> bool {
+        match other.downcast_ref::<Self>() {
+            Some(o) => self.dart_eq(o),
+            None => false,
+        }
+    }
+    fn dart_hash_any(&self) -> i64 {
+        self.dart_hash_code()
     }
     fn dart_runtime_type(&self) -> Type {
-        Type { name: "Sieve" }
+        Type::of("Sieve")
+    }
+    fn dart_cast(&self, __t: std::any::TypeId) -> Option<std::boxed::Box<dyn std::any::Any>> {
+        if __t == std::any::TypeId::of::<Self>()
+            || __t == std::any::TypeId::of::<std::rc::Rc<Self>>()
+        {
+            return Some(std::boxed::Box::new(std::rc::Rc::new(self.clone())));
+        }
+        if __t == std::any::TypeId::of::<dyn Object>()
+            || __t == std::any::TypeId::of::<std::rc::Rc<dyn Object>>()
+        {
+            return Some(std::boxed::Box::new(
+                std::rc::Rc::new(self.clone()) as std::rc::Rc<dyn Object>
+            ));
+        }
+        None
     }
 }

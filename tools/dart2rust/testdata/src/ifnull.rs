@@ -1,3 +1,4 @@
+use crate::dart_prelude::Object;
 use crate::dart_prelude::*;
 use crate::DartAny;
 use crate::Type;
@@ -13,40 +14,124 @@ pub struct IfNull {
 }
 
 impl IfNull {
-    pub const fn new(value: Option<f64>) -> Self {
-        Self { value: value }
+    pub const fn new(value: Option<f64>) -> Result<Self, std::rc::Rc<dyn Object>> {
+        Ok({ Self { value: value } })
     }
 
-    pub fn boom(&self) -> f64 {
+    /// Throws if it is ever called. Standing in for the calls, allocations and
+    /// `throw`s that make up 77% of upstream's right-hand sides.
+    pub fn boom(&self) -> Result<f64, std::rc::Rc<dyn Object>> {
         debug_assert!(false, "the right side of ?? was evaluated");
-        0.0
+        Ok(0.0)
     }
 
-    pub fn with_literal(&self) -> f64 {
-        self.value.unwrap_or(1.0)
+    /// A literal on the right: safe to evaluate eagerly, and it reads better.
+    pub fn with_literal(&self) -> Result<f64, std::rc::Rc<dyn Object>> {
+        Ok({
+            let __scrutinee = self.value;
+            __scrutinee
+        }
+        .unwrap_or(1.0))
     }
 
-    pub fn with_call(&self) -> f64 {
-        match self.value {
-            Some(__value) => __value,
-            None => self.boom(),
+    /// A call on the right: must not run when `value` is present.
+    pub fn with_call(&self) -> Result<f64, std::rc::Rc<dyn Object>> {
+        Ok(
+            match {
+                let __scrutinee = self.value;
+                __scrutinee
+            } {
+                Some(__value) => __value,
+                None => self.boom(),
+            },
+        )
+    }
+
+    /// Nested, so the inner one has to be restored too.
+    pub fn nested(&self, second: Option<f64>) -> Result<f64, std::rc::Rc<dyn Object>> {
+        Ok({
+            let __scrutinee = match {
+                let __scrutinee = self.value;
+                __scrutinee
+            } {
+                Some(__value) => Some(__value),
+                None => second,
+            };
+            __scrutinee
+        }
+        .unwrap_or(2.0))
+    }
+}
+
+impl FromDynamic for IfNull {
+    fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
+        value.dart_cast_any::<Self>()
+    }
+    fn from_same(value: &Self) -> Option<Self> {
+        Some(value.clone())
+    }
+}
+
+impl NativeAnswer for IfNull {
+    fn from_answer(answer: std::rc::Rc<dyn Object>, symbol: &str) -> Self {
+        match answer.dart_cast_any::<Self>() {
+            Some(value) => value,
+            None => panic!(
+                "native `{}` answered {:?} where IfNull was declared",
+                symbol, answer
+            ),
         }
     }
+    fn absent() -> Self {
+        panic!("native answered nothing where IfNull was declared")
+    }
+}
 
-    pub fn nested(&self, second: Option<f64>) -> f64 {
-        match self.value {
-            Some(__value) => Some(__value),
-            None => second,
-        }
-        .unwrap_or(2.0)
+impl DartNullable for IfNull {
+    type Or = Option<Self>;
+    fn option(or: Option<Self>) -> Option<Self> {
+        or
+    }
+    fn from_option(option: Option<Self>) -> Option<Self> {
+        option
+    }
+}
+
+impl DartEq for IfNull {
+    fn dart_eq(&self, other: &Self) -> bool {
+        self == other
     }
 }
 
 impl DartAny for IfNull {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
+    fn dart_to_string(&self) -> String {
+        format!("Instance of '{}'", "IfNull")
+    }
+    fn dart_eq_any(&self, other: &dyn std::any::Any) -> bool {
+        match other.downcast_ref::<Self>() {
+            Some(o) => self.dart_eq(o),
+            None => false,
+        }
+    }
+    fn dart_hash_any(&self) -> i64 {
+        self.dart_hash_code()
     }
     fn dart_runtime_type(&self) -> Type {
-        Type { name: "IfNull" }
+        Type::of("IfNull")
+    }
+    fn dart_cast(&self, __t: std::any::TypeId) -> Option<std::boxed::Box<dyn std::any::Any>> {
+        if __t == std::any::TypeId::of::<Self>()
+            || __t == std::any::TypeId::of::<std::rc::Rc<Self>>()
+        {
+            return Some(std::boxed::Box::new(std::rc::Rc::new(self.clone())));
+        }
+        if __t == std::any::TypeId::of::<dyn Object>()
+            || __t == std::any::TypeId::of::<std::rc::Rc<dyn Object>>()
+        {
+            return Some(std::boxed::Box::new(
+                std::rc::Rc::new(self.clone()) as std::rc::Rc<dyn Object>
+            ));
+        }
+        None
     }
 }

@@ -1,9 +1,12 @@
 // The members that change their receiver, in one place.
 //
-// This knowledge was written out four times -- `alias_mutation.dart`'s
+// This knowledge was written out five times -- `alias_mutation.dart`'s
 // `_mutatingNames`, `frontend_kernel.dart`'s `_mutatingListNames` and the
-// inline set in `_ThisWriteFinder`, and `backend_rust.dart`'s `_inPlace` --
-// and the four had drifted apart. Nothing said so, and nothing could: each
+// inline set in `_ThisWriteFinder`, `backend_rust.dart`'s `_inPlace`, and
+// `_WalkSelf`'s `_mutatingListMethods` -- and the five had drifted apart.
+// Four were gathered here on 2026-09-09; the fifth was missed that day
+// because it is spelled in *Rust* names and so did not look like the others.
+// It is [mutatingWalkSelfRustNames] below. Nothing said so, and nothing could: each
 // copy was a bare list of strings with no way to compare it against the
 // others, so a name added to one was silently absent from the rest.
 //
@@ -136,4 +139,37 @@ const mutatingRustOnlyNames = {
   // The prelude's `Map::remove`, distinguished from `Vec::remove` by the
   // marker the backend puts in front of it.
   '!map_remove',
+};
+
+/// Rust names `_WalkSelf` treats as changing their receiver.
+///
+/// A different question from the one `_inPlace` answers, asked of the same
+/// knowledge: which local needs `let mut`, and which method therefore needs
+/// `&mut self`. Rust says both out loud where Dart says nothing.
+///
+/// Ten of the fifty-one names `_inPlace` composes, and two more that it has
+/// never carried: `!insert` and `!remove_at` are markers the backend spells
+/// in front of a method to say which of two same-named prelude methods it
+/// means, and only `!map_remove` ever reached [mutatingRustOnlyNames].
+///
+/// Both differences are gaps rather than decisions, and stay written down as
+/// gaps. Widening this set widens which locals carry `mut` and which methods
+/// take `&mut self` -- a measured round against the chain, not an edit to a
+/// table. `test/member_names_test.dart` pins the distance.
+const mutatingWalkSelfRustNames = {
+  'push',
+  'extend',
+  'clear',
+  'pop',
+  'insert',
+  'remove',
+  '!map_remove',
+  '!insert',
+  '!remove_at',
+  // The ordered `Map`'s own mutators. `put_if_absent` may write, so it takes
+  // `&mut self`, and its receiver needs to say so; so does `update`, and
+  // `sort_natural` sorts in place.
+  'put_if_absent',
+  'update',
+  'sort_natural',
 };

@@ -19,12 +19,19 @@ import 'dart:io' show Platform, stderr;
 import 'ir.dart';
 import 'prelude.dart';
 
-// The class is one class in seven files. Splitting it is the only thing
-// this does: each part holds one of the sections the file already had
-// (`// -- Expressions --`), moved without a character changed, and
-// `augment` puts them back together. Nothing here is a boundary -- the
-// sections share 42 of the class's 69 fields, so they are not separable
-// objects yet; making them so is the state-object round, not this one.
+// The class is one class in every file below but `walk_self.dart`.
+// Splitting it is the only thing this does: each part holds one of the
+// sections the file already had (`// -- Expressions --`), moved without a
+// character changed, and `augment` puts them back together. Nothing here is
+// a boundary -- the sections share 42 of the class's 69 fields, so they are
+// not separable objects yet; making them so is the state-object round, not
+// this one.
+//
+// `walk_self.dart` is `_WalkSelf`, an ordinary class the backend makes and
+// throws away once per method body, and was never part of this one.
+//
+// Named rather than counted: the sentence said "seven files" until
+// 2026-09-09, when there were twenty of them.
 //
 // `augment` is behind `--enable-experiment=augmentations`, which
 // `bin/experiments.sh` is the one place that names.

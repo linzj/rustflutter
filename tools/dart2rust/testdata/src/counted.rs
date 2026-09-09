@@ -1,3 +1,4 @@
+use crate::dart_prelude::Object;
 use crate::dart_prelude::*;
 use crate::DartAny;
 use crate::Type;
@@ -11,45 +12,129 @@ use crate::Type;
 pub struct Ticker {
     pub step: i64,
     pub fired: std::rc::Rc<std::cell::Cell<i64>>,
+    pub __self: DartSelf<Self>,
+}
+
+impl DartSelfRef for Ticker {
+    fn dart_self_ref(&self) -> &DartSelf<Self> {
+        &self.__self
+    }
 }
 
 impl PartialEq for Ticker {
     fn eq(&self, other: &Self) -> bool {
-        self.step == other.step && self.fired.dart_eq(&other.fired)
+        std::ptr::eq(self, other)
     }
 }
 
 impl Ticker {
-    pub fn new(step: i64) -> std::rc::Rc<Self> {
-        std::rc::Rc::new(Self {
-            step: step,
-            fired: std::rc::Rc::new(std::cell::Cell::new(0)),
+    pub fn new(step: i64) -> Result<std::rc::Rc<Self>, std::rc::Rc<dyn Object>> {
+        Ok({
+            dart_rc(Self {
+                __self: DartSelf::new(),
+                step: step,
+                fired: std::rc::Rc::new(std::cell::Cell::new(0)),
+            })
         })
     }
 
-    pub fn fire(&self) -> () {
+    pub fn fire(&self) -> Result<(), std::rc::Rc<dyn Object>> {
         self.fired.set((self.fired.get() + self.step));
+        Ok(())
     }
 
-    pub fn trigger(self: &std::rc::Rc<Self>) -> std::rc::Rc<dyn Fn() -> ()> {
-        std::rc::Rc::new({
-            let __me = self.clone();
-            move || {
+    /// Hands out a closure that **calls a method** on `this`. The closure
+    /// outlives this call, so it cannot borrow; it keeps a counted handle.
+    pub fn trigger(
+        self: &std::rc::Rc<Self>,
+    ) -> Result<std::rc::Rc<dyn Fn() -> Result<(), std::rc::Rc<dyn Object>>>, std::rc::Rc<dyn Object>>
+    {
+        Ok(std::rc::Rc::new({
+            let __me = self.dart_self_ref().get();
+            move || -> Result<_, std::rc::Rc<dyn Object>> {
                 __me.fire();
+                Ok(())
             }
-        })
+        }))
     }
 
-    pub fn seen(&self) -> i64 {
-        self.fired.get()
+    pub fn seen(&self) -> Result<i64, std::rc::Rc<dyn Object>> {
+        Ok(self.fired.get())
+    }
+}
+
+impl FromDynamic for Ticker {
+    fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
+        value.dart_cast_any::<Self>()
+    }
+    fn from_same(value: &Self) -> Option<Self> {
+        Some(value.clone())
+    }
+}
+
+impl NativeAnswer for Ticker {
+    fn from_answer(answer: std::rc::Rc<dyn Object>, symbol: &str) -> Self {
+        match answer.dart_cast_any::<Self>() {
+            Some(value) => value,
+            None => panic!(
+                "native `{}` answered {:?} where Ticker was declared",
+                symbol, answer
+            ),
+        }
+    }
+    fn absent() -> Self {
+        panic!("native answered nothing where Ticker was declared")
+    }
+}
+
+impl DartNullable for Ticker {
+    type Or = Option<Self>;
+    fn option(or: Option<Self>) -> Option<Self> {
+        or
+    }
+    fn from_option(option: Option<Self>) -> Option<Self> {
+        option
+    }
+}
+
+impl DartEq for Ticker {
+    fn dart_eq(&self, other: &Self) -> bool {
+        std::ptr::eq(self, other)
+    }
+    fn dart_hash_code(&self) -> i64 {
+        (std::rc::Rc::as_ptr(&self.__self.get()) as *const u8 as usize as i64) & 0x3fff_ffff
     }
 }
 
 impl DartAny for Ticker {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
+    fn dart_to_string(&self) -> String {
+        format!("Instance of '{}'", "Ticker")
+    }
+    fn dart_eq_any(&self, other: &dyn std::any::Any) -> bool {
+        match other.downcast_ref::<Self>() {
+            Some(o) => self.dart_eq(o),
+            None => false,
+        }
+    }
+    fn dart_hash_any(&self) -> i64 {
+        self.dart_hash_code()
     }
     fn dart_runtime_type(&self) -> Type {
-        Type { name: "Ticker" }
+        Type::of("Ticker")
+    }
+    fn dart_cast(&self, __t: std::any::TypeId) -> Option<std::boxed::Box<dyn std::any::Any>> {
+        if __t == std::any::TypeId::of::<Self>()
+            || __t == std::any::TypeId::of::<std::rc::Rc<Self>>()
+        {
+            return Some(std::boxed::Box::new(self.dart_self_ref().get()));
+        }
+        if __t == std::any::TypeId::of::<dyn Object>()
+            || __t == std::any::TypeId::of::<std::rc::Rc<dyn Object>>()
+        {
+            return Some(std::boxed::Box::new(
+                self.dart_self_ref().get() as std::rc::Rc<dyn Object>
+            ));
+        }
+        None
     }
 }

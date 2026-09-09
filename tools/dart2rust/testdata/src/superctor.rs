@@ -8,27 +8,32 @@ use crate::Type;
 
 /// The body of `Shape.area`, reachable from an
 /// override the way Dart's `super.area` is.
-pub fn shape_super_area<__Self: Shape + ?Sized + 'static>(this_: &__Self) -> f64 {
-    (this_.width() * this_.height())
+pub fn shape_super_area<__Self: Shape + ?Sized + 'static>(
+    this_: &__Self,
+) -> Result<f64, std::rc::Rc<dyn Object>> {
+    Ok((this_.width()? * this_.height()?))
+}
+
+impl DartEq for dyn Shape {
+    fn dart_eq(&self, other: &Self) -> bool {
+        std::ptr::addr_eq(self as *const Self, other as *const Self)
+    }
+    fn dart_hash_code(&self) -> i64 {
+        (self as *const Self as *const u8 as usize as i64) & 0x3fff_ffff
+    }
 }
 
 pub trait Shape: DartAny + std::fmt::Debug {
     /// `Shape.width`, which the implementor stores.
-    fn width(&self) -> f64;
+    fn width(&self) -> Result<f64, std::rc::Rc<dyn Object>>;
 
     /// `Shape.height`, which the implementor stores.
-    fn height(&self) -> f64;
+    fn height(&self) -> Result<f64, std::rc::Rc<dyn Object>>;
 
-    fn area(&self) -> f64 {
+    fn dart_self_shape(&self) -> std::rc::Rc<dyn Shape>;
+
+    fn area(&self) -> Result<f64, std::rc::Rc<dyn Object>> {
         shape_super_area(self)
-    }
-}
-impl Object for dyn Shape {
-    fn as_any(&self) -> &dyn std::any::Any {
-        DartAny::as_any(self)
-    }
-    fn runtime_type(&self) -> Type {
-        DartAny::dart_runtime_type(self)
     }
 }
 impl PartialEq for dyn Shape {
@@ -55,30 +60,106 @@ pub struct Rectangle {
 }
 
 impl Rectangle {
-    pub const fn new(w: f64, h: f64) -> Self {
-        Self {
-            width: w,
-            height: h,
+    pub const fn new(w: f64, h: f64) -> Result<Self, std::rc::Rc<dyn Object>> {
+        Ok({
+            let mut __new = Self {
+                width: w,
+                height: h,
+            };
+            __new
+        })
+    }
+}
+
+impl FromDynamic for Rectangle {
+    fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
+        value.dart_cast_any::<Self>()
+    }
+    fn from_same(value: &Self) -> Option<Self> {
+        Some(value.clone())
+    }
+}
+
+impl NativeAnswer for Rectangle {
+    fn from_answer(answer: std::rc::Rc<dyn Object>, symbol: &str) -> Self {
+        match answer.dart_cast_any::<Self>() {
+            Some(value) => value,
+            None => panic!(
+                "native `{}` answered {:?} where Rectangle was declared",
+                symbol, answer
+            ),
         }
+    }
+    fn absent() -> Self {
+        panic!("native answered nothing where Rectangle was declared")
+    }
+}
+
+impl DartNullable for Rectangle {
+    type Or = Option<Self>;
+    fn option(or: Option<Self>) -> Option<Self> {
+        or
+    }
+    fn from_option(option: Option<Self>) -> Option<Self> {
+        option
+    }
+}
+
+impl DartEq for Rectangle {
+    fn dart_eq(&self, other: &Self) -> bool {
+        self == other
     }
 }
 
 impl DartAny for Rectangle {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
+    fn dart_to_string(&self) -> String {
+        format!("Instance of '{}'", "Rectangle")
+    }
+    fn dart_eq_any(&self, other: &dyn std::any::Any) -> bool {
+        match other.downcast_ref::<Self>() {
+            Some(o) => self.dart_eq(o),
+            None => false,
+        }
+    }
+    fn dart_hash_any(&self) -> i64 {
+        self.dart_hash_code()
     }
     fn dart_runtime_type(&self) -> Type {
-        Type { name: "Rectangle" }
+        Type::of("Rectangle")
+    }
+    fn dart_cast(&self, __t: std::any::TypeId) -> Option<std::boxed::Box<dyn std::any::Any>> {
+        if __t == std::any::TypeId::of::<Self>()
+            || __t == std::any::TypeId::of::<std::rc::Rc<Self>>()
+        {
+            return Some(std::boxed::Box::new(std::rc::Rc::new(self.clone())));
+        }
+        if __t == std::any::TypeId::of::<dyn Object>()
+            || __t == std::any::TypeId::of::<std::rc::Rc<dyn Object>>()
+        {
+            return Some(std::boxed::Box::new(
+                std::rc::Rc::new(self.clone()) as std::rc::Rc<dyn Object>
+            ));
+        }
+        if __t == std::any::TypeId::of::<dyn Shape>()
+            || __t == std::any::TypeId::of::<std::rc::Rc<dyn Shape>>()
+        {
+            return Some(std::boxed::Box::new(self.dart_self_shape()));
+        }
+        None
     }
 }
 
 impl Shape for Rectangle {
-    fn width(&self) -> f64 {
-        self.width
+    fn dart_self_shape(&self) -> std::rc::Rc<dyn Shape> {
+        std::rc::Rc::new(self.clone())
     }
 
-    fn height(&self) -> f64 {
-        self.height
+    fn width(&self) -> Result<f64, std::rc::Rc<dyn Object>> {
+        Ok(self.width)
+    }
+
+    fn height(&self) -> Result<f64, std::rc::Rc<dyn Object>> {
+        Ok(self.height)
     }
 }
 
@@ -87,6 +168,8 @@ impl Shape for Rectangle {
 // Translated, not ported: this is the compiler's output, not a
 // hand-written re-expression. See tools/dart2rust/README.md.
 
+/// Passes a computed argument up, so the substitution has to carry an
+/// expression rather than just a name.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Square {
     pub width: f64,
@@ -95,31 +178,107 @@ pub struct Square {
 }
 
 impl Square {
-    pub const fn new(side: f64) -> Self {
-        Self {
-            width: side,
-            height: side,
-            side: side,
+    pub const fn new(side: f64) -> Result<Self, std::rc::Rc<dyn Object>> {
+        Ok({
+            let mut __new = Self {
+                width: side,
+                height: side,
+                side: side,
+            };
+            __new
+        })
+    }
+}
+
+impl FromDynamic for Square {
+    fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
+        value.dart_cast_any::<Self>()
+    }
+    fn from_same(value: &Self) -> Option<Self> {
+        Some(value.clone())
+    }
+}
+
+impl NativeAnswer for Square {
+    fn from_answer(answer: std::rc::Rc<dyn Object>, symbol: &str) -> Self {
+        match answer.dart_cast_any::<Self>() {
+            Some(value) => value,
+            None => panic!(
+                "native `{}` answered {:?} where Square was declared",
+                symbol, answer
+            ),
         }
+    }
+    fn absent() -> Self {
+        panic!("native answered nothing where Square was declared")
+    }
+}
+
+impl DartNullable for Square {
+    type Or = Option<Self>;
+    fn option(or: Option<Self>) -> Option<Self> {
+        or
+    }
+    fn from_option(option: Option<Self>) -> Option<Self> {
+        option
+    }
+}
+
+impl DartEq for Square {
+    fn dart_eq(&self, other: &Self) -> bool {
+        self == other
     }
 }
 
 impl DartAny for Square {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
+    fn dart_to_string(&self) -> String {
+        format!("Instance of '{}'", "Square")
+    }
+    fn dart_eq_any(&self, other: &dyn std::any::Any) -> bool {
+        match other.downcast_ref::<Self>() {
+            Some(o) => self.dart_eq(o),
+            None => false,
+        }
+    }
+    fn dart_hash_any(&self) -> i64 {
+        self.dart_hash_code()
     }
     fn dart_runtime_type(&self) -> Type {
-        Type { name: "Square" }
+        Type::of("Square")
+    }
+    fn dart_cast(&self, __t: std::any::TypeId) -> Option<std::boxed::Box<dyn std::any::Any>> {
+        if __t == std::any::TypeId::of::<Self>()
+            || __t == std::any::TypeId::of::<std::rc::Rc<Self>>()
+        {
+            return Some(std::boxed::Box::new(std::rc::Rc::new(self.clone())));
+        }
+        if __t == std::any::TypeId::of::<dyn Object>()
+            || __t == std::any::TypeId::of::<std::rc::Rc<dyn Object>>()
+        {
+            return Some(std::boxed::Box::new(
+                std::rc::Rc::new(self.clone()) as std::rc::Rc<dyn Object>
+            ));
+        }
+        if __t == std::any::TypeId::of::<dyn Shape>()
+            || __t == std::any::TypeId::of::<std::rc::Rc<dyn Shape>>()
+        {
+            return Some(std::boxed::Box::new(self.dart_self_shape()));
+        }
+        None
     }
 }
 
 impl Shape for Square {
-    fn width(&self) -> f64 {
-        self.width
+    fn dart_self_shape(&self) -> std::rc::Rc<dyn Shape> {
+        std::rc::Rc::new(self.clone())
     }
 
-    fn height(&self) -> f64 {
-        self.height
+    fn width(&self) -> Result<f64, std::rc::Rc<dyn Object>> {
+        Ok(self.width)
+    }
+
+    fn height(&self) -> Result<f64, std::rc::Rc<dyn Object>> {
+        Ok(self.height)
     }
 }
 
@@ -128,6 +287,7 @@ impl Shape for Square {
 // Translated, not ported: this is the compiler's output, not a
 // hand-written re-expression. See tools/dart2rust/README.md.
 
+/// Two levels: `Padded` -> `Square` -> `Shape`. Chains go six deep upstream.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Padded {
     pub width: f64,
@@ -137,35 +297,111 @@ pub struct Padded {
 }
 
 impl Padded {
-    pub const fn new(side: f64, padding: f64) -> Self {
-        Self {
-            width: side,
-            height: side,
-            side: side,
-            padding: padding,
-        }
+    pub const fn new(side: f64, padding: f64) -> Result<Self, std::rc::Rc<dyn Object>> {
+        Ok({
+            let mut __new = Self {
+                width: side,
+                height: side,
+                side: side,
+                padding: padding,
+            };
+            __new
+        })
     }
 
-    pub fn padded_area(&self) -> f64 {
-        ((self.width + self.padding) * (self.height + self.padding))
+    pub fn padded_area(&self) -> Result<f64, std::rc::Rc<dyn Object>> {
+        Ok(((self.width + self.padding) * (self.height + self.padding)))
+    }
+}
+
+impl FromDynamic for Padded {
+    fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
+        value.dart_cast_any::<Self>()
+    }
+    fn from_same(value: &Self) -> Option<Self> {
+        Some(value.clone())
+    }
+}
+
+impl NativeAnswer for Padded {
+    fn from_answer(answer: std::rc::Rc<dyn Object>, symbol: &str) -> Self {
+        match answer.dart_cast_any::<Self>() {
+            Some(value) => value,
+            None => panic!(
+                "native `{}` answered {:?} where Padded was declared",
+                symbol, answer
+            ),
+        }
+    }
+    fn absent() -> Self {
+        panic!("native answered nothing where Padded was declared")
+    }
+}
+
+impl DartNullable for Padded {
+    type Or = Option<Self>;
+    fn option(or: Option<Self>) -> Option<Self> {
+        or
+    }
+    fn from_option(option: Option<Self>) -> Option<Self> {
+        option
+    }
+}
+
+impl DartEq for Padded {
+    fn dart_eq(&self, other: &Self) -> bool {
+        self == other
     }
 }
 
 impl DartAny for Padded {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
+    fn dart_to_string(&self) -> String {
+        format!("Instance of '{}'", "Padded")
+    }
+    fn dart_eq_any(&self, other: &dyn std::any::Any) -> bool {
+        match other.downcast_ref::<Self>() {
+            Some(o) => self.dart_eq(o),
+            None => false,
+        }
+    }
+    fn dart_hash_any(&self) -> i64 {
+        self.dart_hash_code()
     }
     fn dart_runtime_type(&self) -> Type {
-        Type { name: "Padded" }
+        Type::of("Padded")
+    }
+    fn dart_cast(&self, __t: std::any::TypeId) -> Option<std::boxed::Box<dyn std::any::Any>> {
+        if __t == std::any::TypeId::of::<Self>()
+            || __t == std::any::TypeId::of::<std::rc::Rc<Self>>()
+        {
+            return Some(std::boxed::Box::new(std::rc::Rc::new(self.clone())));
+        }
+        if __t == std::any::TypeId::of::<dyn Object>()
+            || __t == std::any::TypeId::of::<std::rc::Rc<dyn Object>>()
+        {
+            return Some(std::boxed::Box::new(
+                std::rc::Rc::new(self.clone()) as std::rc::Rc<dyn Object>
+            ));
+        }
+        if __t == std::any::TypeId::of::<dyn Shape>()
+            || __t == std::any::TypeId::of::<std::rc::Rc<dyn Shape>>()
+        {
+            return Some(std::boxed::Box::new(self.dart_self_shape()));
+        }
+        None
     }
 }
 
 impl Shape for Padded {
-    fn width(&self) -> f64 {
-        self.width
+    fn dart_self_shape(&self) -> std::rc::Rc<dyn Shape> {
+        std::rc::Rc::new(self.clone())
     }
 
-    fn height(&self) -> f64 {
-        self.height
+    fn width(&self) -> Result<f64, std::rc::Rc<dyn Object>> {
+        Ok(self.width)
+    }
+
+    fn height(&self) -> Result<f64, std::rc::Rc<dyn Object>> {
+        Ok(self.height)
     }
 }

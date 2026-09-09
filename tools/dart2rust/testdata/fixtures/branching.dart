@@ -4,13 +4,20 @@
 // the same construct, exhaustiveness included. What needed deciding is the
 // `break` Dart puts at the end of every case: it means "leave the switch",
 // which a match arm does by ending, so it is dropped. Only the one at the end.
-// One in the middle would be leaving early, which an arm cannot do, and is
-// refused instead.
+// One in the middle would be leaving early, which an arm cannot do on its own
+// -- see the DIFFERS note below for the two answers to that.
 //
 // 628 switches in `package:flutter/`, almost all on an enum, 20 with a default,
 // none with an empty fall-through case.
 //
-// REFUSES: break out of a switch from inside a case
+// DIFFERS: the analyzer front end refuses `leavesEarly` -- a `break` that is
+// not the last statement of its case means "leave the switch early", and a
+// match arm cannot. The Kernel one does not have to: the CFE hands it the
+// switch already wrapped in a `LabeledStatement` the `break` points at, which
+// is Rust's labelled block exactly (`IrLabeled`), so it emits `'__l0: { match
+// .. break '__l0 .. }` and that is what Dart runs. The refusal above was
+// declared as `// REFUSES:` until 2026-09-09, when this tool ran again and
+// found the Kernel side had grown out of it while nothing was looking.
 //
 // Every number below is different from the others so a case matched to the
 // wrong arm cannot pass.
