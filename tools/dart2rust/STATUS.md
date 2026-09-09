@@ -862,13 +862,28 @@ int 分支不够:Dart 的 `(-7).abs()` 是 **int 7**,印 `7`;当成 double 印
 另一处是 `f != null` 变成了一句被丢掉的 `f.clone();`,这里被非空掩着,但它是
 独立的缺陷。
 
-零件都已经在了:`_typeLiteralParams` 已经找出「被当类型字面量读的擦除参数」,
-`_typeArgumentGetters` 已经给每个这样的参数在 trait 上开了 `_typeArg<C><T>`
-getter、由每个具体子类回答自己的实参;prelude 的 `Type` 已经有
-`id: Option<TypeId>` 这个槽,而 `DartAny::dart_cast(TypeId)` 就是 Dart 的
-`is`。缺的是三件:让 `_TypeLiteralFinder` 也认 `is T` / `as T`;让
-`Type` 在翻译类上带上 `id`;把 `IrIs(x, 擦除的 T)` 降成
-`x.dart_cast(self._type_arg_c_t().id.unwrap()).is_some()`。**下一轮做这条。**
+夹具 `iserased` 把它钉住了,而且给的是**错误答案**而不是编译错误:
+
+    class Sink<T extends Note> { bool accepts(Note n) => n is T; }
+    Sink<ScrollNote>().accepts(MetricsNote())
+    rust true   dart false            //  '$T' 也是:rust Note,dart ScrollNote
+
+零件已经有一半:`_TypeLiteralFinder` **已经**认 `is T` / `as T`
+(`visitIsExpression`/`visitAsExpression`),`_typeLiteralParams` 也已经把这些
+参数筛了出来;prelude 的 `Type` 有 `id: Option<TypeId>` 这个槽,而
+`DartAny::dart_cast(TypeId)` 就是 Dart 的 `is`。
+
+缺的那一半比先前记的大。`_typeArgumentGetters` 只给**抽象/open** 类开
+`_typeArg<C><T>` getter——由子类回答「祖先给我填了什么」。而
+`_NotificationElement<T>` 和 `Sink<T>` 都是**具体**类:没有子类能回答,实参
+只有 `new` 的那一处知道。所以要的是:
+
+ 1. 具体类上,被当类型字面量读的擦除参数变成一个 `Type` 字段,由构造器带进来;
+ 2. 每个 `IrNew` 处补上这个实参(`node.arguments.types` 就在手里);
+ 3. `Type` 字面量在翻译类上要带 `id`(现在 `Type::of("X")` 的 id 是 `None`);
+ 4. `IrIs(x, 擦除的 T)` 降成按那个 `Type` 的 id 做 `dart_cast`。
+
+**下一轮做这条**,它就是 work.md 第 2 条(擦除边界)那本账的正脸。
 
 **(2026-09-09 新增,ws900 挖出来的)microtask 从来没跑过,现在跑了**
 
