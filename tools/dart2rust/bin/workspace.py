@@ -89,6 +89,14 @@ def tarjan(nodes, deps):
     return comps
 
 
+_STRING = re.compile(r'r#*"(?:[^"]|"(?!#))*"#*|"(?:\\.|[^"\\])*"', re.S)
+
+
+def outside_strings(text):
+    """`text` with its string literals blanked, newlines kept."""
+    return _STRING.sub(lambda m: '\n' * m.group(0).count('\n'), text)
+
+
 def plan(src, big_lines=50000, big_modules=20, leaf_lines=5000):
     mods = {}
     for f in sorted(os.listdir(src)):
@@ -98,7 +106,10 @@ def plan(src, big_lines=50000, big_modules=20, leaf_lines=5000):
         text = read(os.path.join(src, f))
         uri = text.split('\n', 1)[0].replace('// Generated from ', '')
         body = re.sub(r'//[^\n]*', '', re.sub(r'/\*.*?\*/', '', text, flags=re.S))
-        edges = set(re.findall(r'\bcrate::([a-z_][a-z_0-9]*)', body))
+        # A `crate::` inside a *string* is prose, not an edge. Only the edge
+        # scan sees the stripped text: `body` also counts the lines the
+        # partition is sized by, and a multi-line literal is still lines.
+        edges = set(re.findall(r'\bcrate::([a-z_][a-z_0-9]*)', outside_strings(body)))
         edges.discard(name)
         edges.discard('dart_prelude')
         mods[name] = (edges, body.count('\n'), uri)

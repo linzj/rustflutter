@@ -89,6 +89,20 @@ Set<String> _publicItemsIn(String text) => {
     m.group(1)!,
 };
 
+/// The `pub` item names a module declares as *functions*.
+///
+/// The same shape as `_publicItemsIn`, narrowed to `fn`: a name that is
+/// only ever a function is referenced by a call or a path and by nothing
+/// else, which is what lets `_calledIn` speak for it.
+Set<String> _publicFunctionsIn(String text) => {
+  for (final m in RegExp(
+    r'^pub(?:\(crate\))? (?:(?:async|const|unsafe) )*fn '
+    r'((?:r#)?[A-Za-z_]\w*)',
+    multiLine: true,
+  ).allMatches(text))
+    m.group(1)!,
+};
+
 /// Every item name a module declares, public or not.
 Set<String> _itemsIn(String text) => {
   for (final m in RegExp(
@@ -99,14 +113,145 @@ Set<String> _itemsIn(String text) => {
     m.group(1)!,
 };
 
-/// Every identifier the text uses.
+/// The text with its comments and its string and character literals taken
+/// out, so that a scan for identifiers reads *code*.
 ///
-/// Deliberately blunt: a word in a comment or a string counts too. Importing a
-/// name that turns out to be unused is free -- the file allows unused imports
-/// -- and missing one is not, so the net is cast wide.
+/// "Importing a name that turns out to be unused is free" was true of rustc
+/// and false of the module graph: an unused import is an edge, and an edge
+/// decides which modules share a crate. Five words of translated prose --
+/// `Ok("Header".to_string())` in Tagalog, `Ok("Sac a main".to_string())` in
+/// French -- were thirteen such edges, and they were what put 78 l10n
+/// modules (942,709 lines, 92% of the crate) in the same strongly connected
+/// component as the app.
+String _code(String text) {
+  final out = StringBuffer();
+  var i = 0;
+  final n = text.length;
+  while (i < n) {
+    final c = text[i];
+    if (c == '/' && i + 1 < n && text[i + 1] == '/') {
+      final j = text.indexOf('\n', i);
+      i = j < 0 ? n : j;
+      continue;
+    }
+    if (c == '/' && i + 1 < n && text[i + 1] == '*') {
+      // Rust's block comments nest.
+      var depth = 1;
+      i += 2;
+      while (i < n && depth > 0) {
+        if (text.startsWith('/*', i)) {
+          depth++;
+          i += 2;
+        } else if (text.startsWith('*/', i)) {
+          depth--;
+          i += 2;
+        } else {
+          i++;
+        }
+      }
+      continue;
+    }
+    // A raw string (`r"..."`, `r#"..."#`) takes no escapes and ends at the
+    // quote followed by as many `#` as it opened with.
+    if (c == 'r' && i + 1 < n && (text[i + 1] == '#' || text[i + 1] == '"')) {
+      var j = i + 1;
+      var hashes = 0;
+      while (j < n && text[j] == '#') {
+        hashes++;
+        j++;
+      }
+      if (j < n && text[j] == '"') {
+        final close = '"' + '#' * hashes;
+        final end = text.indexOf(close, j + 1);
+        i = end < 0 ? n : end + close.length;
+        continue;
+      }
+    }
+    if (c == '"' || c == "'") {
+      // A `'` is also a lifetime (`'static`), which is not a literal and
+      // has no closing quote: a character literal is one or two characters
+      // and then the quote.
+      if (c == "'") {
+        final closes = i + 2 < n && text[i + 2] == "'";
+        final escaped = i + 1 < n && text[i + 1] == '\\';
+        if (!closes && !escaped) {
+          out.write(c);
+          i++;
+          continue;
+        }
+      }
+      i++;
+      while (i < n) {
+        if (text[i] == '\\') {
+          i += 2;
+          continue;
+        }
+        if (text[i] == c) {
+          i++;
+          break;
+        }
+        i++;
+      }
+      // The literal is gone, but the newlines inside it are not: a caller
+      // counting lines has to see the same file.
+      continue;
+    }
+    out.write(c);
+    i++;
+  }
+  return out.toString();
+}
+
+/// Every identifier the text's *code* uses.
+///
+/// Still blunt inside code -- a parameter's name counts, and so does a
+/// field's -- because importing a name that turns out to be unused is free
+/// to rustc. It is not free to the module graph, which is why `_calledIn`
+/// below is asked about the names that are only ever functions.
 Set<String> _identifiersIn(String text) => {
-  for (final m in RegExp(r'(?:r#)?[A-Za-z_]\w*').allMatches(text)) m.group(0)!,
+  for (final m in RegExp(r'(?:r#)?[A-Za-z_]\w*').allMatches(_code(text)))
+    m.group(0)!,
 };
+
+/// The names this text calls or reaches through a path: `f(..)`, `T::x`.
+Set<String> _calledIn(String text) {
+  final code = _code(text);
+  return {
+    for (final m in RegExp(
+      r'(?:r#)?([A-Za-z_]\w*)\s*(?:\(|::)',
+    ).allMatches(code))
+      m.group(1)!,
+  };
+}
+
+/// The names this text *binds*: a parameter, a field, a `let`.
+///
+/// Anything followed by a `:` that is not a path separator is a name being
+/// declared -- a parameter (`mut locale: Rc<Locale>`), a struct's field, a
+/// field of a struct literal, an annotated `let`. None of them is a
+/// reference to another module's item.
+///
+/// This is one half of a pair. A name bound here *and* never called here is
+/// this module's own; a name that is only ever read -- a top-level function
+/// handed over as a value, `defaultScrollNotificationPredicate` and
+/// `ChildLayoutHelper.layoutChild` among 188 of them -- is an import, and
+/// asking only "is it called" dropped every one of those (337 stubbed
+/// against 147, measured before this line existed).
+Set<String> _boundIn(String text) {
+  final code = _code(text);
+  return {
+    for (final m in RegExp(r'(?:r#)?([A-Za-z_]\w*)\s*:(?!:)').allMatches(code))
+      m.group(1)!,
+    for (final m in RegExp(
+      r'\blet\s+(?:mut\s+)?((?:r#)?[A-Za-z_]\w*)',
+    ).allMatches(code))
+      m.group(1)!,
+    for (final m in RegExp(
+      r'\|\s*(?:mut\s+)?((?:r#)?[A-Za-z_]\w*)',
+    ).allMatches(code))
+      m.group(1)!,
+  };
+}
 
 /// Writes only when the text differs.
 ///
@@ -586,6 +731,23 @@ Future<void> main(List<String> args) async {
       (definers[item] ??= {}).add(entry.key);
     }
   }
+  // Which of those names are *only* ever free functions. A module that
+  // never calls one and never names a path through it is not using it, and
+  // the blunt scan cannot tell such a name from a parameter of the same
+  // spelling. Types keep the wide net: a struct or a trait is reached in
+  // ways a regex cannot enumerate (a bound, a turbofish, a `dyn`), and the
+  // net was cast wide for them on purpose.
+  final everyDefinitionIsAFunction = <String>{};
+  for (final entry in written.entries) {
+    final fns = _publicFunctionsIn(entry.value.$2);
+    for (final item in _publicItemsIn(entry.value.$2)) {
+      if (fns.contains(item)) {
+        everyDefinitionIsAFunction.add(item);
+      } else {
+        everyDefinitionIsAFunction.remove(item);
+      }
+    }
+  }
 
   for (final entry in written.entries) {
     final name = entry.key;
@@ -617,8 +779,22 @@ Future<void> main(List<String> args) async {
     };
     final wanted = <String, String>{};
     final used = _identifiersIn(text).toSet();
+    final called = _calledIn(text);
+    final bound = _boundIn(text);
     for (final used in used) {
       if (mine.contains(used)) continue;
+      // A name that is only ever a free function, never called here, never
+      // a path segment here, and *bound* here, is not this module's
+      // business -- it is a binding of its own that happens to be spelled
+      // the same. `locale` is the parameter of
+      // `lookup_gallery_localizations(mut locale: Rc<Locale>)` in 78 l10n
+      // modules, none of which calls it; that one name was 78 of the 91
+      // edges holding 942,709 lines of translated prose in the app's crate.
+      if (everyDefinitionIsAFunction.contains(used) &&
+          !called.contains(used) &&
+          bound.contains(used)) {
+        continue;
+      }
       // `_` is a pattern, not a name. A *private* name (`_Linear`) is
       // imported when exactly one module defines it: Dart's library-private
       // is `pub(crate)` here, and the tree shaker inlines constants across
