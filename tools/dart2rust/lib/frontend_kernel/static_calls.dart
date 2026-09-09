@@ -111,11 +111,27 @@ augment class KernelFrontend {
     // `intl`'s field parsers and 30-odd other sites.
     if ((owner == 'int' || owner == 'double') &&
         (target.name.text == 'parse' || target.name.text == 'tryParse') &&
-        positional.length == 1 &&
-        node.arguments.named.isEmpty) {
-      final fn =
-          '${target.name.text == 'parse' ? 'parse' : 'try_parse'}_$owner';
-      return IrStaticCall(null, fn, [expression(positional[0])]);
+        positional.length == 1) {
+      final named = node.arguments.named;
+      final head = target.name.text == 'parse' ? 'parse' : 'try_parse';
+      if (named.isEmpty) {
+        return IrStaticCall(null, '${head}_$owner', [
+          expression(positional[0]),
+        ]);
+      }
+      // ..and `int.parse(s, radix: r)`, which is the same four functions
+      // with the base said out loud. `double` has no radix
+      // (`DefaultMaterialLocalizations.parseCompactDate`, refused since it
+      // was written).
+      if (owner == 'int' && named.length == 1 && named.single.name == 'radix') {
+        return IrStaticCall(null, '${head}_int_radix', [
+          expression(positional[0]),
+          coerce(
+            expression(named.single.value),
+            const IrType('int', nullable: true),
+          ),
+        ]);
+      }
     }
     // `_List<T?>(n)` -- `List.filled(n, null)` after the CFE -- is a list of
     // `n` nulls, which for a nullable element is exactly what it says: the

@@ -273,6 +273,9 @@ augment class RustBackend {
     'log',
     'parse_int',
     'try_parse_int',
+    // ..and the two that take Dart's radix (`int.parse(s, radix: r)`).
+    'parse_int_radix',
+    'try_parse_int_radix',
     'parse_double',
     'try_parse_double',
     'schedule_microtask',

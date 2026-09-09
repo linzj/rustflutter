@@ -520,10 +520,17 @@ augment class RustBackend {
     }
     final target = library[owner];
     if (target != null &&
-        !target.methods.any(
-          (m) =>
-              (m.name == name || _methodName(m) == name) && m.operator == null,
-        )) {
+        !target.methods.any((m) {
+          if (m.operator != null) return false;
+          // A static setter is *called* by its Dart name with `set_` in
+          // front (`set_systemContextMenuClient`) and *recorded* by the
+          // Dart name with `isSetter` beside it, so neither spelling met
+          // the other and the call was refused for a member that had been
+          // translated all along (`ServicesBinding.systemContextMenuClient`,
+          // three refusals since it was written).
+          final called = m.isSetter ? 'set_${m.name}' : m.name;
+          return called == name || _methodName(m) == name;
+        })) {
       throw Unsupported(
         'call to `$owner.$name`, which was not translated',
         '$owner.$name(...)',

@@ -301,10 +301,31 @@ augment class KernelFrontend {
       if (owner == null) {
         throw Unsupported('super call with no owner', '$node');
       }
+      // A super call into `dart:core`'s own `Iterable`/`List` -- a class
+      // that *is* one reaching the base implementation -- is that member
+      // over this object's own elements, which is what the base does with
+      // it: `Iterable.where` iterates `this`. Lowered as the ordinary
+      // member call on `this`, so the receiver materialises the way every
+      // other read of an `Iterable` does (`_listReceiver`).
+      // `StringCharacters.where`, refused since the file was written.
+      if (!_translatedClass(ownerClass!) &&
+          const {'Iterable', 'List'}.contains(owner) &&
+          ownerClass.enclosingLibrary.importUri.scheme == 'dart') {
+        return _instanceInvocation(
+          InstanceInvocation(
+            InstanceAccessKind.Instance,
+            ThisExpression(),
+            node.name,
+            node.arguments,
+            interfaceTarget: node.interfaceTarget,
+            functionType: node.interfaceTarget.getterType as FunctionType,
+          ),
+        );
+      }
       // The super target is resolved, so its parameter list orders the named
       // arguments -- 56 super calls with named arguments were refused for
       // want of a callee this line had all along.
-      superOwners.add((ownerClass!, node.name.text, false));
+      superOwners.add((ownerClass, node.name.text, false));
       return IrSuperCall(
         owner,
         node.name.text,
@@ -321,7 +342,7 @@ augment class KernelFrontend {
           _superSlots(node.interfaceTarget).$1,
           _superSlots(node.interfaceTarget).$2,
         ),
-        baseArguments: _superBaseArguments(ownerClass!),
+        baseArguments: _superBaseArguments(ownerClass),
         typeArguments: _typeArgumentsOf(node.arguments),
       );
     }

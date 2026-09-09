@@ -3389,6 +3389,25 @@ pub fn try_parse_int(text: String) -> Option<i64> {
 }
 
 /// `double.parse(s)`.
+/// `int.parse(s, radix: r)` / `int.tryParse(s, radix: r)`: Dart's radix
+/// parse. A null radix is Dart's own rule -- base 16 behind an `0x`
+/// prefix, base 10 otherwise -- which is what `parse_int` already does
+/// (`DefaultMaterialLocalizations.parseCompactDate` passes `radix: 10`).
+pub fn try_parse_int_radix(text: String, radix: Option<i64>) -> Option<i64> {
+    match radix {
+        None => try_parse_int(text),
+        // `from_str_radix` takes the sign itself, and rejects anything else.
+        Some(r) => i64::from_str_radix(text.trim(), r as u32).ok(),
+    }
+}
+
+pub fn parse_int_radix(text: String, radix: Option<i64>) -> i64 {
+    match try_parse_int_radix(text.clone(), radix) {
+        Some(value) => value,
+        None => panic!("uncaught Dart exception: FormatException: {}", text),
+    }
+}
+
 pub fn parse_double(text: String) -> f64 {
     match try_parse_double(text.clone()) {
         Some(v) => v,
