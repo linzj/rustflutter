@@ -368,6 +368,9 @@ augment class RustBackend {
       // bound for a function that was not written is a promise nothing asks
       // for. See `_superBoundTraits`.
       _superBoundTraits.addAll(beyond);
+      // The bound names those traits, and the trait declaration repeats them
+      // (`the_class`): both are this module naming another's (`namedElsewhere`).
+      RustBackend.namedElsewhere.addAll(reached.superBases.keys);
     }
   }
 

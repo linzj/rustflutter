@@ -1002,7 +1002,7 @@ Set<String> abstractClassesIn(Component component, List<String> prefixes) {
   return names;
 }
 
-/// The libraries a library actually names.
+/// Everything the walk of a library can say about what it names, said once.
 ///
 /// `library.dependencies` looked like the import graph and is not one. The
 /// CFE resolves `import 'package:flutter/painting.dart'` -- a barrel that only
@@ -1015,23 +1015,86 @@ Set<String> abstractClassesIn(Component component, List<String> prefixes) {
 /// mentions. This walks the body and collects the library of every class and
 /// member it reaches -- which is exactly the set of `use` lines that make it
 /// compile, and no more.
-/// The class names a library mentions, and where each came from.
 ///
-/// Filled by the same walk as [librariesReferencedBy] and returned beside it,
-/// so the two cannot drift apart. See `_ReferenceCollector.namedClasses`.
-Map<String, Set<Library>> classNamesReferencedBy(Library library) {
-  final visitor = _ReferenceCollector(<Library>{});
+/// The three answers come from one walk because they are one walk: each of
+/// the two callers below used to make its own `_ReferenceCollector` and its
+/// own `_climb`, and each said in its comment that gathering them separately
+/// would let them drift. A third answer would have been a third walk.
+({
+  Set<Library> libraries,
+  Map<String, Set<Library>> classNames,
+  Set<Member> members,
+})
+referencesOf(
+  Library library, {
+  Map<Class, List<Class>> applications = const {},
+}) {
+  final found = <Library>{};
+  final visitor = _ReferenceCollector(found);
   library.accept(visitor);
   for (final cls in library.classes) {
-    // The same walk `librariesReferencedBy` does, for the same reason: a name
-    // that arrives by flattening has to be resolved like any other, and the
-    // two lists would drift if they were gathered differently.
+    // A mixin declaration is emitted here with the *applications*' members
+    // in it: TFA drops a body from the declaration and leaves it in every
+    // application, and `lowerClass` lowers it back into the mixin's own
+    // module. Those Kernel nodes live in whichever library wrote
+    // `with AnimationLocalListenersMixin`, so walking this library alone
+    // missed every name they use -- `FlutterError` and the whole of
+    // `foundation/diagnostics.dart` for `notifyListeners`, and the binding
+    // chain's `super.initInstances` for `SchedulerBinding`.
+    if (cls.isMixinDeclaration) {
+      // The *first* application that has each member, as `lowerClass` takes
+      // it: every application holds a copy, and walking all of them read one
+      // mixin's body through every library that applies it -- 924 modules
+      // fell into one 599-module cycle.
+      String keyOf(Procedure p) => p.isSetter ? '${p.name.text}=' : p.name.text;
+      final own = {for (final f in cls.fields) f.name.text};
+      final declared = {
+        for (final p in cls.procedures)
+          if (p.function.body != null) keyOf(p),
+        for (final f in cls.fields) f.name.text,
+        for (final f in cls.fields)
+          if (!f.isFinal) '${f.name.text}=',
+      };
+      final seenProcedure = <String>{};
+      final seenField = <String>{};
+      for (final application in applications[cls] ?? const <Class>[]) {
+        for (final p in application.procedures) {
+          if (p.isStatic || p.isAbstract) continue;
+          final key = keyOf(p);
+          if (declared.contains(key) || !seenProcedure.add(key)) continue;
+          p.accept(visitor);
+        }
+        for (final f in application.fields) {
+          if (f.isStatic || own.contains(f.name.text)) continue;
+          if (!seenField.add(f.name.text)) continue;
+          f.accept(visitor);
+        }
+      }
+    }
+    // The whole ancestry, not just the direct supertype. The backend flattens
+    // a base class's fields into the subclass and emits an `impl` for every
+    // abstract *ancestor*, so a grandparent two modules away is named in the
+    // output even though nothing in the body mentions it -- 1008 "cannot find
+    // trait" until this walked the chain.
+    // And each ancestor's own *declarations*, not just the ancestor. Flattening
+    // copies a base's fields into the subclass, so `Widget`'s `Key? key` lands
+    // in every widget struct -- and `Key` lives in `foundation/key.dart`, which
+    // a widget library never names for itself. 1104 of the 1467 "cannot find
+    // trait" were that one field's type; 1463 of them were this in total.
+    //
+    // The whole ancestor is walked rather than just its field types: a method
+    // signature copied into an `impl` names types the same way, and one rule
+    // that covers both cannot disagree with itself.
     _climb(cls, (node) {
       visitor._class(node);
       node.accept(visitor);
     });
   }
-  return visitor.namedClasses;
+  return (
+    libraries: {...found}..remove(library),
+    classNames: visitor.namedClasses,
+    members: visitor.members,
+  );
 }
 
 /// Every class in an ancestry, each visited once.
@@ -1052,34 +1115,6 @@ void _climb(Class start, void Function(Class) visit) {
   walk(start);
 }
 
-Set<Library> librariesReferencedBy(Library library) {
-  final found = <Library>{};
-  final visitor = _ReferenceCollector(found);
-  library.accept(visitor);
-  for (final cls in library.classes) {
-    // The whole ancestry, not just the direct supertype. The backend flattens
-    // a base class's fields into the subclass and emits an `impl` for every
-    // abstract *ancestor*, so a grandparent two modules away is named in the
-    // output even though nothing in the body mentions it -- 1008 "cannot find
-    // trait" until this walked the chain.
-    // And each ancestor's own *declarations*, not just the ancestor. Flattening
-    // copies a base's fields into the subclass, so `Widget`'s `Key? key` lands
-    // in every widget struct -- and `Key` lives in `foundation/key.dart`, which
-    // a widget library never names for itself. 1104 of the 1467 "cannot find
-    // trait" were that one field's type; 1463 of them were this in total.
-    //
-    // The whole ancestor is walked rather than just its field types: a method
-    // signature copied into an `impl` names types the same way, and one rule
-    // that covers both cannot disagree with itself.
-    _climb(cls, (node) {
-      found.add(node.enclosingLibrary);
-      node.accept(visitor);
-    });
-  }
-  found.remove(library);
-  return found;
-}
-
 class _ReferenceCollector extends RecursiveVisitor {
   _ReferenceCollector(this.found);
 
@@ -1096,9 +1131,22 @@ class _ReferenceCollector extends RecursiveVisitor {
   /// out of it, because no single `use` would be right.
   final Map<String, Set<Library>> namedClasses = {};
 
+  /// Every member reached, not just the library each one came from.
+  ///
+  /// The same answer as [namedClasses], for the names that are not classes.
+  /// `_member` had it in hand and dropped it, so a top-level function, a
+  /// top-level constant and a class's statics were the references the emitter
+  /// had to guess back out of its own text -- and `locale` the parameter and
+  /// `locale` the top-level function are the same seven characters there.
+  ///
+  /// The members themselves, not names: how one is spelled in Rust is the
+  /// backend's to say, and this file does not know it.
+  final Set<Member> members = {};
+
   void _member(Member? member) {
     if (member == null) return;
     found.add(member.enclosingLibrary);
+    members.add(member);
     // The class a constructor or static belongs to is named by the call
     // (`Image(..)` in `ImageIcon.build` named `widgets/image.dart`'s
     // `Image`, which two modules define; without the class here the
@@ -1122,12 +1170,14 @@ class _ReferenceCollector extends RecursiveVisitor {
   @override
   void visitConstructorInvocation(ConstructorInvocation node) {
     _member(node.target);
+    _defaults(node.target, node.arguments);
     super.visitConstructorInvocation(node);
   }
 
   @override
   void visitStaticInvocation(StaticInvocation node) {
     _member(node.target);
+    _defaults(node.target, node.arguments);
     super.visitStaticInvocation(node);
   }
 
@@ -1152,6 +1202,7 @@ class _ReferenceCollector extends RecursiveVisitor {
   @override
   void visitInstanceInvocation(InstanceInvocation node) {
     _member(node.interfaceTarget);
+    _defaults(node.interfaceTarget, node.arguments);
     super.visitInstanceInvocation(node);
   }
 
@@ -1165,6 +1216,57 @@ class _ReferenceCollector extends RecursiveVisitor {
   void visitInstanceSet(InstanceSet node) {
     _member(node.interfaceTarget);
     super.visitInstanceSet(node);
+  }
+
+  // A `super` call's own Rust name is not decided here: which class holds
+  // the body is `_realOwner`'s answer, and the front end writes it down
+  // (`KernelFrontend.superOwners`). This records only the member, as any
+  // other reference to it would be.
+  @override
+  void visitSuperMethodInvocation(SuperMethodInvocation node) {
+    _member(node.interfaceTarget);
+    _defaults(node.interfaceTarget, node.arguments);
+    super.visitSuperMethodInvocation(node);
+  }
+
+  @override
+  void visitSuperPropertyGet(SuperPropertyGet node) {
+    _member(node.interfaceTarget);
+    super.visitSuperPropertyGet(node);
+  }
+
+  @override
+  void visitSuperPropertySet(SuperPropertySet node) {
+    _member(node.interfaceTarget);
+    super.visitSuperPropertySet(node);
+  }
+
+  /// The default arguments a call leaves off.
+  ///
+  /// Dart applies them in the callee; Rust has no defaults, so the front end
+  /// copies the callee's initializer into *this* library (`_omitted`) and the
+  /// emitter writes it here. `TwoPane(..)` never mentioned
+  /// `VerticalDirection`, and `VerticalDirection::Down` is in the line it
+  /// emitted -- the reference is this library's, made on its behalf. Reading
+  /// it here is the same rule the emitter follows, asked one step earlier.
+  final Set<FunctionNode> _inDefaults = {};
+
+  void _defaults(Member? target, Arguments arguments) {
+    final callee = target?.function;
+    if (callee == null || !_inDefaults.add(callee)) return;
+    final supplied = {for (final n in arguments.named) n.name};
+    for (final param in callee.namedParameters) {
+      if (supplied.contains(param.parameterName)) continue;
+      param.initializer?.accept(this);
+    }
+    for (
+      var i = arguments.positional.length;
+      i < callee.positionalParameters.length;
+      i++
+    ) {
+      callee.positionalParameters[i].initializer?.accept(this);
+    }
+    _inDefaults.remove(callee);
   }
 
   @override

@@ -90,6 +90,9 @@ augment class RustBackend {
     final turbofish = baseArguments.isEmpty && own.every((a) => a == '_')
         ? ''
         : '::<_${[...baseArguments.map(type), ...own].map((a) => ', $a').join()}>';
+    RustBackend.namedElsewhere
+      ..add(base)
+      ..add(superFn(base, name, isSetter: isSetter));
     final call =
         '${superFn(base, name, isSetter: isSetter)}$turbofish(${[receiver, ...args.map(expr)].join(', ')})';
     // KNOWN GAP (found by the analyzer 2026-09-09, never measured): an async
@@ -454,6 +457,9 @@ augment class RustBackend {
         .where((m) => m.name == name && !m.isStatic)
         .firstOrNull;
     final suffix = (baseMethod?.isAsync ?? false) ? '' : _propagate;
+    RustBackend.namedElsewhere
+      ..add(base)
+      ..add(superFn(base, name));
     return '${superFn(base, name)}::<${generics.join(', ')}>'
         '(${['&*$on', ...args.map(expr)].join(', ')})$suffix';
   }

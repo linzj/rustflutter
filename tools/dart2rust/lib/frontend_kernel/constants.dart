@@ -821,6 +821,14 @@ augment class KernelFrontend {
     return IrCall(cast, 'clone', const []);
   }
 
+  /// The bodies `_genericOnTrait` sent a call to, as (class, member).
+  ///
+  /// The call becomes `superFn(body, member)` -- a free function in the
+  /// body's module -- and *which* class holds the body is `_genericBodies`'
+  /// whole-program answer. A per-library reference walk cannot reach it, so
+  /// it is written down where it is decided.
+  final Set<(Class, String)> genericBodies = {};
+
   /// A generic method called on a trait handle: see `IrSuperDispatch`.
   /// Only when the closed world holds exactly one body for it, in a class
   /// that is a trait here; a second body (`OptionalMethodChannel.
@@ -857,6 +865,7 @@ augment class KernelFrontend {
     final hierarchy = typeEnvironment?.hierarchy;
     final below =
         from == body || (hierarchy?.isSubInterfaceOf(from, body) ?? false);
+    genericBodies.add((body, target.name.text));
     return IrSuperDispatch(
       receiver is ThisExpression ? IrThis() : expression(receiver),
       body.name,

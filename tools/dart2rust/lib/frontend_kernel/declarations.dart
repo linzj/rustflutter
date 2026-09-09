@@ -125,6 +125,17 @@ augment class KernelFrontend {
     return 'set${clean[0].toUpperCase()}${clean.substring(1)}';
   }
 
+  /// The name a top-level member carries into the IR.
+  ///
+  /// The same two functions the declaration uses, so an importer and a
+  /// definition spell one identifier: an extension member's CFE name
+  /// (`BaselineOffset|+`, `StringCharacters|get#characters`) is not a Rust
+  /// one, and a setter is a function named for the store.
+  static String topLevelIrName(Member member) =>
+      member is Procedure && member.kind == ProcedureKind.Setter
+      ? _topLevelSetterName(member.name.text)
+      : _topLevelName(member.name.text);
+
   /// `dart:async`'s `StreamView`, the one prelude base a class extends.
   static bool _isStreamView(Class c) =>
       c.name == 'StreamView' &&

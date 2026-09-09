@@ -367,4 +367,28 @@ augment class RustBackend {
 
   static String _abstractStaticName(String owner, String name) =>
       _rustIdentifier('${snakeRaw(owner)}_${snakeRaw(name)}');
+
+  /// Every module-level name a *static* member of `owner` can be given here.
+  ///
+  /// A static of an abstract or generic class does not live in an `impl`
+  /// (`_freeStatics`): a method becomes a free function carrying the class's
+  /// name, a constructor the same with `new`, and a field a module constant.
+  /// Which of the three a member got is decided where it is emitted; an
+  /// importer holds only the reference, so it proposes all of them and lets
+  /// the module's own definitions say which was written.
+  static Set<String> staticNamesFor(
+    String owner,
+    String name, {
+    bool isSetter = false,
+  }) => {
+    _abstractStaticName(
+      owner,
+      name.isEmpty
+          ? 'new'
+          : isSetter
+          ? 'set_${snake(name)}'
+          : name,
+    ),
+    screamingSnake('${owner}_$name'),
+  };
 }

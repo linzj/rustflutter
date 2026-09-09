@@ -320,6 +320,7 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
   ws878   152 /  49
   ws895   147 /  38
   ws898   147 /  38,可达 64 -> 67(l10n 从 app 的 crate 里拆出去)
+  ws900   147 /  38,可达 67 -> 69(use 行改从 Kernel 引用写,文本扫描删光)
 
 分区与墙钟(ws898,同一台机器,打桩循环的尾巴):
   改前  merged_gallery_scc 1,026,045 行 / 223 模块,依赖图的尾巴
@@ -327,6 +328,14 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
   改后  scc_gallery   942,252 行(78 个 l10n,排在 app 下面,与别的 crate 并行)
         gallery_above  82,892 行(app 本体,-91.9%)
         round 7/8/9 = 20s / 33s / 33s
+
+分区与墙钟(ws900,同一台机器):
+  改前(ws898,文本扫)  64 crate;scc_flutter_widgets 325,924 行 / 240 模块
+  改后(ws900,账本)    66 crate;scc_flutter_widgets 402,903 行 / 324 模块
+        打桩循环最后三轮 = 37s / 34s(round 10/11,0 error 收尾)
+  账本的边更多也更真:文本扫少导的名字过去是拿打桩抵掉的,现在导全了,
+  于是 services -> widgets 这类真边把 84 个模块并进了同一个 crate。
+  **这是这轮唯一的退步,记在〈已知欠账〉里。**
 
 运行尺子(接上):
   run763  错误盒可读(dart_boxed:抛出的错误能打印了)
@@ -473,6 +482,7 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 | ws895 | 窄化过的动态 `num` 调用要记下手里剩的是什么(按 prelude 的 `DartDouble` 签名);`_returned` 原先只认识 `IrNew`/`IrConstInstance` 两种「能变成对象的东西」,一次调用是第三种 | stub **149 → 147**,拒绝 38,可达 64;run896 708 行 / 差异 0 / 0 panic / 196 帧;夹具 `dyncall` |
 | ws896 | 模块图的边是从生成文本正则回扫出来的,连字符串和注释一起扫:五个翻译文案里的单词("Header"、"Sac a main")就是五条真边。扫描前剥掉注释与字面量;再加一条配对规则——只有当一个「所有定义处都是 `fn`」的名字在本模块**既被绑定、又从未被调用/走路径**时才不算引用 | 拒绝 38、stub **147**(未升)、可达 64 → 67;`merged_gallery_scc` 1,026,045 行拆成 `scc_gallery` 942,252(l10n)+ `gallery_above` 82,892(app,**-91.9%**);链尾 53s → 33s;先只用前半句时 rustc 当场给了 188 条 `cannot find value`(自由函数当值传),那正是配对规则的由来 |
 | ws899 | 黄金 44 个错里 28 个的根因是「夹具 driver 不是同一个编译器」:`dart2rust_kernel.dart` 一个 `TypeEnvironment` 都没建(前端里 34 处读它,全走 null 分支),`const Spacing._(3.0)` 的 `3.0` 因此退化成 `dynamic`,`const` 里发出一次拆箱。另一半:分析器前端一次实参加宽都不做,补上「进对象槽就装箱」(`IrUpcast`,由后端选 `dart_boxed`/`dart_object`/句柄) | testdata **44 → 16** 错;oracle exit 0、BEHIND 16 → 14(`constdirect`/`named_args` 真追上);十个 fx 夹具全 AGREE;gallery 逐字节未动(md5 1aee02ea,拒绝仍 38)——这一轮没碰生产路径 |
+| ws900 | `use` 行一直是从**生成出来的文本**用正则回扫猜出来的,而后端发射时明明知道每个引用指向哪个库——`_ReferenceCollector._member` 手里就是答案,却只留下库和类名、把成员名扔了。改成一次遍历(`referencesOf`)同时交出库、类名、成员,`use` 行照账本写;文本侧十二条补丁一次删完(`_code`/`_identifiersIn`/`_calledIn`/`_boundIn`/`_packageOf`/`everyDefinitionIsAFunction`/`visible`/同包兜底/Dart import 列表/`pub use` 再导出)。账本盖不到的只有**编译器自己发明的名字**,各自在发明处记一笔:`superFn` 与它的 trait 界、类头的 supertrait、`implName`、抽象类的静态、宽 impl 与动态槽两次普查、`_genericOnTrait` 选中的体、被应用的 mixin 体 | stub **147**(未升)、拒绝 38、可达 **67 → 69**、`cargo check --workspace` **0 error**;`dart2rust_package.dart` −290 行;widgets crate 325,924 → 402,903 行(**变大,记债**);oracle exit 0 / BEHIND 14;**run900 红**——账本把 `scheduleMicrotask` 从 `dart:ui` 的空实现改绑到 prelude,microtask 第一次真的跑起来,当场撞上 147 里早就有的那个 `_handle_focus_changed`(下一轮修) |
 | ws891 | 第五轮复审抓到:ws889 落地后 `regen.py` 的 `hints()` 会**永远误报**——它按 `'throws:' not in driver` 字面判定,而正确的修法恰恰是把那个参数删掉,所以那条提示从此指向唯一不该做的修法。换成 `DECIDED_IN`:只指出决定写在哪两个函数里,不对文件的现状下任何断言。顺手分开探针的两种失败(没调用 vs 调用了没 `?`) | `fails:` 在 frontend.dart 已 11 处、`throws:` 在 kernel driver 已 0 处——两条提示一条正确变哑、一条永久说谎,实测属实;两个诊断分支各跑一次验过 |
 
 ## 下一步(2026-09-05 重铺)
@@ -830,6 +840,47 @@ ws344 才照到它,一量 26199 个,削到 782。
 int 分支不够:Dart 的 `(-7).abs()` 是 **int 7**,印 `7`;当成 double 印
 `7.0`。要的是按运行时类型的一次真派发,两条臂各自的结果类型也不同。ws895
 只收了装箱那条,int 那条此前是桩 panic、现在是 unwrap panic,run896 没走到。
+
+**(2026-09-09 新增,ws900 挖出来的)microtask 从来没跑过,现在跑了**
+
+`widgets/focus_manager.dart` 调 `scheduleMicrotask`。文本扫描一直把这个名字
+导成 `crate::dart_ui::_schedule_microtask` —— `dart:ui` 那个的体是
+`dart_native("DartRuntimeHooks::ScheduleMicrotask")`,而没有 engine host 时
+`dart_native` 对无返回值的原生**直接跳过**。也就是说:到 ws899 为止,
+**这台机器上每一个 microtask 都被静静丢掉了**,708 行的渲染树是在那个前提下
+量出来的。账本按 Kernel 引用解析(目标是 `dart:async` 的 `scheduleMicrotask`,
+落在 prelude 上),队列第一次真的跑起来。
+
+醒来的第一条路就撞上 147 里早就有的一个桩:
+
+    scc_flutter_widgets/src/widgets_focus_traversal.rs  _handle_focus_changed
+    E0596  policy.clone().invalidate_scope_data(..)
+           &mut self 穿过 Rc<dyn FocusTraversalPolicy>
+
+这是「共享可变 / counted 对象」那本账,不是一行能收的。**下一轮做这条。**
+在它绿之前,run_main 是红的(112 行,exit 134),而这不是回退——回退等于把
+「每个 microtask 都丢掉」装回去。
+
+**(2026-09-09 新增,ws900 换来的)账本让 widgets crate 变大,和三个还没记账的名字**
+
+`use` 行从 Kernel 引用写之后,边更真也更多:文本扫少导的名字过去是拿打桩
+抵掉的(147 个里有一部分就是),现在导全了,`services -> widgets` 这类真边
+把 84 个模块并进同一个 crate——`scc_flutter_widgets` 325,924 → 402,903 行。
+它是这台机器上跑得最久的那个 rustc,所以这是一笔要还的账,不是白赚的。
+往回缩的办法有两条,都还没量:把 `_climb` 对**别的库**的祖先只读签名不读体
+(ws900e 试过,墙钟没动、打桩反而多了 48 个,已撤回);或者把那几条真边
+指向的成员从 trait 里拆出去。
+
+还有三处名字仍然只在文本里、账本没记到,各自换来一个新打桩(总数没升,
+另有四个旧的被修好抵掉):
+
+    painting_flutter_logo   Shader        ×2   (`_paint_logo` / `paint`)
+    widgets_navigator       PointerUpEvent ×1  (`build`)
+
+三个都是**推断出来的静态类型**:Dart 写的是 `var`,类型只在被调成员的签名里,
+`_ReferenceCollector` 走的是写出来的类型节点,没走签名。补法是 `_member` 里
+顺手读一遍成员的签名类型——一般解,但会再加边,和上面那笔账是同一笔,
+要一起量。
 
 **(2026-09-09 新增,ws894 量过)`dart:ffi` 结构体剩下的一半**
 

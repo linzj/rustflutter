@@ -304,6 +304,7 @@ augment class KernelFrontend {
       // The super target is resolved, so its parameter list orders the named
       // arguments -- 56 super calls with named arguments were refused for
       // want of a callee this line had all along.
+      superOwners.add((ownerClass!, node.name.text, false));
       return IrSuperCall(
         owner,
         node.name.text,

@@ -60,14 +60,18 @@ String moduleName(String uri) {
   return RegExp(r'^[0-9]').hasMatch(name) ? 'm_$name' : name;
 }
 
-/// `package:flutter` for `package:flutter/src/widgets/basic.dart`, `dart:ui`
-/// for `dart:ui`: the unit whose libraries may see each other through a
-/// barrel the CFE resolved away.
-String _packageOf(String uri) {
-  if (!uri.startsWith('package:')) return uri;
-  final slash = uri.indexOf('/');
-  return slash < 0 ? uri : uri.substring(0, slash);
-}
+/// How the compiler spells a top-level member.
+///
+/// The one place the ledger has to cross into naming: a Dart name is not a
+/// Rust one, and `referencesOf` deliberately hands back the members rather
+/// than guessing at the spelling itself. A field is a module constant
+/// (`screamingSnake`); a getter, a setter and a plain function are all free
+/// functions here, since reading a computed `get foo` is calling it (see
+/// `_staticGet`) -- named by the front end's own `topLevelIrName`, so an
+/// import and a declaration cannot disagree.
+String _rustNameOf(Member member) => member is Field
+    ? screamingSnake(member.name.text)
+    : snake(KernelFrontend.topLevelIrName(member));
 
 /// The item names another module could import: the `pub` ones only.
 ///
@@ -89,20 +93,6 @@ Set<String> _publicItemsIn(String text) => {
     m.group(1)!,
 };
 
-/// The `pub` item names a module declares as *functions*.
-///
-/// The same shape as `_publicItemsIn`, narrowed to `fn`: a name that is
-/// only ever a function is referenced by a call or a path and by nothing
-/// else, which is what lets `_calledIn` speak for it.
-Set<String> _publicFunctionsIn(String text) => {
-  for (final m in RegExp(
-    r'^pub(?:\(crate\))? (?:(?:async|const|unsafe) )*fn '
-    r'((?:r#)?[A-Za-z_]\w*)',
-    multiLine: true,
-  ).allMatches(text))
-    m.group(1)!,
-};
-
 /// Every item name a module declares, public or not.
 Set<String> _itemsIn(String text) => {
   for (final m in RegExp(
@@ -112,146 +102,6 @@ Set<String> _itemsIn(String text) => {
   ).allMatches(text))
     m.group(1)!,
 };
-
-/// The text with its comments and its string and character literals taken
-/// out, so that a scan for identifiers reads *code*.
-///
-/// "Importing a name that turns out to be unused is free" was true of rustc
-/// and false of the module graph: an unused import is an edge, and an edge
-/// decides which modules share a crate. Five words of translated prose --
-/// `Ok("Header".to_string())` in Tagalog, `Ok("Sac a main".to_string())` in
-/// French -- were thirteen such edges, and they were what put 78 l10n
-/// modules (942,709 lines, 92% of the crate) in the same strongly connected
-/// component as the app.
-String _code(String text) {
-  final out = StringBuffer();
-  var i = 0;
-  final n = text.length;
-  while (i < n) {
-    final c = text[i];
-    if (c == '/' && i + 1 < n && text[i + 1] == '/') {
-      final j = text.indexOf('\n', i);
-      i = j < 0 ? n : j;
-      continue;
-    }
-    if (c == '/' && i + 1 < n && text[i + 1] == '*') {
-      // Rust's block comments nest.
-      var depth = 1;
-      i += 2;
-      while (i < n && depth > 0) {
-        if (text.startsWith('/*', i)) {
-          depth++;
-          i += 2;
-        } else if (text.startsWith('*/', i)) {
-          depth--;
-          i += 2;
-        } else {
-          i++;
-        }
-      }
-      continue;
-    }
-    // A raw string (`r"..."`, `r#"..."#`) takes no escapes and ends at the
-    // quote followed by as many `#` as it opened with.
-    if (c == 'r' && i + 1 < n && (text[i + 1] == '#' || text[i + 1] == '"')) {
-      var j = i + 1;
-      var hashes = 0;
-      while (j < n && text[j] == '#') {
-        hashes++;
-        j++;
-      }
-      if (j < n && text[j] == '"') {
-        final close = '"' + '#' * hashes;
-        final end = text.indexOf(close, j + 1);
-        i = end < 0 ? n : end + close.length;
-        continue;
-      }
-    }
-    if (c == '"' || c == "'") {
-      // A `'` is also a lifetime (`'static`), which is not a literal and
-      // has no closing quote: a character literal is one or two characters
-      // and then the quote.
-      if (c == "'") {
-        final closes = i + 2 < n && text[i + 2] == "'";
-        final escaped = i + 1 < n && text[i + 1] == '\\';
-        if (!closes && !escaped) {
-          out.write(c);
-          i++;
-          continue;
-        }
-      }
-      i++;
-      while (i < n) {
-        if (text[i] == '\\') {
-          i += 2;
-          continue;
-        }
-        if (text[i] == c) {
-          i++;
-          break;
-        }
-        i++;
-      }
-      // The literal is gone, but the newlines inside it are not: a caller
-      // counting lines has to see the same file.
-      continue;
-    }
-    out.write(c);
-    i++;
-  }
-  return out.toString();
-}
-
-/// Every identifier the text's *code* uses.
-///
-/// Still blunt inside code -- a parameter's name counts, and so does a
-/// field's -- because importing a name that turns out to be unused is free
-/// to rustc. It is not free to the module graph, which is why `_calledIn`
-/// below is asked about the names that are only ever functions.
-Set<String> _identifiersIn(String text) => {
-  for (final m in RegExp(r'(?:r#)?[A-Za-z_]\w*').allMatches(_code(text)))
-    m.group(0)!,
-};
-
-/// The names this text calls or reaches through a path: `f(..)`, `T::x`.
-Set<String> _calledIn(String text) {
-  final code = _code(text);
-  return {
-    for (final m in RegExp(
-      r'(?:r#)?([A-Za-z_]\w*)\s*(?:\(|::)',
-    ).allMatches(code))
-      m.group(1)!,
-  };
-}
-
-/// The names this text *binds*: a parameter, a field, a `let`.
-///
-/// Anything followed by a `:` that is not a path separator is a name being
-/// declared -- a parameter (`mut locale: Rc<Locale>`), a struct's field, a
-/// field of a struct literal, an annotated `let`. None of them is a
-/// reference to another module's item.
-///
-/// This is one half of a pair. A name bound here *and* never called here is
-/// this module's own; a name that is only ever read -- a top-level function
-/// handed over as a value, `defaultScrollNotificationPredicate` and
-/// `ChildLayoutHelper.layoutChild` among 188 of them -- is an import, and
-/// asking only "is it called" dropped every one of those (337 stubbed
-/// against 147, measured before this line existed).
-Set<String> _boundIn(String text) {
-  final code = _code(text);
-  return {
-    for (final m in RegExp(r'(?:r#)?([A-Za-z_]\w*)\s*:(?!:)').allMatches(code))
-      m.group(1)!,
-    for (final m in RegExp(
-      r'\blet\s+(?:mut\s+)?((?:r#)?[A-Za-z_]\w*)',
-    ).allMatches(code))
-      m.group(1)!,
-    for (final m in RegExp(
-      r'\|\s*(?:mut\s+)?((?:r#)?[A-Za-z_]\w*)',
-    ).allMatches(code))
-      m.group(1)!,
-  };
-}
 
 /// Writes only when the text differs.
 ///
@@ -345,8 +195,16 @@ Future<void> main(List<String> args) async {
 
   /// Each module's text, held until every module is known: what a module has
   /// to import cannot be decided before the others have said what they define.
-  final written =
-      <String, (String, String, List<String>, List<String>, Set<String>)>{};
+  final written = <String, (String, String, List<String>)>{};
+
+  /// Each module's `use` lines as the Kernel references give them: the Rust
+  /// name, and the module that declares it. Built in the emit loop from
+  /// `referencesOf`, read in the import loop below.
+  final ledger = <String, Map<String, Set<String>>>{};
+
+  /// What the *emitter* wrote that it did not declare, per module
+  /// (`RustBackend.namedElsewhere`): the names no Kernel node carries.
+  final emitted = <String, Set<String>>{};
   var libraries = 0;
   var classes = 0;
   var refusals = 0;
@@ -512,7 +370,7 @@ Future<void> main(List<String> args) async {
   // names are visible (`addWiderImpls`).
   final references = <Library, Set<Library>>{
     for (final library in inPackage)
-      library: librariesReferencedBy(library).toSet(),
+      library: referencesOf(library, applications: applications).libraries,
   };
   final reachable = <Library, Set<Library>>{};
   for (final library in inPackage) {
@@ -581,29 +439,73 @@ Future<void> main(List<String> args) async {
     // CFE resolves flutter's barrel libraries away -- there are none in the
     // dill -- without splicing their re-exports into the importer. So
     // `cupertino/nav_bar.dart` depends on no painting library while using
-    // `TextStyle` 348 times. See `librariesReferencedBy`.
-    final imports = <String>{};
-    final exports = <String>{};
-    for (final referenced in librariesReferencedBy(library)) {
-      final target = nameOf[referenced];
-      if (target != null && target != name) imports.add(target);
+    // `TextStyle` 348 times. See `referencesOf`.
+    final refs = referencesOf(library, applications: applications);
+    // What the Kernel references say, in Rust's spelling: the name a module
+    // has to import, and the module that declares it. The emitter knows this
+    // and used to throw it away, leaving `use` lines to be guessed back out
+    // of the text it had just written. See `_ReferenceCollector.namedMembers`.
+    final book = <String, Set<String>>{};
+    void note(String rustName, Library owner) {
+      final module = nameOf[owner];
+      if (module == null || module == name) return;
+      (book[rustName] ??= {}).add(module);
     }
-    for (final dependency in library.dependencies) {
-      final target = nameOf[dependency.targetLibrary];
-      if (target == null || target == name) continue;
-      if (!dependency.isExport) {
-        // The Dart file's own `import` lines, beside the references: a
-        // default argument the compiler filled in (`VerticalDirection.down`
-        // for `Column`) names a class the source never wrote, reached only
-        // through `material.dart`'s re-exports.
-        if (!exports.contains(target)) imports.add(target);
+
+    refs.classNames.forEach((className, from) {
+      for (final owner in from) {
+        note(className, owner);
+        // The concrete struct an open class gets (`KernelFrontend.implName`):
+        // the Kernel node says `Color`, and the emitter writes `ColorImpl`.
+        note(KernelFrontend.implName(className), owner);
+      }
+    });
+    for (final member in refs.members) {
+      final owner = member.enclosingClass;
+      if (owner == null) {
+        note(_rustNameOf(member), member.enclosingLibrary);
         continue;
       }
-      // Dart's `export` is a re-export, and a library importing this one gets
-      // what it exports. The edges that survive are still worth keeping.
-      exports.add(target);
-      imports.remove(target);
+      // An instance member is reached through its trait, which comes with the
+      // class. A static is a name of its own here, and which of the emitter's
+      // spellings it got is what the module defines (`staticNamesFor`).
+      if (member.isInstanceMember) continue;
+      for (final proposed in RustBackend.staticNamesFor(
+        owner.name,
+        member.name.text,
+        isSetter: member is Procedure && member.kind == ProcedureKind.Setter,
+      )) {
+        note(proposed, member.enclosingLibrary);
+      }
     }
+    // What a census made this library name (`injectedClasses`): a wider
+    // impl's types and a dynamic slot's arms are whole-program answers, and
+    // no Kernel node in this library carries them.
+    for (final cls in frontends[library]!.injectedClasses) {
+      note(cls.name, cls.enclosingLibrary);
+      note(KernelFrontend.implName(cls.name), cls.enclosingLibrary);
+    }
+    for (final member in frontends[library]!.injectedMembers) {
+      if (member.enclosingClass != null) continue;
+      note(_rustNameOf(member), member.enclosingLibrary);
+    }
+    // The generic calls that went to a body rather than through a trait
+    // (`_genericOnTrait`): the front end wrote down which class holds it.
+    for (final (body, member) in frontends[library]!.genericBodies) {
+      note(RustBackend.superFn(body.name, member), body.enclosingLibrary);
+    }
+    for (final (owner, member, isSetter) in frontends[library]!.superOwners) {
+      note(
+        RustBackend.superFn(owner.name, member, isSetter: isSetter),
+        owner.enclosingLibrary,
+      );
+      // ..and the class itself: the free function's `__Self` is bound by the
+      // traits its body reaches through `super` (`_superBoundTraits`), which
+      // is how `scheduler_binding_super_init_instances` names
+      // `GestureBinding` -- a trait `SchedulerBinding` is not below.
+      note(owner.name, owner.enclosingLibrary);
+    }
+    ledger[name] = book;
 
     final (own, refused) = lowered[library]!;
     // The same IR, plus a way to look up the rest of the crate.
@@ -617,7 +519,7 @@ Future<void> main(List<String> args) async {
         ...everyClass,
         // What *this* library's names resolve to wins over the crate-wide
         // first-come map.
-        for (final entry in classNamesReferencedBy(library).entries)
+        for (final entry in refs.classNames.entries)
           if (entry.value.length == 1 &&
               classesOf[entry.value.single]?[entry.key] != null)
             entry.key: classesOf[entry.value.single]![entry.key]!,
@@ -629,6 +531,20 @@ Future<void> main(List<String> args) async {
       },
     );
     final (text, more) = RustBackend.emitLibrary(ir, frontEndRefusals: refused);
+    final wrote = {...RustBackend.namedElsewhere};
+    void header(IrType type) {
+      wrote.add(type.name);
+      type.arguments.forEach(header);
+    }
+
+    for (final cls in own.classes) {
+      final above = cls.superclass;
+      if (above != null) wrote.add(above);
+      cls.interfaces.forEach(header);
+      cls.mixins.forEach(header);
+      cls.extraImpls.forEach(header);
+    }
+    emitted[name] = wrote;
     // Counted from what is written, not from what the two lists happen to
     // hold. Rounds 53 and 54 wrapped more emission sites in `_member`, and
     // those refusals reach the file without reaching `more` -- so this said
@@ -645,7 +561,7 @@ Future<void> main(List<String> args) async {
     // beside it would be a redefinition.
     final resolved = <String>[];
     final ownNames = {for (final cls in own.classes) cls.name};
-    classNamesReferencedBy(library).forEach((className, from) {
+    refs.classNames.forEach((className, from) {
       if ((definedIn[className]?.length ?? 0) < 2) return;
       if (ownNames.contains(className)) return;
       final owners = from.map((l) => nameOf[l]).nonNulls.toSet();
@@ -673,13 +589,7 @@ Future<void> main(List<String> args) async {
       // 15 `E0422`s.
       resolved.add('use crate::$owner::$className;');
     });
-    written[name] = (
-      uri,
-      text,
-      exports.toList()..sort(),
-      resolved..sort(),
-      imports,
-    );
+    written[name] = (uri, text, resolved..sort());
   }
 
   // The `use` lines, decided from the emitted Rust rather than from the Dart.
@@ -731,134 +641,58 @@ Future<void> main(List<String> args) async {
       (definers[item] ??= {}).add(entry.key);
     }
   }
-  // Which of those names are *only* ever free functions. A module that
-  // never calls one and never names a path through it is not using it, and
-  // the blunt scan cannot tell such a name from a parameter of the same
-  // spelling. Types keep the wide net: a struct or a trait is reached in
-  // ways a regex cannot enumerate (a bound, a turbofish, a `dyn`), and the
-  // net was cast wide for them on purpose.
-  final everyDefinitionIsAFunction = <String>{};
-  for (final entry in written.entries) {
-    final fns = _publicFunctionsIn(entry.value.$2);
-    for (final item in _publicItemsIn(entry.value.$2)) {
-      if (fns.contains(item)) {
-        everyDefinitionIsAFunction.add(item);
-      } else {
-        everyDefinitionIsAFunction.remove(item);
-      }
-    }
-  }
 
   for (final entry in written.entries) {
     final name = entry.key;
-    final (uri, text, exports, resolved, imports) = entry.value;
+    final (uri, text, resolved) = entry.value;
     final mine = _itemsIn(text);
-    // What the Dart import graph makes visible: the imports, and what
-    // each imported module re-exports, transitively -- `VerticalDirection`
-    // reaches a widget through `flutter/widgets.dart`, which exports
-    // `rendering/flex.dart` (164 "cannot find type"). Still the Dart
-    // graph, so no new module cycle.
-    final visible = <String>{};
-    void see(String m) {
-      if (!visible.add(m)) return;
-      for (final e in written[m]?.$3 ?? const <String>[]) {
-        see(e);
-      }
-    }
-
-    imports.forEach(see);
-    final visiblePackages = {
-      _packageOf(uri),
-      for (final m in visible) _packageOf(written[m]!.$1),
-    };
     // What `resolved` (the class path) already imports by name, so the same
     // name is not imported twice -- 64 `E0252`s, `Path` 41 of them.
     final already = {
       for (final line in resolved)
         line.substring(line.lastIndexOf(':') + 1, line.length - 1),
     };
+    // What the module imports, from the ledger.
     final wanted = <String, String>{};
-    final used = _identifiersIn(text).toSet();
-    final called = _calledIn(text);
-    final bound = _boundIn(text);
-    for (final used in used) {
-      if (mine.contains(used)) continue;
-      // A name that is only ever a free function, never called here, never
-      // a path segment here, and *bound* here, is not this module's
-      // business -- it is a binding of its own that happens to be spelled
-      // the same. `locale` is the parameter of
-      // `lookup_gallery_localizations(mut locale: Rc<Locale>)` in 78 l10n
-      // modules, none of which calls it; that one name was 78 of the 91
-      // edges holding 942,709 lines of translated prose in the app's crate.
-      if (everyDefinitionIsAFunction.contains(used) &&
-          !called.contains(used) &&
-          bound.contains(used)) {
-        continue;
-      }
-      // `_` is a pattern, not a name. A *private* name (`_Linear`) is
-      // imported when exactly one module defines it: Dart's library-private
-      // is `pub(crate)` here, and the tree shaker inlines constants across
-      // libraries -- `_AlwaysDismissedAnimation {}` turned up in
-      // `package:animations`, 250 `E0422`s and the top of the E0425 list.
-      if (used == '_') continue;
-      if (already.contains(used)) continue;
-      final candidates = definers[used];
-      if (candidates == null) continue;
-      // Only from a module this library reaches in the Dart graph. Text
-      // alone imported `locale` from the gallery's formatters into
-      // `widgets/basic.dart` for a *parameter* of that name, and `Dialog`
-      // and `MenuItem` from material and the gallery into `dart:ui` -- edges
-      // no Dart import made. rustc read them as unused imports; the module
-      // graph read them as one 450-module cycle, 27% of the crate, with
-      // `dart:ui` and `package:gallery` in it. Measured 2026-09-03.
-      final imported = candidates.where(visible.contains).toList();
-      // A name one module in the crate defines is that module's whatever
-      // the Dart imports say: a barrel library (`rendering.dart`) that
-      // lowers to nothing breaks the visible chain, and `VerticalDirection`
-      // was unresolved 48 times for it (ws291). Within a package the
-      // library sees, though: the identifier scan reads a *field* named
-      // `destinations` in `material/navigation_rail.dart` and a local
-      // `is_android` in `rendering/view.dart`, and the one definer of each
-      // was in the gallery and in `google_fonts`. Those edges closed a
-      // cycle that merged the gallery and `flutter_localizations` into the
-      // widgets crate (378k -> 581k lines, ws337) -- the crate whose
-      // `rustc` is the one that runs the machine out of memory.
-      if (imported.isEmpty && candidates.length == 1) {
-        final candidate = candidates.single;
-        if (visiblePackages.contains(_packageOf(written[candidate]!.$1))) {
-          imported.add(candidate);
-        }
-      }
-      if (imported.length != 1) continue;
-      final from = imported.single;
-      if (from == name) continue;
+    void take(String used, String from) {
+      if (from == name) return;
+      if (mine.contains(used)) return;
+      if (already.contains(used)) return;
+      // The ledger says which library *declared* the name; whether that
+      // library's module emitted it is the definition scan's answer, and an
+      // import of a name a module does not define is an unresolved import.
+      if (!(definers[used]?.contains(from) ?? false)) return;
       wanted[used] = from;
     }
-    // A class's abstract ancestors too: `rrect.left()` is `_RRectLike`'s
-    // accessor, and a method of a trait not in scope does not exist
-    // (209 "no method named", `_RRectLike` alone 70). The text names the
-    // class, never the trait, so the trait comes with the class.
-    for (final cls in used) {
-      for (final ancestor in abstractAncestors(cls)) {
-        if (mine.contains(ancestor) ||
-            already.contains(ancestor) ||
-            wanted.containsKey(ancestor)) {
-          continue;
-        }
-        final candidates = definers[ancestor];
-        if (candidates == null || candidates.length != 1) continue;
-        final from = candidates.single;
-        if (from == name) continue;
-        wanted[ancestor] = from;
-      }
+
+    for (final used in emitted[name] ?? const <String>{}) {
+      final owners = definers[used];
+      if (owners != null && owners.length == 1) take(used, owners.single);
     }
+    ledger[name]!.forEach((used, owners) {
+      // Two libraries reached with something of this name: which of them the
+      // crate *defines* it in settles it, and when both do, the explicit
+      // `resolved` line above has already named the one that was meant.
+      final defined = owners
+          .where((m) => definers[used]?.contains(m) ?? false)
+          .toSet();
+      if (defined.length != 1) return;
+      final from = defined.single;
+      take(used, from);
+      // A class's abstract ancestors too: `rrect.left()` is `_RRectLike`'s
+      // accessor, and a method of a trait not in scope does not exist
+      // (209 "no method named", `_RRectLike` alone 70).
+      for (final ancestor in abstractAncestors(used)) {
+        final owners = definers[ancestor];
+        if (owners != null && owners.length == 1) take(ancestor, owners.single);
+      }
+    });
     final byModule = <String, List<String>>{};
     for (final e in wanted.entries) {
       (byModule[e.value] ??= []).add(e.key);
     }
     final uses = [
       'use crate::dart_prelude::*;',
-      for (final m in exports) 'pub use crate::$m::*;',
       for (final m in byModule.keys.toList()..sort())
         'use crate::$m::{${(byModule[m]!..sort()).join(', ')}};',
       ...resolved,

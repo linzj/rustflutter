@@ -88,6 +88,9 @@ augment class KernelFrontend {
           'typed=$typed',
         );
       }
+      if (ownerClass != null) {
+        superOwners.add((ownerClass, node.name.text, false));
+      }
       return IrSuperCall(
         base,
         node.name.text,

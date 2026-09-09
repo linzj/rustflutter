@@ -16,10 +16,22 @@ augment class RustBackend {
   /// threw away the whole file -- including the classes that were fine. A
   /// compiler that produces nothing because of one bad class is much less
   /// useful than one that produces the rest and says which is missing.
+  /// The names this emit wrote that it did not declare.
+  ///
+  /// A `super` call's free function and the traits it puts in that
+  /// function's bound (`_superBoundTraits`) are the emitter's own
+  /// inventions: `super.initInstances()` is `gesture_binding_super_init_
+  /// instances`, and `TextSelectionDelegate`'s trait ends up bounded by
+  /// `State` -- a class nothing in `services/text_input.dart` names. The
+  /// importer used to read them back out of the text; this hands them over.
+  /// Cleared per library, so the driver reads it right after the call.
+  static final Set<String> namedElsewhere = {};
+
   static (String, List<String>) emitLibrary(
     IrLibrary library, {
     List<String> frontEndRefusals = const [],
   }) {
+    namedElsewhere.clear();
     final out = StringBuffer();
     final refused = <String>[];
     if (frontEndRefusals.isNotEmpty) {

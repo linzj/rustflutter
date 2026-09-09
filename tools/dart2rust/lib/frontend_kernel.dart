@@ -197,6 +197,46 @@ class KernelFrontend implements TypeWorld {
   /// The Kernel class behind each lowered class, for `addWiderImpls`.
   final Map<String, Class> _kernelClasses = {};
 
+  /// The classes a `super` call landed in, with the member and whether it
+  /// is a setter.
+  ///
+  /// `super.foo()` is `render_box_super_foo` here, and which class holds the
+  /// body is `_realOwner`'s answer: a super call in an applied mixin names
+  /// its `on` constraint and dispatches to the mixin *before it in the
+  /// chain*, which is neither the interface target's class nor the calling
+  /// one. Nothing outside `_realOwner` can work that out, so it is written
+  /// down where it is decided (`SchedulerBinding.initInstances` reaching
+  /// `gesture_binding_super_init_instances`).
+  final Set<(Class, String, bool)> superOwners = {};
+
+  /// The classes a *census* made this library name.
+  ///
+  /// Two answers here are whole-program ones, and neither is in the library's
+  /// own Kernel body. A wider impl comes from the instantiation census, so
+  /// `foundation/diagnostics.dart` writes `impl DiagnosticsProperty<Object>
+  /// for DiagnosticsPropertyImpl<Rc<dyn Color>>` because *somewhere else* a
+  /// `DiagnosticsProperty<Color>` was named; a dynamic slot's arms come from
+  /// the slot census, so `date_symbol_data_custom.dart` downcasts to
+  /// `UninitializedLocaleData` for a slot it never declares. The reference is
+  /// this library's all the same -- it is in the file that has to compile --
+  /// so the census writes down what it made the library say. (`Color` was one
+  /// `cannot find trait` that no function owned, and it stopped the workspace
+  /// at 24 crates of 65.)
+  final Set<Class> injectedClasses = {};
+
+  /// The members a census made this library name (`injectedClasses`).
+  ///
+  /// `dateTimeSymbols[k] = v` reads through `dynamic get dateTimeSymbols =>
+  /// _dateTimeSymbols` to the *private* field of another library, which no
+  /// Dart source could have written and the emitter writes all the same.
+  final Set<Member> injectedMembers = {};
+
+  void _injected(DartType type) {
+    if (type is! InterfaceType) return;
+    injectedClasses.add(type.classNode);
+    type.typeArguments.forEach(_injected);
+  }
+
   /// Off while a type parameter's *bound* is spelled: `T extends
   /// _RRectLike<T>` names no instantiation anything holds, and an impl for
   /// it is noise.
@@ -283,6 +323,7 @@ class KernelFrontend implements TypeWorld {
           }
           // Every parameter erased: the class as declared (`MapEquality<>`
           // was spelled for one, ws627).
+          _injected(inst);
           selves.add((inst, selfArgs.isEmpty ? null : selfArgs));
         }
       }
@@ -346,6 +387,9 @@ class KernelFrontend implements TypeWorld {
                   seen('$selfKey${above.name}', args)) {
                 continue;
               }
+              injectedClasses.add(above);
+              _injected(asAbove);
+              _injected(ownAbove);
               ir.extraImpls.add(IrType(above.name, arguments: args));
               ir.extraImplSelf.add(selfArgs);
             }

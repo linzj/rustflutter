@@ -193,6 +193,8 @@ augment class KernelFrontend {
     if (target is! Field) return null;
     final candidates = dynamicSlots[target];
     if (candidates == null || candidates.isEmpty) return null;
+    // The slot itself is named here, through the getter (`injectedMembers`).
+    injectedMembers.add(target);
     const known = {'[]', '[]=', 'containsKey', 'keys'};
     if (!known.contains(name)) return null;
     // A local handed in is shared, as an argument is (`_clonedWhenPassed`):
@@ -219,6 +221,9 @@ augment class KernelFrontend {
     );
     final arms = <(IrType?, IrExpr)>[];
     for (final c in candidates) {
+      // The arm's type is the slot census's answer, not this library's
+      // (`injectedClasses`).
+      _injected(c);
       final isMap =
           c.classNode.name == 'Map' || c.classNode.name == 'LinkedHashMap';
       final hasMember = c.classNode.members.any(
