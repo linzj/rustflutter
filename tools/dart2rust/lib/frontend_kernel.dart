@@ -42,7 +42,16 @@ import 'ir.dart';
 // `bin/experiments.sh` is the one place that names.
 part 'frontend_kernel/types.dart';
 part 'frontend_kernel/expressions.dart';
+part 'frontend_kernel/expression_raw.dart';
+part 'frontend_kernel/closures.dart';
+part 'frontend_kernel/locals.dart';
+part 'frontend_kernel/reads_and_calls.dart';
+part 'frontend_kernel/dispatch.dart';
+part 'frontend_kernel/static_calls.dart';
+part 'frontend_kernel/slots.dart';
 part 'frontend_kernel/coercion.dart';
+part 'frontend_kernel/parameters.dart';
+part 'frontend_kernel/constants.dart';
 part 'frontend_kernel/statements.dart';
 part 'frontend_kernel/declarations.dart';
 part 'frontend_kernel/visitors.dart';

@@ -29,11 +29,21 @@ import 'prelude.dart';
 // `augment` is behind `--enable-experiment=augmentations`, which
 // `bin/experiments.sh` is the one place that names.
 part 'backend_rust/expressions.dart';
+part 'backend_rust/closures.dart';
+part 'backend_rust/operators.dart';
+part 'backend_rust/nullaware.dart';
+part 'backend_rust/super_calls.dart';
+part 'backend_rust/places.dart';
+part 'backend_rust/calls.dart';
+part 'backend_rust/values.dart';
 part 'backend_rust/statements.dart';
 part 'backend_rust/the_class.dart';
 part 'backend_rust/mutability.dart';
 part 'backend_rust/flattening.dart';
 part 'backend_rust/failure.dart';
+part 'backend_rust/emit_struct.dart';
+part 'backend_rust/emit_impl.dart';
+part 'backend_rust/emit_members.dart';
 part 'backend_rust/walk_self.dart';
 
 /// Dart's primitives, in the spelling this project's crate uses.

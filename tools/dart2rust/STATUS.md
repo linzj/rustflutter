@@ -385,7 +385,6 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 
 | 轮 | 规则 / 读数 | 数 |
 |---|---|---|
-| ws823 | `x is Function` is a test on a signature, not on being a function | stub **203**,拒绝 78,可达 64 |
 | ws826 | an enum the tree shaker emptied is not a refusal | stub **202**,拒绝 71,可达 64 |
 | ws828 | N catch clauses are one catch that dispatches on the type | stub **202**,拒绝 70,可达 64 |
 | ws830 | `jsonEncode`, by the value's own type | stub **203**,拒绝 69,可达 64 |
@@ -425,6 +424,7 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 | ws879 | 泛型局部函数:翻得出来,编不过,整轮撤回(见〈撤回与作废〉) | stub **152**,拒绝 49,可达 64(未动) |
 | ws880 | 编译器自身:装回分析器与单测,四份变异名表并作一处,删死码 387 行 | stub **152**,拒绝 49,可达 64;**生成的 Rust 与 `HEAD~1` 逐字节相同** |
 | ws881 | 两个 god class 各拆成一个目录的 part(`augment class`),搬运零改字 | stub **152**,拒绝 49,可达 64;**生成的 Rust 与拆前逐字节相同** |
+| ws882 | part 文件再切细:按成员边界切进两个 5k 文件,最大 part 1,841 行 | **生成的 Rust 与拆前逐字节相同**(md5 4429c8f1),故 152/49/64 不变——这一轮只跑了翻译,没跑 cargo 九轮 |
 
 ## 下一步(2026-09-05 重铺)
 
@@ -579,6 +579,10 @@ ws601:  722 stub / 252 拒绝 / 63 crate 全可达(138 分区,延迟库合并后
    `git show HEAD:` 的原表逐名对,51/34/22/22 全等。
 5. **fixture**:`cmpscalar`、`idhash` 用仓库里的新 `bin/fx.sh` 跑,都 AGREE。
 
+纯搬运的轮次(ws881、ws882)只跑第 2 步就够:`.crate/src` 逐字节相同,
+而 `workspace.py`、`stubs.py` 和 cargo 都是它的确定性函数,所以 152/49/64
+是推出来的,不是又量了一遍。哪一轮改了规则,就得整条链子。
+
 一个教训:`operatorTraits` 那次改名落在链子的翻译阶段**之后**,所以链子那个
 读数当时并不覆盖它;是单独把 `src_ws880` 和 `src_head` 对了一遍才补上的。
 翻译阶段(`wrote .crate-ws` 出现)之后再改 `lib/*.dart`,虽然不会打断链子,
@@ -594,10 +598,20 @@ ws601:  722 stub / 252 拒绝 / 63 crate 全可达(138 分区,延迟库合并后
 
 能做且已做的是另一半:**文件拆开,类不拆**。`augment class` 把一个类摊到一个
 目录的 part 里,按文件本来就有的分节注释切,搬运时一个字符没改。
-`lib/backend_rust.dart` 12,936 → 581 + 7 个文件;
-`lib/frontend_kernel.dart` 15,749 → 850 + 6 个文件。最大的一块仍是
-`frontend_kernel/expressions.dart` 8,273 行——那一节内部没有分节注释,
-再切就得自己定边界,不再是机械操作了,留给下一轮。
+`lib/backend_rust.dart` 12,936 → 一个目录 18 个文件;
+`lib/frontend_kernel.dart` 15,749 → 一个目录 16 个文件。
+
+第一刀按文件本来就有的分节注释切,剩下两个 5,000 行以上的;
+第二刀(ws882)切进它们内部,边界自己定,取在成员声明处,
+每个 part 顶上写一行说明它装的是什么。**没有一个 part 超过 1,850 行**,
+最接近的两个:`frontend_kernel/expression_raw.dart` 1,717 行(就是
+`_expressionRaw` 一个方法,再切要动代码)和 `backend_rust/the_class.dart`
+1,841 行(还没细看)。
+
+第二刀顺手量出一件事:`// -- Failure in the return value --` 这个标题下面
+2,841 行,只有头 295 行是讲失败的,其余 2,546 行是整个类的发射器——
+分节注释被它下面长出来的东西甩掉了。现在是 `emit_struct.dart`、
+`emit_impl.dart`、`emit_members.dart`。
 
 **代价,写下来而不是等人踩:**
 

@@ -100,14 +100,10 @@ of every class in the framework.
 ## Layout
 
     lib/ir.dart            the IR. Knows nothing about Kernel or about Rust.
-    lib/frontend_kernel.dart  Kernel -> IR. The front end in use. One class in
-      frontend_kernel/       six files: types, expressions, coercion,
-                             statements, declarations, and the visitors and
-                             whole-program queries that were never in it.
+    lib/frontend_kernel.dart  Kernel -> IR. The front end in use. One class
+      frontend_kernel/       spread over 15 files; none over 1,750 lines.
     lib/frontend.dart      analyzer -> IR. Superseded, and does not compile.
-    lib/backend_rust.dart  IR -> Rust source. One class in seven files:
-      backend_rust/          expressions, statements, the class, mutability,
-                             flattening, failure, and `_WalkSelf`.
+    lib/backend_rust.dart  IR -> Rust source. One class over 17 files.
     lib/coerce.dart        one rule for a value entering a slot, both ways
     lib/covariance.dart    where an override widens what a slot takes
     lib/throws.dart        which members can fail, over the whole program
@@ -163,12 +159,24 @@ a solved problem it should not be re-solving.
 
 ## The two big classes are each one class in a directory
 
-`KernelFrontend` was 14,272 lines and 594 members; `RustBackend` was 12,242.
-Each is now spread over the `part` files under `lib/frontend_kernel/` and
-`lib/backend_rust/`, split along the section comments the files already had
-(`// -- Expressions --`) with `augment class` putting them back together. Not
-one character of the moved code changed, and the generated Rust is byte for
-byte what it was before the split.
+`KernelFrontend` was 14,272 lines and 594 members in one file; `RustBackend`
+was 12,242. Each is now spread over the `part` files under
+`lib/frontend_kernel/` and `lib/backend_rust/`, with `augment class` putting
+them back together. Not one character of the moved code changed, and the
+generated Rust is byte for byte what it was before the split.
+
+The first cut followed the section comments the files already had
+(`// -- Expressions --`). Those left two files over 5,000 lines, so the second
+cut went inside them, at member boundaries, and every part now carries a line
+saying what it holds. **No part is over 1,850 lines**, and the two that come
+closest are a single method (`_expressionRaw`, 1,717) and one section that has
+not been looked at yet (`the_class.dart`, 1,841).
+
+One thing the second cut turned up: `// -- Failure in the return value --`
+headed 2,841 lines of which only the first 295 were about failure -- the rest
+was the whole class emitter, grown in under a heading that stopped describing
+it. Those are `emit_struct.dart`, `emit_impl.dart` and `emit_members.dart`
+now.
 
 **They are not separable objects, and the split does not pretend they are.**
 Measured 2026-09-09: the sections share 42 of `RustBackend`'s 69 fields and 35
