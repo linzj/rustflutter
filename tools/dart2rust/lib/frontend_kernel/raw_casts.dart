@@ -289,7 +289,28 @@ augment class KernelFrontend {
   /// A method used as a value.
   ///
   /// One run of `_expressionRaw`; null for a node it does not answer for.
+  /// The type arguments an [Instantiation] just above a tear-off supplies
+  /// (`f<int>` as a value). Null outside one, which is what makes a generic
+  /// method used as a value a refusal rather than a guess.
+  List<DartType>? _tearOffTypes;
+
   IrExpr? _rawTearOff(Expression node) {
+    // `f<int>` as a *value*: Dart instantiates a generic function value at
+    // the types written -- and those types are exactly what the tear-off
+    // underneath is missing. A Rust closure has no type parameters of its
+    // own, so the closure the tear-off becomes calls the method *with* them
+    // (`IrCall.typeArguments`). `showDialog` hands `Navigator.of(context)
+    // .pop` over that way, and the whole function was refused for it
+    // (ws951).
+    if (node is Instantiation) {
+      final saved = _tearOffTypes;
+      _tearOffTypes = node.typeArguments;
+      try {
+        return expression(node.expression);
+      } finally {
+        _tearOffTypes = saved;
+      }
+    }
     // A method used as a value: `Ticker(_tick)` hands `this._tick` over
     // without calling it. In Rust that is a closure that calls it, which makes
     // it the same question as any other closure -- and the same answer: in a
@@ -328,7 +349,7 @@ augment class KernelFrontend {
       // a local `Sink<List<int>>`).
       // The receiver's instantiation first: `getStaticType` of the tear-off
       // still said `T` for `sink.add` on a `ByteConversionSink`.
-      final torn =
+      final tornRaw =
           (() {
             final receiverType = _staticType(node.receiver);
             if (receiverType is! InterfaceType) return null;
@@ -347,11 +368,37 @@ augment class KernelFrontend {
                 .substituteType(declared);
           })() ??
           _staticType(node);
-      DartType positionalType(int i) =>
-          torn is FunctionType && i < torn.positionalParameters.length
-          ? torn.positionalParameters[i]
-          : fn.positionalParameters[i].type;
+      // A *generic* method torn off: only with an `Instantiation` above it
+      // saying at which types. Without one there is nothing to put in --
+      // a Rust closure cannot be generic -- and it stays refused.
+      final tearOffTypes = _tearOffTypes;
+      final generic = fn.typeParameters.isNotEmpty;
+      if (generic &&
+          (tearOffTypes == null ||
+              tearOffTypes.length != fn.typeParameters.length)) {
+        throw Unsupported('a generic method used as a value', _sample(node));
+      }
+      // The method's own parameters put in, on top of the receiver's: the
+      // closure takes a `String`, not the `T` the method declares.
+      final method = generic
+          ? Substitution.fromPairs(fn.typeParameters, tearOffTypes!)
+          : null;
+      final torn = tornRaw;
+      // A generic method's torn type still names the method's own
+      // parameters -- and as *structural* copies, which no substitution
+      // over the declaration's `TypeParameter`s reaches. So where the
+      // `Instantiation` said which types, the declaration is what gets
+      // them put in: `note<T>(T value)` at `String` takes a `String`.
+      DartType positionalType(int i) {
+        final declared = fn.positionalParameters[i].type;
+        if (method != null) return method.substituteType(declared);
+        return torn is FunctionType && i < torn.positionalParameters.length
+            ? torn.positionalParameters[i]
+            : declared;
+      }
+
       DartType namedType(String name, DartType declared) {
+        if (method != null) return method.substituteType(declared);
         if (torn is FunctionType) {
           for (final n in torn.namedParameters) {
             if (n.name == name) return n.type;
@@ -360,10 +407,9 @@ augment class KernelFrontend {
         return declared;
       }
 
-      final returnType = torn is FunctionType ? torn.returnType : fn.returnType;
-      if (fn.typeParameters.isNotEmpty) {
-        throw Unsupported('a generic method used as a value', _sample(node));
-      }
+      final returnType = method != null
+          ? method.substituteType(fn.returnType)
+          : (torn is FunctionType ? torn.returnType : fn.returnType);
       // The closure's own parameters: positional as declared, then the named
       // ones **in name order** -- the order a call through the function type
       // uses (`_argumentsByType`). The call inside passes them on in the
@@ -382,6 +428,39 @@ augment class KernelFrontend {
             named: true,
           ),
       ];
+      // The callee's slot for a generic method's `T?` parameter is the
+      // *projected* `<T as DartNullable>::Or`, which at the instantiated
+      // `T` is an `Option` -- while the closure takes what the slot it
+      // lands in declares (`Object?` is a bare `Rc<dyn Object>` here). So
+      // the value is put into the callee's spelling on the way through,
+      // as an ordinary call's argument is (`NavigatorState.pop<T>([T?
+      // result])` torn off in `showDialog`, ws951).
+      IrType? calleeSlot(DartType declared) {
+        if (method == null ||
+            declared is! TypeParameterType ||
+            !fn.typeParameters.contains(declared.parameter) ||
+            declared.nullability != Nullability.nullable) {
+          return null;
+        }
+        final put = _type(
+          method.substituteType(
+            declared.withDeclaredNullability(Nullability.nonNullable),
+          ),
+        );
+        return IrType(
+          put.name,
+          nullable: true,
+          projected: true,
+          arguments: put.arguments,
+        );
+      }
+
+      IrExpr passedOn(String name, IrType held, DartType declared) {
+        final arg = IrLocal(name)..rustType = held;
+        final slot = calleeSlot(declared);
+        return slot == null ? arg : coerce(arg, slot);
+      }
+
       final receiver = node.receiver;
       // A tear-off of one of the prelude's collection methods
       // (`nodeScope._focusedChildren.remove` handed to `forEach`): the
@@ -407,6 +486,7 @@ augment class KernelFrontend {
               for (final p in fn.namedParameters)
                 NamedExpression(p.parameterName, VariableGet(p)),
             ],
+            types: tearOffTypes ?? const <DartType>[],
           ),
           interfaceTarget: node.interfaceTarget,
           functionType: torn is FunctionType
@@ -451,8 +531,23 @@ augment class KernelFrontend {
           node.name.text,
           [
             for (var i = 0; i < fn.positionalParameters.length; i++)
-              IrLocal(params[i].name),
-            for (final p in fn.namedParameters) IrLocal(p.parameterName),
+              passedOn(
+                params[i].name,
+                params[i].type,
+                fn.positionalParameters[i].type,
+              ),
+            for (final p in fn.namedParameters)
+              passedOn(
+                p.parameterName,
+                _type(namedType(p.parameterName, p.type)),
+                p.type,
+              ),
+          ],
+          // ..with the types the `Instantiation` above supplied, which is
+          // what makes a generic method tearable at all.
+          typeArguments: [
+            if (method != null)
+              for (final t in tearOffTypes!) _type(t),
           ],
           // The adapter's call propagates like a written one would.
           fails: _fails(node.interfaceTarget),
