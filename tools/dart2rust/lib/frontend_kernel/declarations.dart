@@ -587,7 +587,6 @@ augment class KernelFrontend {
               carriedValues[v] != null &&
               carried.every(carriedValues[v]!.containsKey),
         );
-    final enhanced = carried.isNotEmpty && !stateRecovered;
     // An enum's values are its static const fields -- except that in a real
     // dill they are not there at all. Measured in round 39: of the 200 enums
     // in `package:flutter/`, exactly **one** still has any field. Nothing
@@ -600,14 +599,19 @@ augment class KernelFrontend {
     // them. `enumValues` is that recovery, done once over the whole component
     // by the driver, because a constant naming this enum can be in any
     // library.
-    final values = !node.isEnum || enhanced ? const <String>[] : declared;
-    // Only when the enum is otherwise translatable. Recovering the variants of
-    // an *enhanced* enum would emit it as a plain one and drop its members --
-    // which is the thing the refusal exists to prevent, and which this
-    // recovery quietly undid until the fixture said so.
-    final recovered = values.isNotEmpty || enhanced || !node.isEnum
-        ? values
-        : names;
+    // An enhanced enum whose per-variant state could not be read off the
+    // constants still gets its **variants**. Emitting nothing at all was
+    // meant to stop it being emitted "as a plain one with its members
+    // dropped" -- but an empty enum drops every member *and* the name, and
+    // it does so silently: `KeyboardLockMode` came out `enum
+    // KeyboardLockMode {}`, so `KeyboardLockMode::NumLock` named a variant
+    // that is not there and `Set<KeyboardLockMode>` had no `DartEq`
+    // (2 stubs and a refusal at ws939). With the variants in, only the
+    // members that read the unrecovered state fail, and they fail the way
+    // everything else does -- visibly, one stub each. `valueFields` stays
+    // empty, so no getter is written for the state (`the_class`).
+    final values = !node.isEnum ? const <String>[] : declared;
+    final recovered = values.isNotEmpty || !node.isEnum ? values : names;
     _kernelClasses[node.name] = node;
     // A supertype clause instantiates its base as much as a slot does
     // (`_census`): `CBuilder<C extends Constraints> extends Builder<C>` is
