@@ -1283,7 +1283,7 @@ impl<K: DartAny + Clone, V: DartAny + Clone> DartAny for Map<K, V> {
                 .iter()
                 .map(|(k, v)| (dart_boxed(k.clone()), dart_boxed(v.clone())))
                 .collect();
-            return Some(Box::new(Map { entries, index: Default::default() }));
+            return Some(Box::new(Map { entries, index: Default::default(), version: Default::default() }));
         }
         None
     }
@@ -2427,21 +2427,36 @@ impl<K, V> MapEntry<K, V> {
 pub struct Map<K, V> {
     entries: Vec<(K, V)>,
     /// A lazily built index over `entries`, by `DartEq::dart_hash_code`,
-    /// beside the number of entries it covers. It is valid exactly when
-    /// that number is `entries.len()`: every mutation but an append
-    /// changes the length, and an append extends the index itself. The
-    /// `Vec` still decides the order Dart promises; this only keeps the
-    /// lookup off the whole list -- `InheritedElement._dependents` holds
-    /// one entry per element depending on a `Theme`, and every
-    /// `dependOnInheritedElement` scanned all of them (run799).
-    index: std::cell::RefCell<Option<(usize, std::collections::HashMap<i64, Vec<usize>>)>>,
+    /// beside the `version` it was built at. The `Vec` still decides the
+    /// order Dart promises; this only keeps the lookup off the whole list
+    /// -- `InheritedElement._dependents` holds one entry per element
+    /// depending on a `Theme`, and every `dependOnInheritedElement`
+    /// scanned all of them (run799).
+    index: std::cell::RefCell<Option<(u64, std::collections::HashMap<i64, Vec<usize>>)>>,
+    /// Bumped by every change to `entries`, and the only thing that says
+    /// whether the index still describes them.
+    ///
+    /// It used to be `entries.len()` that said so, on the reasoning that
+    /// every mutation but an append changes the length. A length comes
+    /// back. Below eight entries the lookup is a scan and the index is
+    /// not maintained at all, so a map that fell under that threshold and
+    /// grew to the same count again carried an index built for entries
+    /// that are no longer there: `contains_key` said no to keys that were
+    /// present, `remove` found nothing to remove, and `insert` appended a
+    /// second copy of a key it could not see.
+    /// `InheritedElement._dependents` does that every frame -- 1192
+    /// `removeDependent` calls found nothing, a defunct
+    /// `_LayoutBuilderElement` stayed a dependent and was notified, and
+    /// its `renderObject` unwrapped a `None` (run906..run919, the
+    /// mapindexstale fixture).
+    version: std::cell::Cell<u64>,
 }
 
 /// The index is a cache: a clone starts without one, and two maps are equal
 /// when their entries are.
 impl<K: Clone, V: Clone> Clone for Map<K, V> {
     fn clone(&self) -> Self {
-        Map { entries: self.entries.clone(), index: Default::default() }
+        Map { entries: self.entries.clone(), index: Default::default(), version: Default::default() }
     }
 }
 
@@ -2473,7 +2488,7 @@ impl<K: DartEq, V> Map<K, V> {
                 entries.push((k, v));
             }
         }
-        Map { entries, index: Default::default() }
+        Map { entries, index: Default::default(), version: Default::default() }
     }
 }
 
@@ -2512,6 +2527,20 @@ impl<T: DartEq> Set<T> {
 }
 
 impl<K, V> Map<K, V> {
+    /// Every change to `entries` says so here, and the index is valid
+    /// exactly while its stored version is this one. An append is the one
+    /// change the index can follow rather than be rebuilt from, and
+    /// `insert` carries the new version onto it.
+    fn touched(&mut self) {
+        self.version.set(self.version.get().wrapping_add(1));
+        // The index is rebuilt on the next lookup; dropping it here keeps
+        // a stale one from being carried around a map that is never read
+        // again.
+        if let Ok(mut cell) = self.index.try_borrow_mut() {
+            *cell = None;
+        }
+    }
+
     /// A written map literal: its entries as an array *of the spelled
     /// types*, so that every entry's value is coerced to them where
     /// `From<impl IntoIterator>` typed the array by its first entry
@@ -2550,7 +2579,7 @@ impl<K, V> Map<K, V> {
                 }
             }
         }
-        Map { entries: out, index: Default::default() }
+        Map { entries: out, index: Default::default(), version: Default::default() }
     }
 }
 
@@ -2633,11 +2662,12 @@ impl<K: Clone, V: Clone> Map<K, V> {    /// `Map.of(other)`: a copy with the sam
         out
     }
     pub fn new() -> Self {
-        Map { entries: Vec::new(), index: Default::default() }
+        Map { entries: Vec::new(), index: Default::default(), version: Default::default() }
     }
 
     pub fn clear(&mut self) {
         self.entries.clear();
+        self.touched();
     }
 
     pub fn is_empty(&self) -> bool {
@@ -2694,7 +2724,7 @@ impl<K: Clone, V: Clone> Map<K, V> {    /// `Map.of(other)`: a copy with the sam
             }
         }
         self.entries = kept;
-        *self.index.borrow_mut() = None;
+        self.touched();
         Ok(())
     }
 
@@ -2706,7 +2736,7 @@ impl<K: Clone, V: Clone> Map<K, V> {    /// `Map.of(other)`: a copy with the sam
         &self,
         transform: impl Fn(K, V) -> Result<MapEntry<K2, V2>, DartError>,
     ) -> Result<Map<K2, V2>, DartError> {
-        let mut out: Map<K2, V2> = Map { entries: Vec::new(), index: Default::default() };
+        let mut out: Map<K2, V2> = Map { entries: Vec::new(), index: Default::default(), version: Default::default() };
         for (key, value) in &self.entries {
             let entry = transform(key.clone(), value.clone())?;
             out.insert(entry.key, entry.value);
@@ -2738,13 +2768,14 @@ impl<K: DartEq + Clone, V: Clone> Map<K, V> {
         let Ok(mut cell) = self.index.try_borrow_mut() else {
             return self.entries.iter().position(|(k, _)| k.dart_eq(key));
         };
-        if !matches!(&*cell, Some((n, _)) if *n == self.entries.len()) {
+        let now = self.version.get();
+        if !matches!(&*cell, Some((v, _)) if *v == now) {
             let mut buckets: std::collections::HashMap<i64, Vec<usize>> =
                 std::collections::HashMap::with_capacity(self.entries.len());
             for (i, (k, _)) in self.entries.iter().enumerate() {
                 buckets.entry(k.dart_hash_code()).or_default().push(i);
             }
-            *cell = Some((self.entries.len(), buckets));
+            *cell = Some((now, buckets));
         }
         let bucket = match cell.as_ref().unwrap().1.get(&wanted) {
             Some(bucket) => bucket.clone(),
@@ -2785,13 +2816,15 @@ impl<K: DartEq + Clone, V: Clone> Map<K, V> {
                 // panics (`_IdentityThemeDataCacheKey`, whose cache holds
                 // five entries; run802).
                 let at = self.entries.len();
+                let was = self.version.get();
                 self.entries.push((key, value));
+                self.version.set(was.wrapping_add(1));
                 if let Ok(mut cell) = self.index.try_borrow_mut() {
                     match cell.as_mut() {
-                        Some((n, buckets)) if *n == at => {
+                        Some((v, buckets)) if *v == was => {
                             let hash = self.entries[at].0.dart_hash_code();
                             buckets.entry(hash).or_default().push(at);
-                            *n = at + 1;
+                            *v = was.wrapping_add(1);
                         }
                         _ => {}
                     }
@@ -2806,7 +2839,11 @@ impl<K: DartEq + Clone, V: Clone> Map<K, V> {
     }
 
     pub fn remove(&mut self, key: &K) -> Option<V> {
-        self.at(key).map(|i| self.entries.remove(i).1)
+        let gone = self.at(key).map(|i| self.entries.remove(i).1);
+        if gone.is_some() {
+            self.touched();
+        }
+        gone
     }
 
     /// Dart's `putIfAbsent`: the value that is there afterwards, either way.
@@ -4391,7 +4428,7 @@ impl<T: Clone> DartList<T> for Vec<T> {
     }
 
     fn as_map(&self) -> Map<i64, T> {
-        Map { entries: self.iter().cloned().enumerate().map(|(i, v)| (i as i64, v)).collect(), index: Default::default() }
+        Map { entries: self.iter().cloned().enumerate().map(|(i, v)| (i as i64, v)).collect(), index: Default::default(), version: Default::default() }
     }
 
     fn to_list(&self) -> Vec<T> {
@@ -9754,7 +9791,7 @@ impl<T: FromDynamic> FromDynamic for Vec<T> {
 impl<K: FromDynamic + DartEq, V: FromDynamic> FromDynamic for Map<K, V> {
     fn from_same(value: &Self) -> Option<Self> {
         let entries: Option<Vec<(K, V)>> = value.entries.iter().map(|(k, v)| Some((K::from_same(k)?, V::from_same(v)?))).collect();
-        entries.map(|entries| Map { entries, index: Default::default() })
+        entries.map(|entries| Map { entries, index: Default::default(), version: Default::default() })
     }
     fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
         dart_cast_map::<K, V>(value)
@@ -9890,7 +9927,7 @@ pub fn dart_cast_map<K: FromDynamic + DartEq, V: FromDynamic>(value: &std::rc::R
             .iter()
             .map(|(k, v)| Some((K::from_same(k)?, V::from_same(v)?)))
             .collect();
-        return entries.map(|entries| Map { entries, index: Default::default() });
+        return entries.map(|entries| Map { entries, index: Default::default(), version: Default::default() });
     }
     fn convert<K1: Clone + 'static, V1: Clone + 'static, K: FromDynamic + DartEq, V: FromDynamic>(
         any: &dyn std::any::Any,
