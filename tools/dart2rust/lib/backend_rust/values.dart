@@ -164,7 +164,17 @@ augment class RustBackend {
     final shared = (target == null || target is IrThis)
         ? _sharedField(name)
         : null;
+    // A `late` field's cell holds an `Option`, and assigning it is what
+    // takes it out of `None` -- so the value goes in wrapped, as
+    // `IrAssignField` does for the statement form. Only the *stored* side:
+    // Dart says the value of `x = v` is `v`, so `__set` stays bare
+    // (`_opacityAnimation = CurvedAnimation(parent: _opacityController =
+    // AnimationController(..), ..)` in `_SortArrowState.initState`, ws937).
+    final own = (target == null || target is IrThis) ? _lateField(name) : null;
+    final wrapped = own != null || (shared?.isLate ?? false);
+    String stored(String bare) => wrapped ? 'Some($bare)' : bare;
     if (_fieldsAreAccessors && (target == null || target is IrThis)) {
+      // ..except through a setter, which does its own `Some`.
       final through = _accessorQualifier(name, kind: 'write');
       final widened = '__set.clone()';
       return through == null
@@ -174,12 +184,12 @@ augment class RustBackend {
     if (shared != null) {
       final copy = _isCopy(_heldDecl(shared));
       return copy
-          ? '{ let __set = ${expr(value)}; $receiver.${snake(name)}.set(__set); __set }'
+          ? '{ let __set = ${expr(value)}; $receiver.${snake(name)}.set(${stored('__set')}); __set }'
           : '{ let __set = ${expr(value)}; '
-                '*$receiver.${snake(name)}.borrow_mut() = __set.clone(); __set }';
+                '*$receiver.${snake(name)}.borrow_mut() = ${stored('__set.clone()')}; __set }';
     }
     return '{ let __set = ${expr(value)}; '
-        '$receiver.${snake(name)} = __set.clone(); __set }';
+        '$receiver.${snake(name)} = ${stored('__set.clone()')}; __set }';
   }
 
   /// `'a \$b c'` as `format!`.

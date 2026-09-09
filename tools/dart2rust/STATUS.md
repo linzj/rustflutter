@@ -471,7 +471,6 @@ nullability 是 `nullable`,照字面读它,每一次往 `void` 槽里存都被�
 
 | 轮 | 规则 / 读数 | 数 |
 |---|---|---|
-| ws875 | a scalar stands in an interface slot it implements | stub **154**,拒绝 57,可达 64 |
 | ws876 | `a ?? b` is an object where Dart says `Object`, not its text | stub **152**,拒绝 57,可达 64 |
 | ws877 | a super call reaches an operator, as it reaches any other member | stub **152**,拒绝 52,可达 64 |
 | run877 | the reading, after ws875-ws877 | — |
@@ -511,6 +510,7 @@ nullability 是 `nullable`,照字面读它,每一次往 `void` 槽里存都被�
 | ws916 | `xs.iter().map(|child| ..)` 交给体的是 `&Rc<dyn X>`,比句柄多一层引用,而接收者按 `_isHandle` 拼成 `&*child`——少解一层,于是 `FocusNode::to_diagnostics_node(&*child, ..)` 说「`Rc<dyn FocusNode>` 没有实现 `FocusNode`」。空安全绑定(`IrBound`)早就有这条 `&**`,缺的是**谁知道这个局部是按引用绑的**——只有 `_stepClosure` 知道,所以它像记 `_cellLocals` 一样把这些名字记进 `_refLocals`,接收者那一处照着 `IrBound` 的样子多解一层 | stub 127 → **126**、拒绝 33、可达 69、0 error;与 ws932 逐条比新增 0,少了 `focus_node_super_debug_describe_children` |
 | ws934 | **trait 对象的 `==` 按地址比,而 Dart 的 `==` 派发到对象**:`WidgetsApp(key: GlobalObjectKey(this))` 的两把钥匙包着同一个 state,Dart 说相等、这里说不等,于是 `canUpdate` 说不能更新,`WidgetsApp` 连同整棵子树每次 rebuild 都重建(60 秒 193 次)——渲染尺子抖了十几轮就是这件事,细节在〈已知欠账〉。改成和 `dyn Object` 一样走对象自己的答案(prelude 的 `dart_any_eq`/`dart_any_hash`:注册表里有就用类的 `==`,没有退回地址)。顺路两条:擦除过的实例化在槽上 cast 回来(类型参数带 `'static`,`TypeId` 问得出),而「结果按界读回来」的调用上接收者不做这次 cast(否则转换两次);`statecheck.py` 点名的 `_refLocals` 补进 `_member` 的存/还 | stub **126 → 124**(逐条比新增 **0**)、拒绝 33、可达 69、0 error;21 个 fixture 全 AGREE;**run935 连采五次全是 707 行 / 类型差异 0 / 0 panic**——尺子第一次不抖 |
 | ws936 | 把 ws914 撤回的那条放回去并**量了**:Kernel 给 `VoidType` 的 nullability 是 `nullable`,照字面读,每一次往 `void` 槽里存都被包成 `Some(..)`;`_widened` 的可空闸现在也认 `param is VoidType`。当初撤回的理由是「改完连跑三次渲染树都是 2 行」,而那是尺子在抖(ws934 治好了)。顺路给擦除加了一个诊断:`DART2RUST_TRACE_ERASED=1` 说协变扫描标过的参数最后**擦没擦、被哪一道闸拦下**——协变的 trace 只说标了什么 | stub **124 → 122**(逐条比新增 **0**,少了 `widgets_binding.rs` 的 `_handle_back_gesture_invocation__body` 与它的 super fn)、拒绝 33、可达 69、0 error;run936 连采五次:707 行 / 类型差异 0 / 0 panic |
+| ws937 | **`late` 字段的格子里装的是 `Option`,而「赋值当表达式用」那一路没有包 `Some`**。语句那一路早就包了(`IrAssignField` 里那句注释写着「这是唯一发生这件事的地方」——在表达式那一路也需要它之前是真的)。Dart 里 `x = v` 的**值是 `v`**,存进去的才是 `Some(v)`,所以只包存的那一侧,`__set` 照旧是裸的:`_opacityAnimation = CurvedAnimation(parent: _opacityController = AnimationController(..), ..)` 是这个形状 | stub **122 → 119**(逐条比新增 **0**,少了 `material_data_table.rs` 的 `init_state`、`painting_text_painter.rs` 的 `_compute_caret_metrics`、`rendering_animated_size.rs` 的 `perform_layout`)、拒绝 33、可达 69、0 error;run937 连采五次:707 行 / 类型差异 0 / 0 panic |
 | ws891 | 第五轮复审抓到:ws889 落地后 `regen.py` 的 `hints()` 会**永远误报**——它按 `'throws:' not in driver` 字面判定,而正确的修法恰恰是把那个参数删掉,所以那条提示从此指向唯一不该做的修法。换成 `DECIDED_IN`:只指出决定写在哪两个函数里,不对文件的现状下任何断言。顺手分开探针的两种失败(没调用 vs 调用了没 `?`) | `fails:` 在 frontend.dart 已 11 处、`throws:` 在 kernel driver 已 0 处——两条提示一条正确变哑、一条永久说谎,实测属实;两个诊断分支各跑一次验过 |
 
 ## 下一步(2026-09-05 重铺)
