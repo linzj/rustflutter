@@ -246,6 +246,39 @@ class _ValueRead extends RecursiveVisitor {
   }
 }
 
+/// Whether a local function's binding is *called* from inside a closure
+/// written in the same body.
+///
+/// A binding that is only called may borrow its captures (`lends`), and a
+/// borrowing closure lives exactly as long as its `let`. A closure written
+/// beside it that calls it is handed away as an `Rc<dyn Fn>` and outlives
+/// that `let`: "`effective_value` does not live long enough", three of
+/// `_ButtonStyleState.build`'s siblings at ws879. Called from inside one,
+/// the binding owns, like any other function value.
+class _CalledInNestedFunction extends RecursiveVisitor {
+  _CalledInNestedFunction(this.variable);
+
+  final Variable variable;
+  int _depth = 0;
+  bool found = false;
+
+  @override
+  void visitFunctionNode(FunctionNode node) {
+    _depth++;
+    super.visitFunctionNode(node);
+    _depth--;
+  }
+
+  @override
+  void visitLocalFunctionInvocation(LocalFunctionInvocation node) {
+    // The walk starts at the member's body, so any `FunctionNode` above
+    // the call is a closure (or the local function itself, whose own
+    // recursion `_SelfReference` already answers).
+    if (node.variable == variable && _depth > 0) found = true;
+    super.visitLocalFunctionInvocation(node);
+  }
+}
+
 class _LocalFinder extends RecursiveVisitor {
   final read = <Variable>[];
   final declared = <Variable>{};
@@ -254,6 +287,20 @@ class _LocalFinder extends RecursiveVisitor {
   void visitVariableGet(VariableGet node) {
     read.add(node.variable);
     super.visitVariableGet(node);
+  }
+
+  /// Calling a local function written outside the closure reads its
+  /// binding: Kernel spells that call without a `VariableGet`, so it was
+  /// invisible here and the binding was neither cloned in nor moved --
+  /// the closure simply borrowed it, and an `Rc<dyn Fn>` that borrows a
+  /// local is "`effective_value` does not live long enough" (three of
+  /// `_ButtonStyleState.build`'s siblings), while the ones that did move
+  /// it left the enclosing body calling a moved value
+  /// (`get_offset_for_theta` in `_DialPainter.paint`, ws892).
+  @override
+  void visitLocalFunctionInvocation(LocalFunctionInvocation node) {
+    read.add(node.variable);
+    super.visitLocalFunctionInvocation(node);
   }
 
   @override

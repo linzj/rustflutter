@@ -57,6 +57,10 @@ augment class KernelFrontend {
     return index[name];
   }
 
+  /// The type parameters of the local functions being lowered right now:
+  /// each is its bound wherever it is named (see `_type`).
+  final Set<TypeParameter> _erasedLocalParams = {};
+
   bool _isTraitName(String name) {
     if (const {
       'Object',
@@ -733,6 +737,20 @@ augment class KernelFrontend {
     if (param is DynamicType ||
         (param is InterfaceType && param.classNode.name == 'Object')) {
       return lowered;
+    }
+    // ..and a slot that *spells* as one of those: a local function's own
+    // `T?` at the implicit bound `Object?` is that same non-nullable
+    // `dynamic`, and `Some(..)` around it is an `Option` nothing declared
+    // (`effectiveValue<Color>`, ws879).
+    if (param is TypeParameterType &&
+        _erasedLocalParams.contains(param.parameter)) {
+      IrType? spelled;
+      try {
+        spelled = _type(param);
+      } on Unsupported {
+        spelled = null;
+      }
+      if (spelled != null && !isNullable(spelled)) return lowered;
     }
     // A closure is wrapped like anything else now that a function-typed
     // parameter is `Rc<dyn Fn>` on both sides: `Option<Rc<dyn Fn(..)>>`

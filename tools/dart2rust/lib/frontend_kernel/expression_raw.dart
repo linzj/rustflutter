@@ -461,6 +461,25 @@ augment class KernelFrontend {
       final name = (written == null || written.startsWith('#'))
           ? _nameFor(node.variable)
           : written;
+      // A *generic* local function is written at its parameters' bounds
+      // (see `FunctionDeclaration`), so the call has to speak those terms:
+      // every argument into the erased slot, and the result back out of it
+      // at the type this call instantiated `T` with. `node.functionType`
+      // is the instantiated one and says neither -- reading the call's
+      // type off it is how `resolvedForegroundBuilder` came out declared
+      // `Option<Rc<dyn Fn(..)>>` over a value that is an `Rc<dyn Object>`.
+      // A function value survives the round trip like any other object
+      // (`dart_function_object`, the `dynfn` fixture).
+      final declared = node.localFunction.function;
+      if (declared.typeParameters.isNotEmpty) {
+        final erased = declared.computeFunctionType(Nullability.nonNullable);
+        final call = IrCallValue(
+          IrLocal(name),
+          _argumentsByType(node.arguments, erased),
+        )..rustType = _type(erased).returns;
+        final want = _type(node.functionType).returns;
+        return want == null ? call : coerce(call, want);
+      }
       // A local function is declared as a closure, so its named parameters
       // are in type order there too.
       return IrCallValue(

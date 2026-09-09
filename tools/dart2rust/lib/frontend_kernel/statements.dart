@@ -347,15 +347,9 @@ augment class KernelFrontend {
       // `T effectiveValue<T>(..)` inside `ButtonStyleButton.build`: a local
       // function with type parameters of its own. A Rust closure cannot be
       // generic, and a nested `fn` cannot see the enclosing locals this one
-      // reads. Erasing the parameters to their bounds (ws832) puts the right
-      // signature on the *declaration* and leaves the call site unadapted:
-      // the argument closure still returns `Option<f64>` where the erased
-      // slot wants `Option<Rc<dyn Object>>`, because `_argument` with no
-      // callee does not set the expected return. The whole shape needs the
-      // call site too, so it waits for a round of its own.
-      if (node.function.typeParameters.isNotEmpty) {
-        throw Unsupported('generic local function', _sample(node));
-      }
+      // reads, so the declaration erases the parameters to their bounds
+      // (`_type`, ws832) and `LocalFunctionInvocation` above speaks those
+      // erased terms -- which is the half that was missing until ws879.
       // A binding that is only *called* never outlives the body it is
       // written in, so its closure may borrow rather than own -- which is
       // how it reaches `this` without copying anything out of it. The
@@ -371,9 +365,14 @@ augment class KernelFrontend {
           ? owner.function.body
           : null;
       ownerBody?.accept(escapes);
-      final lends = !escapes.found;
+      // ..and a call from inside a closure written beside it is a use that
+      // outlives the `let` a borrowing binding is (ws879).
+      final nested = _CalledInNestedFunction(node.variable);
+      ownerBody?.accept(nested);
+      final lends = !escapes.found && !nested.found;
       final wasLending = _lendingLocal;
       if (lends) _lendingLocal = true;
+      _erasedLocalParams.addAll(node.function.typeParameters);
       final IrClosure closure;
       try {
         closure = _closure(node.function, node) as IrClosure;

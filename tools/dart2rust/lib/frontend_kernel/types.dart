@@ -123,6 +123,21 @@ augment class KernelFrontend {
     if (type is DynamicType) return const IrType('dynamic');
     if (type is NullType) return const IrType('Null', nullable: true);
     if (type is TypeParameterType) {
+      // A *local function's* own parameter is always its bound: a Rust
+      // closure cannot be generic, so the declaration is written at the
+      // bound and the call site speaks those terms
+      // (`LocalFunctionInvocation`, ws879). As a `FunctionType`'s own
+      // parameter is, and by the same route, so the two spell one type:
+      // `T?` at the bound `Object?` is the *non-nullable* `dynamic` this
+      // compiler holds a null in, not an `Option` of it.
+      if (_erasedLocalParams.contains(type.parameter)) {
+        final bound = type.parameter.bound;
+        return _type(
+          nullable
+              ? bound.withDeclaredNullability(Nullability.nullable)
+              : bound,
+        );
+      }
       // An erased parameter is its bound (see `_erasedParameter`).
       if (_erasedParameter(type.parameter)) {
         final asBound = _typeOfBound(type.parameter.bound);

@@ -625,7 +625,23 @@ augment class RustBackend {
     _out.removeRange(saved, _out.length);
     _indent = savedIndent;
     _reassigned = savedReassigned;
-    return '{ $body ${expr(node.value)} }';
+    // The block's value is a *place* when it is a local the block did not
+    // bind: producing it moves out of it, and the place lives on. `let
+    // #t0 = fallback in decorate` -- what the AOT compiler leaves of
+    // `fallback ?? decorate` once it knows the left is null -- moved
+    // `resolvedForegroundBuilder` out from under the rest of
+    // `ButtonStyleButton.build`, which reads it three lines on (ws892).
+    // The block's *own* binding still moves: it was made here, and
+    // nothing outside can read it.
+    final produced = node.value;
+    final tail =
+        produced is IrLocal &&
+            !node.statements.any(
+              (s) => s is IrLocalDecl && s.name == produced.name,
+            )
+        ? '${expr(produced)}.clone()'
+        : expr(produced);
+    return '{ $body $tail }';
   }
 
   /// The name the front ends give a cascade's receiver.
