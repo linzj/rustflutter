@@ -382,6 +382,31 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 - **值类身份的窄解**(`super.==` 走 `_identical`):参数到达时是值不是引用,
   两半是同一堵墙,与其留一条永远说不的路,不如撤回。
 
+## 已知欠账:`dart:ffi` 结构体剩下的一半(ws894 量过)
+
+`_abi()` 之后,`widgets_window_win32.rs` 里还剩 11 个拒绝,分两类,**都不是
+一个内存模型决定能过的**:
+
+    5  字段读写   _loadInt64/_loadInt32/_loadPointer/_storePointer
+    2  #fromTypedDataBase   往 prelude 基类 `Struct` 调超构造
+    4  _CallocAllocator / initializeWindowing
+
+从 dill 里读出来的体是:
+
+    viewId => _loadInt64(this.{_Compound._typedDataBase},
+                         viewId#offsetOf + this.{_Compound._offsetInBytes})
+
+所以字段读写要的是「`_typedDataBase` 那块字节**共享且可变**」。这个 prelude
+里 `Uint8List` 就是 `Vec<u8>`(一个值),装箱成 `Rc<Vec<u8>>` 之后写不进去
+——它压在「Dart 的 list 是引用、这里是 `Vec`」那条老账上,不是 ffi 自己的
+问题。`Struct.create<T>()` 那条路的基是程序自己新造的 `Uint8List`,把它拷进
+一个 cell 里能对;但**只对这一条路对**,别名共享同一块 `TypedData` 的那条
+路会静静地答错,而按形状去分辨哪条是哪条就是硬编码。夹具 `ffistruct` 已经
+写好并且**是红的**(`_from_typed_data_base` 没有),留着钉住这一半。
+
+后面 4 个的内存来自一个 Windows DLL(`_winCoTaskMemAlloc`),在这台机器上
+本来就该死在那个调用处,不该在这里假装有内存。
+
 ## 活账:ws/run 表(窗口 40 行;更老的在 git)
 
 窗口 = 最近 40 轮;更老的在 git。
@@ -437,6 +462,7 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 | ws890b | 试了 `lib.rs` 的机械改造并**放弃提交**:编译器自己的 span 驱动,317 -> 102 错、289 行改动,然后停手。理由不是难,是**验不了**——那 289 行的唯一检查就是 146 个 test 跑起来,而它们被生成代码里那 44 个错误挡着 | 抽查已见坏编辑(`.collect.unwrap()()`、给一个 `Map` 加 `.unwrap()`);全部回退,`git status` 干净 |
 | ws892 | 泛型局部函数落地:声明按类型参数的**界**擦写(ws879 的那一半),调用点改读 `node.localFunction` 的原始签名——实参装箱进擦除槽、结果按本次实例化的 `T` 取回来(ws879 把这半报成「已成」,其实没成)。另两条借用规则:闭包**调用**兄弟局部函数也是对那个绑定的一次读(Kernel 不发 `VariableGet`,`_LocalFinder` 看不见,于是闭包既没克隆它进去也不是 `move`,直接借了个局部);块的值若是本块没绑定的局部,那是在读一个还要活下去的位置,要克隆 | stub **150**(未升;新译出的四个成员里三个直接编过,同时 `icon_button_style_from` 的 `borrow of moved value` 被块尾克隆顺手修掉),拒绝 **49 → 45**,可达 64;fx 三个夹具 `genlocalfn`/`dynfn`/`ifnullmove` 两端一致——`ifnullmove` 在补丁前先跑出过 `borrow of moved value: decorate`,补丁后 AGREE;预言机 exit 0,BEHIND 仍 16;check.sh exit 0,analyze 80 / 87 checks |
 | ws893 | 促升过的局部作接收者时,决定「要不要 `let mut`」的 `_WalkSelf` 只认裸局部——而发射端的 `_mutPlace` 明明剥掉 `!` 和「读即克隆」两层去找同一个位置。两边现在剥同样的两层 | stub **150 → 149**(掉的正是 ws892 译出来的 `material_button_style_button.rs build`,四个泛型局部函数成员现在全部编过),拒绝 45,可达 64;run894:708 行 / 类型差异 0 / 0 panic / 194 帧;夹具 `promotedmut` **补丁前红**(`E0596 cannot borrow \`resolved\` as mutable`)、补丁后 AGREE——第一版夹具是绿的,因为它结尾多读了一次 `resolved.value`,那一次裸接收者自己就把局部标成了 `mut`,把洞遮住了 |
+| ws894 | `dart:ffi` 的 `_abi()`:CFE 把每个结构体的布局写成「按 ABI 一项的常量表 + `_abi()` 下标」,没有它,程序里每个 `#offsetOf`/`#sizeOf` 都是拒绝。prelude 按目标机自己的 `OS`/`ARCH` 在 `Abi.values` 的顺序里查出下标——不是猜,也不是编译器替它选一个;查不到的机器直接说没有,而不是返回另一个 ABI 的数 | 拒绝 **45 → 38**,stub 149(未升),可达 64;run895:708 行 / 类型差异 0 / 0 panic / 195 帧;夹具 `ffisizeof` 三个结构体(含对齐的 `Small`、带指针的 `Wide`)两端都是 `24/4/24` |
 | ws891 | 第五轮复审抓到:ws889 落地后 `regen.py` 的 `hints()` 会**永远误报**——它按 `'throws:' not in driver` 字面判定,而正确的修法恰恰是把那个参数删掉,所以那条提示从此指向唯一不该做的修法。换成 `DECIDED_IN`:只指出决定写在哪两个函数里,不对文件的现状下任何断言。顺手分开探针的两种失败(没调用 vs 调用了没 `?`) | `fails:` 在 frontend.dart 已 11 处、`throws:` 在 kernel driver 已 0 处——两条提示一条正确变哑、一条永久说谎,实测属实;两个诊断分支各跑一次验过 |
 
 ## 下一步(2026-09-05 重铺)

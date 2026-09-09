@@ -277,6 +277,9 @@ augment class RustBackend {
     'try_parse_double',
     'schedule_microtask',
     'uint8_list_view',
+    // `dart:ffi`'s `_abi()`, which every `#sizeOf`/`#offsetOf` the CFE
+    // writes is indexed by.
+    '_abi',
   };
 
   /// The prelude's classes that `is` can ask about and a `throw` boxes.
