@@ -2,6 +2,32 @@ part of '../backend_rust.dart';
 
 // `_call`: one method call, from receiver to turbofish.
 augment class RustBackend {
+  /// A receiver whose *value* is a `double` literal, however it is spelled.
+  /// Rust resolves a method before it defaults an unsuffixed float, so such
+  /// a receiver has to say `f64` outright ("can't call method `min` on
+  /// ambiguous numeric type `{float}`", E0689 -- 21 of them in the HCT
+  /// colour code, and the negated ones below).
+  ///
+  /// Through a negation: the front end folds `-_kFlingVelocity` on a `const
+  /// double` to `IrUnary('-', literal)`, which is a literal as far as rustc
+  /// is concerned but was not one here (`_handleDragEnd` in reply's
+  /// `adaptive_nav.dart`, ws956).
+  static bool _floatLiteralValue(IrExpr? e) => switch (e) {
+    IrLiteral(:final type) => type.name == 'double',
+    IrUnary(op: '-', :final operand) => _floatLiteralValue(operand),
+    _ => false,
+  };
+
+  /// That receiver with the type written on the *literal*: `(-(2.0_f64))`,
+  /// not `(-2.0)_f64` -- a suffix belongs to the literal, not to the
+  /// expression around it. Once: a literal the front end already suffixed
+  /// (an integer written as a double, ws779) would read `0.0_f64_f64`.
+  String _suffixedFloat(IrExpr e) {
+    if (e is IrUnary && e.op == '-') return '(-${_suffixedFloat(e.operand)})';
+    final text = _receiver(e);
+    return text.endsWith('_f64') ? '($text)' : '(${text}_f64)';
+  }
+
   String _call(
     IrExpr? target,
     String name,
@@ -230,13 +256,8 @@ augment class RustBackend {
         ? cellPlace
         : ownPlace != null
         ? ownPlace
-        : target is IrLiteral && target.type.name == 'double'
-        ? (() {
-            // ..once: a literal the front end already suffixed (an integer
-            // written as a double, ws779) would read `0.0_f64_f64`.
-            final text = _receiver(target);
-            return text.endsWith('_f64') ? '($text)' : '(${text}_f64)';
-          }())
+        : _floatLiteralValue(target)
+        ? _suffixedFloat(target!)
         : _receiver(target);
     // `HashMap` looks up by reference, and gives back a reference to the
     // value. Dart's `m[k]` is a `V?`, so the borrow is cloned away rather
