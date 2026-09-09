@@ -2,6 +2,21 @@ part of '../frontend_kernel.dart';
 
 // Reading a member and calling one on an instance.
 augment class KernelFrontend {
+  /// What a `num` method leaves in hand once the receiver has been narrowed
+  /// to an `f64` (see the `DynamicInvocation` lowering below), by the
+  /// prelude's own signatures (`DartDouble`). `floor`/`ceil`/`round` are not
+  /// here: those are wrapped in a cast to `i64` where they are built.
+  static const _narrowedNumResult = <String, IrType>{
+    'isInfinite': IrType('bool'),
+    'isNaN': IrType('bool'),
+    'isFinite': IrType('bool'),
+    'toDouble': IrType('double'),
+    'abs': IrType('double'),
+    'truncate': IrType('int'),
+    'toInt': IrType('int'),
+    'toStringAsFixed': IrType('String'),
+  };
+
   IrExpr _instanceGetRaw(InstanceGet node) {
     final name = _fieldNameOf(node.interfaceTarget, node.name.text);
     final listOwner = node.interfaceTarget.enclosingClass?.name;
@@ -1053,7 +1068,21 @@ augment class KernelFrontend {
       final rounds =
           const {'floor', 'ceil', 'round'}.contains(name) && args.isEmpty;
       final call = IrCall(asDouble, name, args);
-      return rounds ? IrCast(call, 'i64') : call;
+      // The value in hand is what the emitted Rust produced, not what Dart's
+      // static type says. The receiver was narrowed to an `f64` right here,
+      // so this is `f64`'s method (or the prelude's `DartDouble`), and a
+      // slot that takes an `Object` has to box the result. Left untyped, the
+      // `Let` the CFE binds an interpolation's argument in declared its
+      // temporary at the *static* type -- `dynamic`, an `Rc<dyn Object>` --
+      // over an `f64`, and nothing coerced between them (`NumberFormat
+      // .format` and `_formatFixed`, ws895).
+      if (rounds) {
+        call.rustType = const IrType('double');
+        return IrCast(call, 'i64')..rustType = const IrType('int');
+      }
+      final produced = _narrowedNumResult[name];
+      if (produced != null) call.rustType = produced;
+      return call;
     }
     if (const {'floor', 'ceil', 'round'}.contains(name) && args.isEmpty) {
       final receiverType = _staticType(node.receiver);

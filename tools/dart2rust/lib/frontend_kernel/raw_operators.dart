@@ -141,6 +141,15 @@ augment class KernelFrontend {
       final call = IrCall(asDouble, node.name.text, [
         for (final a in node.arguments.positional) expression(a),
       ]);
+      // What the emitted Rust leaves in hand, which is not what Dart's
+      // static type says: the receiver was narrowed to an `f64` right here,
+      // so this is `f64`'s method (or the prelude's `DartDouble`). Untyped,
+      // the `Let` the CFE binds an interpolation's argument in declared its
+      // temporary at the static type -- `dynamic`, an `Rc<dyn Object>` --
+      // over an `f64`, and nothing coerced between them (`NumberFormat
+      // .format` and `_formatFixed`, ws895).
+      final produced = _narrowedNumResult[node.name.text];
+      if (produced != null) call.rustType = produced;
       return const {
             'round',
             'floor',
@@ -148,7 +157,7 @@ augment class KernelFrontend {
             'truncate',
             'toInt',
           }.contains(node.name.text)
-          ? IrCast(call, 'i64')
+          ? (IrCast(call, 'i64')..rustType = const IrType('int'))
           : call;
     }
     // ..and its operators: `number - integerPart` on a `dynamic`.
@@ -182,7 +191,10 @@ augment class KernelFrontend {
         'clone',
         const [],
       )..rustType = const IrType('double'));
-      return IrCall(asDouble, node.name.text, const []);
+      final read = IrCall(asDouble, node.name.text, const []);
+      final produced = _narrowedNumResult[node.name.text];
+      if (produced != null) read.rustType = produced;
+      return read;
     }
     return null;
   }

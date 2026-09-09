@@ -14,12 +14,35 @@
 两处「章结」和几处普查、模型改动原文保留(它们当初就没写成每轮小节)。
 3215 行 → 本文。
 
+**2026-09-09 第三次压缩(用户裁定:需要简写)。** 压缩点 = `dbc6d961`
+(`git show dbc6d961:tools/dart2rust/STATUS.md`,1266 行)。移出本文的六项,
+一行未删地在 git 里:
+
+1. 活账窗口 51 行 → **40** 行。
+2. 四个 `## wsN` 形态的小节归位:三个去掉轮次(ws880 的验法、ws881 的拆法、
+   ws884 的隐式状态,**正文一字未动**),ws894 的 `dart:ffi` 那节整段并进
+   〈已知欠账〉。
+3. 〈已知欠账〉里两条已解的划掉项删除(分析器前端不再编译、覆盖时收窄类型实参)。
+4. 黄金层那一簇(ws886–ws890b)的叙事移出,只留三个根因、7 个缺陷、顺序、
+   和那条验收标准(**crate 编过 + 146 个 test 跑绿,不是错误数降低**)。
+5. ws864 双重装箱的叙事移出,在〈已知欠账〉留一条(五个候选全部排除,以及
+   trace 照出来的那个反向事实)。
+6. 两处被后来的读数取代的章结(ws824/run825、ws828 身份普查)移出——它们的
+   结论已经分别在〈数字轨迹〉〈撤回与作废〉〈已知欠账〉里;〈下一步〉与
+   〈当前队头〉的正文自 2026-09-05 起就对不上(两处校注早就这么写),正文移出,
+   校注留下。
+
+1266 行 → 本文。
+
 **维护规约(防再胖):**〈活账〉表只留最近约 40 行;每批提交时把滑出窗口的行直接
 删掉(git 有)。「撤回与作废」和「数字轨迹」是考古结论的留置处,只增不删。
 **每轮的记录写成〈活账〉的一行,不写成 `## wsN` 小节**——2026-09-07 到 09-09 之间
 文件涨回 6 倍,就是因为规约只管住了表,而记录换成了小节。一条规则的「为什么」
 值得留下时,它进〈九条要记住的〉〈撤回与作废〉〈已知欠账〉,或另起一个不带轮次的
 标题(本文里那几节就是这么来的);其余的,git 有。
+**活账的一行就是一行**——ws886 起有的行长到 600 字,是把小节塞进了单元格,
+和写成 `## wsN` 是同一件事换了个位置。一行写规则和读数;要展开,去上面那三个
+留置处。
 
 ## 决定（2026-09-04）：恢复 `Result`，整程序做传播分析
 
@@ -382,48 +405,12 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 - **值类身份的窄解**(`super.==` 走 `_identical`):参数到达时是值不是引用,
   两半是同一堵墙,与其留一条永远说不的路,不如撤回。
 
-## 已知欠账:`dart:ffi` 结构体剩下的一半(ws894 量过)
-
-`_abi()` 之后,`widgets_window_win32.rs` 里还剩 11 个拒绝,分两类,**都不是
-一个内存模型决定能过的**:
-
-    5  字段读写   _loadInt64/_loadInt32/_loadPointer/_storePointer
-    2  #fromTypedDataBase   往 prelude 基类 `Struct` 调超构造
-    4  _CallocAllocator / initializeWindowing
-
-从 dill 里读出来的体是:
-
-    viewId => _loadInt64(this.{_Compound._typedDataBase},
-                         viewId#offsetOf + this.{_Compound._offsetInBytes})
-
-所以字段读写要的是「`_typedDataBase` 那块字节**共享且可变**」。这个 prelude
-里 `Uint8List` 就是 `Vec<u8>`(一个值),装箱成 `Rc<Vec<u8>>` 之后写不进去
-——它压在「Dart 的 list 是引用、这里是 `Vec`」那条老账上,不是 ffi 自己的
-问题。`Struct.create<T>()` 那条路的基是程序自己新造的 `Uint8List`,把它拷进
-一个 cell 里能对;但**只对这一条路对**,别名共享同一块 `TypedData` 的那条
-路会静静地答错,而按形状去分辨哪条是哪条就是硬编码。夹具 `ffistruct` 已经
-写好并且**是红的**(`_from_typed_data_base` 没有),留着钉住这一半。
-
-后面 4 个的内存来自一个 Windows DLL(`_winCoTaskMemAlloc`),在这台机器上
-本来就该死在那个调用处,不该在这里假装有内存。
-
 ## 活账:ws/run 表(窗口 40 行;更老的在 git)
 
 窗口 = 最近 40 轮;更老的在 git。
 
 | 轮 | 规则 / 读数 | 数 |
 |---|---|---|
-| ws830 | `jsonEncode`, by the value's own type | stub **203**,拒绝 69,可达 64 |
-| ws831 | the `toEncodable` shape | stub **202**,拒绝 69,可达 64 |
-| ws832 | `const Stream()`, `stdout`, and a generic local function that needs its call site too | stub **203**,拒绝 64,可达 64 |
-| run834 | the reading, again | — |
-| ws836 | a rule that changed nothing, and where the generic local function stops | stub **203**,拒绝 64,可达 64 |
-| ws838 | a local function that is only called may borrow | stub **204**,拒绝 60,可达 64 |
-| run842 | the reading, after the borrowing rules | — |
-| ws847 | a `ByteBuffer` is its bytes, and a narrow number prints as itself | stub **201**,拒绝 60,可达 64 |
-| run848 | the reading, after `toString` changed for ten types | — |
-| ws850 | `is` against a function type is a downcast, not an arity guess | stub **201**,拒绝 59,可达 64 |
-| ws852 | a prelude generic answers `is` by the runtime type it reports | stub **202**,拒绝 58,可达 64 |
 | ws853 | a class that *is* the prelude's future has no members of its own | stub **201**,拒绝 57,可达 64 |
 | ws854 | a tear-off adapter returns into its slot, like any other value | stub **201**,拒绝 57,可达 64 |
 | ws855 | an adapter holds `this` itself, or it borrows whoever does | stub **195**,拒绝 57,可达 64 |
@@ -460,9 +447,10 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 | ws889 | 两个 fixture driver 现在都发得出 `?`:`_fails` 开头那句 `if (throws == null)` 删掉——它收着一个 `ThrowsAnalysis` 却一行答案都不读,是穿着分析外衣的开关;分析器前端补上 `_callFails`(10 个调用点),两侧共用 `ir.dart` 的 `translatedLibrary`。**顺带撞见这一轮最大的一件事**:删掉那个「什么都不决定」的分析,gallery 输出动了 32,653 行——真正起作用的是它把每个 body 都读了一遍;dill 改成显式 `BinaryBuilder(disableLazyReading: true)` | gallery 仍是 e69150fe(926 模块 / 49 拒绝),eager 读 60 秒 / 1.29 GB;预言机 exit 0,曾经新分叉的 7 个(cascade/failure/freefn/ifnull/mutation/nullcheck/trycatch)重新一致,BEHIND 仍是 16;analyze 86 -> 80,check.sh 上限同步下调 |
 | ws890 | 黄金重生成:32 个文件,driver 已被行为探针证明发得出 `?`,预言机绿着。**验收不是数字**——44 个错误一条不落地读完,归成 7 个根因,全部在生成的代码里,没有一条在 `lib.rs` | lib 139 -> 44 错;`lib.rs` 里另有 317 个是「调用现在返回 Result」的机械改造,还没做,146 个 `#[test]` 仍然全黑;预言机 exit 0,BEHIND 仍 16 |
 | ws890b | 试了 `lib.rs` 的机械改造并**放弃提交**:编译器自己的 span 驱动,317 -> 102 错、289 行改动,然后停手。理由不是难,是**验不了**——那 289 行的唯一检查就是 146 个 test 跑起来,而它们被生成代码里那 44 个错误挡着 | 抽查已见坏编辑(`.collect.unwrap()()`、给一个 `Map` 加 `.unwrap()`);全部回退,`git status` 干净 |
-| ws892 | 泛型局部函数落地:声明按类型参数的**界**擦写(ws879 的那一半),调用点改读 `node.localFunction` 的原始签名——实参装箱进擦除槽、结果按本次实例化的 `T` 取回来(ws879 把这半报成「已成」,其实没成)。另两条借用规则:闭包**调用**兄弟局部函数也是对那个绑定的一次读(Kernel 不发 `VariableGet`,`_LocalFinder` 看不见,于是闭包既没克隆它进去也不是 `move`,直接借了个局部);块的值若是本块没绑定的局部,那是在读一个还要活下去的位置,要克隆 | stub **150**(未升;新译出的四个成员里三个直接编过,同时 `icon_button_style_from` 的 `borrow of moved value` 被块尾克隆顺手修掉),拒绝 **49 → 45**,可达 64;fx 三个夹具 `genlocalfn`/`dynfn`/`ifnullmove` 两端一致——`ifnullmove` 在补丁前先跑出过 `borrow of moved value: decorate`,补丁后 AGREE;预言机 exit 0,BEHIND 仍 16;check.sh exit 0,analyze 80 / 87 checks |
-| ws893 | 促升过的局部作接收者时,决定「要不要 `let mut`」的 `_WalkSelf` 只认裸局部——而发射端的 `_mutPlace` 明明剥掉 `!` 和「读即克隆」两层去找同一个位置。两边现在剥同样的两层 | stub **150 → 149**(掉的正是 ws892 译出来的 `material_button_style_button.rs build`,四个泛型局部函数成员现在全部编过),拒绝 45,可达 64;run894:708 行 / 类型差异 0 / 0 panic / 194 帧;夹具 `promotedmut` **补丁前红**(`E0596 cannot borrow \`resolved\` as mutable`)、补丁后 AGREE——第一版夹具是绿的,因为它结尾多读了一次 `resolved.value`,那一次裸接收者自己就把局部标成了 `mut`,把洞遮住了 |
-| ws894 | `dart:ffi` 的 `_abi()`:CFE 把每个结构体的布局写成「按 ABI 一项的常量表 + `_abi()` 下标」,没有它,程序里每个 `#offsetOf`/`#sizeOf` 都是拒绝。prelude 按目标机自己的 `OS`/`ARCH` 在 `Abi.values` 的顺序里查出下标——不是猜,也不是编译器替它选一个;查不到的机器直接说没有,而不是返回另一个 ABI 的数 | 拒绝 **45 → 38**,stub 149(未升),可达 64;run895:708 行 / 类型差异 0 / 0 panic / 195 帧;夹具 `ffisizeof` 三个结构体(含对齐的 `Small`、带指针的 `Wide`)两端都是 `24/4/24` |
+| ws892 | 泛型局部函数:声明按类型参数的界擦写,调用点改读 `node.localFunction` 的原始签名;闭包调用兄弟局部函数是对那个绑定的一次读;块的值若是本块没绑定的局部,要克隆 | stub 150(未升),拒绝 **49 → 45**,可达 64;夹具 `genlocalfn`/`dynfn`/`ifnullmove` |
+| ws893 | 促升过的局部作接收者:`_WalkSelf` 与 `_mutPlace` 现在剥同样的两层(`!` 与「读即克隆」),`let mut` 才跟得上 | stub **150 → 149**,拒绝 45,可达 64;run894 708 行 / 差异 0 / 0 panic;夹具 `promotedmut` |
+| ws894 | `dart:ffi` 的 `_abi()`:结构体布局是「按 ABI 一项的常量表 + `_abi()` 下标」,prelude 按目标机的 `OS`/`ARCH` 在 `Abi.values` 里查,查不到就说没有 | 拒绝 **45 → 38**,stub 149(未升),可达 64;run895 708 行 / 差异 0 / 0 panic;夹具 `ffisizeof` |
+| ws895 | 窄化过的动态 `num` 调用要记下手里剩的是什么(按 prelude 的 `DartDouble` 签名);`_returned` 原先只认识 `IrNew`/`IrConstInstance` 两种「能变成对象的东西」,一次调用是第三种 | stub **149 → 147**,拒绝 38,可达 64;run896 708 行 / 差异 0 / 0 panic / 196 帧;夹具 `dyncall` |
 | ws891 | 第五轮复审抓到:ws889 落地后 `regen.py` 的 `hints()` 会**永远误报**——它按 `'throws:' not in driver` 字面判定,而正确的修法恰恰是把那个参数删掉,所以那条提示从此指向唯一不该做的修法。换成 `DECIDED_IN`:只指出决定写在哪两个函数里,不对文件的现状下任何断言。顺手分开探针的两种失败(没调用 vs 调用了没 `?`) | `fails:` 在 frontend.dart 已 11 处、`throws:` 在 kernel driver 已 0 处——两条提示一条正确变哑、一条永久说谎,实测属实;两个诊断分支各跑一次验过 |
 
 ## 下一步(2026-09-05 重铺)
@@ -471,22 +459,9 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 老 census 的类别表),早已对不上,作废重铺。活账是上面的 ws 表,队头以表末
 (ws350:**3284 stub / 804 refusal / 782 `todo!`**,138+1 个 crate 全到)为准:
 
-1. **782 个 `todo!` 的剩员**:`debugFillProperties` 197 个是 AOT 树摇掉的成员
-   (dill 里没有,release 下是死代码,todo 是实话);ws348 露出的新桩里
-   `insert`/`remove`/`_insertIntoChildList`/`_removeFromChildList` 各 12 个 applier
-   ws350 已全部编过,剩 `create_ticker` 35 个——先看它编不过在哪。
-2. **refusal 804**:ws348 一道清掉 68(链式 setter 赋值当值用);剩下的还没按
-   类别重新归并,归并一次是下一轮的事。
-3. **Result 的记账债**:函数值调用 1200 处不参与失败传播(闭包里
-   `.unwrap_or_else(panic)` 计数,ws244/ws250);原语(越界/除零/null check/`as`)
-   不进 Result;microtask/Timer 回调的错误无人可收,`.unwrap()` 记为响的债。
-4. **`Rc<dyn Fn>` 的 `PartialEq`** 撞 orphan 规则(`Set<Ticker>.remove` 一族;
-   ws299 记了两个候选:prelude 自己的 `dyn DartFn`,或 `Map`/`Set` 改用 `DartEq`
-   比键),都没动手。
-5. **`dynamic` vs `Object?`** 表示不一致(第 129 轮起挂着);RegExp 无引擎
-   (intl 依赖);多实现体的 trait 泛型方法 31 处(`IrDynamicDispatch` 没做,ws291)。
-6. **运行时那半仍是 0/168**:`runtime/` crate 不存在。翻译半烧完之前它是最终
-   瓶颈;原话仍有效——立 crate 接管 prelude,再把 168 收到启动路径上。
+原来的六条(`todo!` 剩员、refusal 归并、Result 记账债、`Rc<dyn Fn>` 的
+`PartialEq`、`dynamic` vs `Object?`、运行时 0/168)正文移出本文,git 有;
+两处校注就是它们的现状,列在下面。
 
 **loop 已停**(cron `5435ce19` 已删)。下次继续时环境变量见上面那节。
 
@@ -502,12 +477,6 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 (ws497:`Object?` 即 `dynamic`);RegExp 仍无引擎(暂未在路径上);多实现体的
 trait 泛型方法**已解**(擦除孪生 `m__erased`,ws482/ws494)。6 仍是 **0/168**,
 但 `runtime/` crate 从 09-06 起存在(无头引擎层)。
-
-**当前 frontier(run601):** 程序挂住(无 panic,超时)——locale 名把
-`StringBuffer` 打成 "Instance of"、`flutter/assets` 的 `en.json` 宿主回 none、
-周期定时器让 `run_main` 永不闲;新仪器 `DART2RUST_RUN_SECONDS`(默认 60)、
-`DART2RUST_TRACE_TIMERS`。之后:Goal 3 的 `size=`。
-
 
 **(2026-09-09 校注)** 本节六条与〈当前队头〉自 09-05 起未动,现状以〈活账〉窗口
 末行为准:**ws878 152 stub / 49 拒绝 / 64 crate 全可达**,运行尺子 run877
@@ -534,33 +503,12 @@ trait 泛型方法**已解**(擦除孪生 `m__erased`,ws482/ws494)。6 仍是 **
 **翻译那半(dill `0700f1e5`,`gen_kernel --aot --tfa --minimal-kernel` 出的
 sig dill,前缀 `package:,dart:ui`,931 个库;尺子 `bin/stubs.py`,峰值 4–19 GB)**
 
-```
-ws350:  3284 stub / 804 refusal / 782 todo!,138+1 个 crate 全到
-轨迹:   ws243(panic 模型最好) 7843
-        ws246(Result v2 初版) 17068 → ws250 11061
-        ws271(开放类落地)     7270
-        ws279(this 句柄化)    5247
-        ws350                 3284
-```
+`ws350: 3284 stub / 804 refusal / 782 todo!`,轨迹见〈数字轨迹〉。
 
 三个数各量一样东西:**stub** 是「译出了、编不过」的函数;**refusal** 是
 「没译出」的函数;**`todo!`** 是「编得过、一跑就 panic」的转发器体——
 ws344 才照到它,一量 26199 个,削到 782。
 
-老的那份类别表(闭包捕获 `this` 599、撕方法 435 那份)来自更老的输入,
-已删——它量的事(ws119–122 的所有权三样)大半已经做完;新输入的 804 个
-refusal 还没按类别归并,归并之前不引用旧数字。
-
-
-**(2026-09-07 校注)** 翻译那半的队头以活账表末为准:
-
-```
-ws601:  722 stub / 252 拒绝 / 63 crate 全可达(138 分区,延迟库合并后)
-轨迹:   ws350  3284 / 804 / 138+1
-        ws522  1068(协变全有或全无)
-        ws552  794
-        ws601  722 / 252
-```
 
 ## 九条要记住的
 
@@ -602,7 +550,7 @@ ws601:  722 stub / 252 拒绝 / 63 crate 全可达(138 分区,延迟库合并后
 11. **数字必须带量它的条件。** 第 24 轮记的 `10040` 没写 dill 和前缀,
    第 25 轮想比时发现任何组合都复现不出,那一轮的进度记录就此作废。
 
-## 这一轮是怎么验的(ws880,2026-09-09)
+## 改编译器自身时,这一轮是怎么验的(方法)
 
 改编译器自身而不改规则时,读数相同不够——152 个 stub 可以来自不同的 152 处。
 这一轮的验法记在这里,以后同类的改动照抄:
@@ -627,7 +575,7 @@ ws601:  722 stub / 252 拒绝 / 63 crate 全可达(138 分区,延迟库合并后
 翻译阶段(`wrote .crate-ws` 出现)之后再改 `lib/*.dart`,虽然不会打断链子,
 但那次读数就不算数了。
 
-## 拆 god class 的结论(ws881,2026-09-09)
+## 拆 god class 的结论
 
 **评审把 #1 和 #2 的顺序写反了。** 量出来的:`RustBackend` 的 7 个分节共享
 69 个字段里的 42 个,`KernelFrontend` 的 6 个分节共享 77 里的 35。所以在把
@@ -665,7 +613,7 @@ ws601:  722 stub / 252 拒绝 / 63 crate 全可达(138 分区,延迟库合并后
   `bin/check.sh` 和 `.githooks/pre-commit` 都走它。dart_style 哪天认了
   `augment`,把 `bin/fmt.py` 删掉换回 `dart format` 就行。
 
-## 隐式状态:量出来的形状(ws884,2026-09-09)
+## 隐式状态:量出来的形状
 
 评审说「隐式可变上下文是自招的 bug 农场」,点名 `ws478 一个拒绝把
 `_expectedReturn` 留给了下一个成员`。量下来,这个病有个很具体的形状,
@@ -719,13 +667,6 @@ ws601:  722 stub / 252 拒绝 / 63 crate 全可达(138 分区,延迟库合并后
   `_inPlace` 缺 `update_all`。补任何一条都会加宽哪些方法拿 `&mut self`,
   要过链子。`test/member_names_test.dart` 把这三个差集钉死了,补的时候
   测试会红,和量数的那次提交一起改。
-- ~~**分析器前端不再编译**~~ —— ws886 迁完了。analyzer 14.3 把 AST 整个
-  重建过:`ClassDeclaration.name` → `namePart.typeName`、`.members` →
-  `body.members`、`NamedExpression` → `NamedArgument`、
-  `DefaultFormalParameter` 没了(默认值挂在参数自己身上)、
-  `Element.isSynthetic` 换成 `nonSynthetic`。47 个错清零,两个 driver
-  一并修好,预言机重新点着。接替它的欠账在下面。
-
 **(2026-09-09 新增,ws886 量出来的)**
 
 - **内核前端已经走在前面 16 个 fixture**:预言机熄火的那段时间,内核那侧
@@ -745,49 +686,28 @@ ws601:  722 stub / 252 拒绝 / 63 crate 全可达(138 分区,延迟库合并后
   `instantiate` 必返 `FunctionType`)。删掉不改变任何输出,但那是生产前端
   里 40 处编辑,自己占一轮。`bin/check.sh` 的 `analyze_ceiling` 钉住这个
   数:只能降,降了要在同一个提交里把它改小。
-- **第三把熄了的尺子:`testdata` 那个 cargo crate**(ws886 记错了根因,
-  ws887 更正)。`src/lib.rs` 里 **146 个 `#[test]`** 是全项目**唯一**断言
-  「运行时的值和 Dart 一样」的一层,全黑。三个独立原因,ws886 只看见
-  第一个就写成了「根因」:
-  1. `src/lib.rs` 那 1,894 行手写桩加测试还停在「方法不返回 `Result`」
-     的年代,`Asserts::new(8.0).halved()` 于是成了在 `Result` 上找方法。
-     占 196 个 E0599 的大头——这是抽样看见的那个。
-  2. **两个 fixture driver 结构性地生成不出 `?`**,这才是先要修的。
-     `bin/dart2rust_kernel.dart` 给 `KernelFrontend` 传 17 个具名参数里的
-     2 个(包驱动传 16 个,含 `throws:`),而 `_fails`
-     (`lib/frontend_kernel.dart`)开头就是 `if (throws == null) return
-     false`;分析器前端更彻底,**全文 0 处 `fails:`**,它比 Result 模型
-     还老。`_resultModel` 却是 `true`,于是每个方法都返回 `Result` 而
-     一个 `?` 都不生成——`Ok((self.doubled() + 1.0))`,拿 `Result<f64>`
-     去加浮点。**这不是陈旧,是按构造就编不过。**
-     **ws889 修了,而且是反着修的**:该删的不是 driver 的沉默,是 `_fails`
-     开头那句 `if (throws == null)`。统一模型下「会不会 throw」不决定任何事
-     ——每个被翻译的函数都返回 `Result`——所以那个参数里没有信息,只有一个
-     开关。复审两轮(它一次,我一次)都读成「driver 必须建那个分析」,不必。
-     分析器前端另有 `_callFails`,10 个调用点,与 Kernel 侧共用
-     `ir.dart:translatedLibrary` 这半个决定。
-  3. 那份重生成的黄金里还有两个形状:const 上下文里的运行时 downcast
-     (`constinstance`,18 个 E0015/E0658)、trait 方法里的裸 `Vec<Object>`
-     (`generic`,E0782)。**去 gallery 输出里搜过了,两种形状都是 0 次**
-     ——gallery 那边 erased 槽一律是 `std::rc::Rc<dyn Object>`。所以它们
-     多半也是同一个残缺配置的产物,不是独立的后端 bug;要定性得先修好
-     driver 再看。
-  ws886 按「139 错 vs 79 错,取较优者」收下了 6,300 行黄金,那不是验收
-  标准——139 量的是旧代码对新 prelude 的漂移,不是正确性,而 79 那批
-  在 `?` 的形状上是**退步**。已全部退回冻结版。
-  `bin/regen.py` 现在开头跑一个探针:一段 `checked` 会 throw、`doubled`
-  调它的 Dart,过一遍这一轮真正要用的每个 driver,输出里那个调用不带
-  `?` 就整体拒绝重生成。**问的是行为,不是字面**——ws887 那版查
-  `'fails:' not in frontend.dart`,而两行 ``// TODO: pass `fails:` here``
-  就能把门打开(ws888 实测),偏偏那正是修这件事的那一轮第一个会写的
-  东西。探针 21 秒跑完,当场把 `Ok((self.checked(value) * 2.0))` 一字不差
-  地重现出来。`--anyway` 改成写进 `.agree/anyway/`(不在 git 里):它的
-  帮助文本从第一天就说「只用来看,不用来提交」,实现却写在
-  `testdata/src`——提交唯一会捡起来的那条路上。
-  **顺序是 driver → 黄金 → lib.rs 的 Result 改造**,反过来只会把同一个
-  矛盾重新焊进去。重生成那一轮的验收是 **crate 编过、146 个 test 跑绿**,
-  不是错误数降低:ws886 那次错误数正是降的(139→79),一个「只许降」的
-  棘轮会照样收下它。
+- **第三把熄了的尺子:`testdata` 那个 cargo crate**。`src/lib.rs` 里
+  **146 个 `#[test]`** 是全项目**唯一**断言「运行时的值和 Dart 一样」的一层,
+  至今全黑。三个独立原因(ws886 只看见第一个就写成了「根因」,ws887 更正;
+  叙事在 git):
+  1. `src/lib.rs` 那 1,894 行手写桩加测试停在「方法不返回 `Result`」的年代,
+     `Asserts::new(8.0).halved()` 成了在 `Result` 上找方法——196 个 E0599 的大头。
+  2. **两个 fixture driver 结构性地生成不出 `?`**(包驱动传 16 个具名参数,
+     fixture driver 传 2 个)。**ws889 修了,而且是反着修的**:该删的不是
+     driver 的沉默,是 `_fails` 开头那句 `if (throws == null)`——统一模型下
+     「会不会 throw」不决定任何事,那个参数里没有信息,只有一个开关。
+     复审两轮(它一次,我一次)都读成「driver 必须建那个分析」,不必。
+  3. 黄金里另两个形状(const 上下文的运行时 downcast、trait 方法里的裸
+     `Vec<Object>`)在 gallery 输出里都是 **0 次**,多半是同一个残缺配置的产物。
+  **验收标准写死在这里:crate 编过 + 146 个 test 跑绿,不是错误数降低。**
+  ws886 按「139 错 vs 79 错,取较优者」收下 6,300 行黄金,而 79 那批在 `?` 的
+  形状上是**退步**——一个「只许降」的棘轮会照样收下它,已全部退回冻结版。
+  `bin/regen.py` 开头因此跑一个**行为**探针而不是字面检查:真跑这一轮要用的
+  每个 driver,输出里那个必失败的调用不带 `?` 就整体拒绝重生成(21 秒,当场
+  重现 `Ok((self.checked(value) * 2.0))`)。ws887 那版查
+  `'fails:' not in frontend.dart`,两行 TODO 注释就能把门打开(ws888 实测),
+  而那正是修这件事的那一轮第一个会写的东西。`--anyway` 改成写进不在 git 里的
+  `.agree/anyway/`。
 - **黄金层重新点着了,它第一件事是报出 7 个真缺陷(ws890)**。32 个文件由
   一个「能发 `?`」被行为探针证明过的 driver 生成,预言机同时是绿的,44 个
   错误全部在**生成的代码**里——`lib.rs` 一条都没有。逐条读完,归成 7 个根因:
@@ -808,17 +728,13 @@ ws601:  722 stub / 252 拒绝 / 63 crate 全可达(138 分区,延迟库合并后
      而且返回 `&i64` 填进要 `i64` 的位置。
   7. **`match` 在表达式位置上默认臂是空的**(`branching`,1 条):
      `_ => {}` 给出 `()`,而那个 match 要 `Result<f64, _>`。
-- **顺序要改一格:driver -> 黄金 -> 编译器缺陷 -> `lib.rs`**(ws890b 学到的)。
-  ws887 写下的顺序是「driver -> 黄金 -> lib.rs 的 Result 改造」,少了一格。
-  `lib.rs` 那 317 个错是机械的,一个由编译器 span 驱动的脚本半小时能改到
-  102 个;问题是**改完没有任何东西能检查它**。那 289 行改动的唯一裁判是 146 个
-  `#[test]` 真的跑起来,而它们被生成代码里那 44 个错误挡着——crate 编不过,
-  测试就不跑。抽查已经看到坏编辑:`.collect.unwrap()()`、给一个 `Map`(不是
-  `Result`)加了 `.unwrap()`。**没法验的批量改动,提交进去就是「按计数验收」
-  换了身衣服**,所以整批回退了。
-  先修上面那 7 个根因,crate 编过,再做 `lib.rs`,那时每一处 `.unwrap()` 都有
-  146 个断言在后面盯着。脚本留在
-  `/tmp/.../scratchpad/unwrap_fix3.py` 和 `move_unwrap.py`,证明这段路是通的。
+- **顺序:driver → 黄金 → 编译器缺陷 → `lib.rs`**(ws890b 学到的,比 ws887
+  写下的多一格)。`lib.rs` 那 317 个错是机械的,编译器 span 驱动的脚本半小时
+  能改到 102 个;问题是**改完没有任何东西能检查它**——那 289 行的唯一裁判是
+  146 个 `#[test]` 真的跑起来,而它们被上面 7 个缺陷挡着。抽查已见坏编辑
+  (`.collect.unwrap()()`、给一个 `Map` 加 `.unwrap()`)。**没法验的批量改动,
+  提交进去就是「按计数验收」换了身衣服**,所以整批回退了。脚本留在 scratchpad
+  的 `unwrap_fix3.py`/`move_unwrap.py`,证明这段路是通的。
 - **fixture driver 的配置仍然不是生产配置**。`KernelFrontend` 的 17 个具名参数
   里,包驱动传 15 个,fixture driver 传 2 个。`?` 只是第一个症状(ws889 修了,
   而且是把那个假开关删掉),`erase` 是第二个(上面第 3 条)。剩下的还有
@@ -829,21 +745,14 @@ ws601:  722 stub / 252 拒绝 / 63 crate 全可达(138 分区,延迟库合并后
   分开:黄金只从 Kernel 侧的生产配置生成,`fixtures.py` 继续用最小配置只做比较。
   这会改变黄金层的定义,所以先写下来,不顺手做。
 - **dill 的 body 什么时候读,决定这个编译器输出什么(ws889 发现,机制未明)**。
-  `loadComponentFromBinary` 把每个函数体留在 `lazyBuilder` 后面,第一个读
-  `FunctionNode.body` 的人触发它。这本该是不可见的,它不是:同一个 dill、
-  同一份源码,只差「lowering 之前有没有把 body 全读完」,926 个模块里
-  **32,653 行不同**——其中 32,026 行只差一个 `?`(读完才有),另外 627 行
-  更宽:一个调用一边是
-  `<AnimationController as Animation<f64>>::drive::<f64>(..)`、另一边是
-  `.drive(..)`,turbofish 一边 `then::<()>`、另一边 `then::<(), _>`。
-  **为什么会差,还不知道。** ws889 只做了三件事:复现(把 `ThrowsAnalysis.of`
-  换成一个空 `RecursiveVisitor` 走完全部 130,133 个成员,输出就回到
-  e69150fe)、把它变成显式的 `BinaryBuilder(disableLazyReading: true)`、
-  写在这里。
-  **ws885 以来每一次「逐字节相同」量的都是「先读完」那一版**,而在 ws889
-  之前,替它读的是一个答案没人读的分析。发现方式就是删掉那个分析。
-  下一步:先定哪一版是对的(627 行里 eager 显然知道得更多,但那不是证明),
-  再问为什么。
+  `loadComponentFromBinary` 把函数体留在 `lazyBuilder` 后面。同一个 dill、同一份
+  源码,只差「lowering 之前有没有把 body 全读完」,926 个模块里 **32,653 行不同**
+  ——32,026 行只差一个 `?`(读完才有),另外 627 行更宽(限定调用与 turbofish 的
+  两种拼法)。**为什么会差,还不知道。** ws889 只做了三件事:复现(把
+  `ThrowsAnalysis.of` 换成空 `RecursiveVisitor` 走完 130,133 个成员,输出回到
+  e69150fe)、改成显式 `BinaryBuilder(disableLazyReading: true)`、写在这里。
+  **ws885 以来每一次「逐字节相同」量的都是「先读完」那一版**,而在 ws889 之前,
+  替它读的是一个答案没人读的分析。下一步:先定哪一版是对的,再问为什么。
 - **值级断言的覆盖已塌到 6 个**:146 个黄金 `#[test]` 全黑之后,唯一
   「对 Dart 真值」的尺子只剩 `bin/fx.sh` 的 6 个 fixture,而且要手跑。
   `fixtures.py` 对「两个 driver 以同样方式配错」结构性失明(它们一致地
@@ -864,7 +773,7 @@ ws601:  722 stub / 252 拒绝 / 63 crate 全可达(138 分区,延迟库合并后
 - **无 `==` 的值类做键**:Dart 按身份,值 struct 按结构;AOT 还会删未读字段
   (run558 记,不在路径上)。
 - **Goal 3 差 `size=`**:渲染树类型序列已 6/6,dump 时拿不到 layout 结果。
-- ~~**727 个 stub 的长尾**~~(2026-09-09:**150**):最大类是 "mismatched types"(约一半),其余是参数数、
+- ~~**727 个 stub 的长尾**~~(2026-09-09:**149**):最大类是 "mismatched types"(约一半),其余是参数数、
   注解、闭包形状等;随运行尺子推进逐站收。
 - **擦除泛型的静态类型失真**:擦除 trait 的方法返回 `Elem<C>` 时 Rust 给的是
   `Elem<Rc<dyn Constraints>>`,而 Dart 侧局部声明为 `Elem<BoxC>`——`let e: Rc<Elem<BoxC>>` 对不上
@@ -889,15 +798,56 @@ ws601:  722 stub / 252 拒绝 / 63 crate 全可达(138 分区,延迟库合并后
   `impl Animatable<Rc<dyn Object>>`,擦除槽上的 `dart_cast_to` 运行期拿到 `None`。
 - **列表/映射按值传递**:`f(log)` 里 `log` 是 `Vec` 的拷贝,被调方(或它返回的闭包)往里 `add`
   调用方看不见(throttle 夹具第一版踩到,改夹具绕开)。counted 类有身份,集合没有——通用解还没有。
-- ~~**覆盖时收窄类型实参**~~(run703 量的,ws708 已解:覆盖关系算 flow site,那 82 处的
-  `WidgetStateProperty<T>` 等被擦除,两边拼法一致):子类 getter 覆盖基类字段并把类型实参收窄——
-  `_SwitchDefaultsM3.thumbColor` 是 `WidgetStateProperty<Color>`,基类字段是
-  `WidgetStateProperty<Color?>?`。Dart 的协变允许,Rust 的 `dyn WSP<Rc<dyn Color>>` 与
-  `dyn WSP<Option<Rc<dyn Color>>>` 无关。全 gallery **82** 处,全是 Material 的 defaults 惯用法;
-  这些 trait 访问器仍读存储(基类字段的 `None`),所以 `Switch._getSwitchSize` 之后的
-  `defaults.thumbColor!` 在运行期 unwrap 到 `None`。两条路都试过:适配器对象会换身份
-  (covariance.dart 开头写过为什么不走);擦除那条量了 +22(见〈撤回与作废〉ws704)。
 
+
+**(2026-09-09 新增,ws895 量到)`dynamic` 上的 `num` 方法假定接收者是 double**
+
+那条窄化无条件把接收者下转成 `f64`(`n.as_any().downcast_ref::<f64>()
+.unwrap().clone().abs()`),装着 `int` 的 `dynamic` 在这里是 `i64`,downcast
+拿不到,`unwrap` 当场炸。夹具第一版就是这么炸的,现已收窄到 double。补个
+int 分支不够:Dart 的 `(-7).abs()` 是 **int 7**,印 `7`;当成 double 印
+`7.0`。要的是按运行时类型的一次真派发,两条臂各自的结果类型也不同。ws895
+只收了装箱那条,int 那条此前是桩 panic、现在是 unwrap panic,run896 没走到。
+
+**(2026-09-09 新增,ws894 量过)`dart:ffi` 结构体剩下的一半**
+
+`_abi()` 之后,`widgets_window_win32.rs` 里还剩 11 个拒绝,分两类,**都不是
+一个内存模型决定能过的**:
+
+    5  字段读写   _loadInt64/_loadInt32/_loadPointer/_storePointer
+    2  #fromTypedDataBase   往 prelude 基类 `Struct` 调超构造
+    4  _CallocAllocator / initializeWindowing
+
+从 dill 里读出来的体是:
+
+    viewId => _loadInt64(this.{_Compound._typedDataBase},
+                         viewId#offsetOf + this.{_Compound._offsetInBytes})
+
+所以字段读写要的是「`_typedDataBase` 那块字节**共享且可变**」。这个 prelude
+里 `Uint8List` 就是 `Vec<u8>`(一个值),装箱成 `Rc<Vec<u8>>` 之后写不进去
+——它压在「Dart 的 list 是引用、这里是 `Vec`」那条老账上,不是 ffi 自己的
+问题。`Struct.create<T>()` 那条路的基是程序自己新造的 `Uint8List`,把它拷进
+一个 cell 里能对;但**只对这一条路对**,别名共享同一块 `TypedData` 的那条
+路会静静地答错,而按形状去分辨哪条是哪条就是硬编码。夹具 `ffistruct` 已经
+写好并且**是红的**(`_from_typed_data_base` 没有),留着钉住这一半。
+
+后面 4 个的内存来自一个 Windows DLL(`_winCoTaskMemAlloc`),在这台机器上
+本来就该死在那个调用处,不该在这里假装有内存。
+
+- **`map(..).toList()` 的双重装箱(ws864,五个候选全部排除,叙事在 git)**:
+  `CupertinoDatePicker.build` 发出的链把每个元素装两次——`map` 闭包的体按它
+  落进的槽降低(`_withExpectedReturn`),已经交出句柄;而链是按 Dart 的静态类型
+  `Iterable<Expanded>` **记录**的,于是并进 `List<Widget>` 时又宽了一次,
+  `dart_object` 套在 `Rc<dyn Widget>` 上造出 `Rc<Rc<dyn Widget>>`,其 pointee
+  什么都不实现。三个 `build` 停在这里。写过五个候选修法(traithandle 两形、
+  mapwiden、链自己的 `rustType`、元素类型经 `toList()`/`toSet()` 带下去),
+  **五个都在 HEAD 上就同意**,或者根本不改变发射——`expression()` 结尾那句
+  `if (erasedThrough != null) lowered.rustType = erasedThrough` 会覆盖访问者
+  记下的一切。两个临时 trace(`DART2RUST_TRACE_ELEMENTMAP`、`_TRACE_CHAIN`)
+  照出的事实与假设相反:那个闭包声明返回 `Expanded`,Dart 的静态类型也是
+  `Expanded`,所以**元素合并是对的**,该去掉的是闭包**体内**那一次。
+  下一次要问的是:闭包自己的返回说 `Expanded` 时,是谁把那次上转放进去的。
+  夹具做不出来(见〈What the fixture harness can and cannot reach〉)。
 
 **2026-09-09 补:**
 
@@ -1025,91 +975,6 @@ map meets `try_borrow_mut` and falls back to the scan.
 element depending on a `Theme` or a `Localizations`, scanned on every
 `dependOnInheritedElement`.
 
-## ws824 / run825 -- where this stretch stands
-
-    bin/run_chain.sh:  202 stubbed, 79 refusals, 64 reachable crates
-                       (the stub set is ws822's, member for member)
-
-    DART2RUST_OS=android DART2RUST_DUMP_RENDER_TREE=1 bin/run_main.sh:
-                       exit 0, budget spent with main pending
-                       201 frame(s) drawn, 0 panicked
-                       render tree 708 lines, RenderErrorBox 0
-
-    diff ref_render_walk_settled.txt walk, ignoring size=/offset=:    0
-    diff ref_render_walk_settled.txt walk, as printed:              508
-
-From ws808's 221 stubbed and 130 refusals: 351 unfinished members down to
-281, reachable crates 64 the whole way, and the run ruler's reading
-unchanged -- 708 lines, no type differing, nothing panicking.
-
-Fourteen rules landed with a fixture each, and six were reverted after
-being measured: the chain's type (twice), `identical` on a prelude value,
-`identityHashCode`, a `dart:core` interface as a supertrait, `first =`/
-`last =`, and `x is Function`. Every one of the six is written up above
-with what it answered and what it should have answered; four of them
-would have compiled and been *wrong*, which is the reason each round pays
-for a fixture before it pays for a chain.
-
-What is left is not a table gap. The 79 refusals are, by count:
-
-    24  a top-level function with no translation -- 16 of them `dart:ffi`'s
-        internals (`_abi`, `_loadInt64`, `_storePointer`) behind the win32
-        windowing layer, which the prelude deliberately gives names and no
-        behaviour. Clearing them means a memory model for `Pointer`.
-     8  an enum the tree shaker emptied of its constants
-     6  `super.==` / `super.hashCode` into `Object`, and 3 more `super`
-        calls into classes not in the file
-     5  `identical` on something that is not a reference
-     5  a `const` instance of a prelude class
-     5  a closure capturing `this` in a mixin application
-     4  a generic local function
-    19  a tail of ones and twos
-
-Three of those groups -- identity on a value class, `dart:ffi`'s memory,
-and a local function that captures `this` and cannot escape -- are the
-same question asked three ways: **what does this compiler let an object
-be?** A Dart list is a reference and a `Vec` here; a `Widget` is an object
-with an address and a struct here. Each of the three is a model change
-with its own round of fixtures, not a rule that can be added to a table.
-
-## ws828 census -- what identity would cost, counted rather than guessed
-
-Two groups of refusals are the same question -- `identical` on something
-that is not a reference (5), and `super.==` / `super.hashCode` into
-`Object` (2 classes, whose refusal drags 6 more `super.==` calls into
-bases whose own `==` was refused for the same reason). Before deciding
-whether to change the model, both halves were counted over
-`app_aot_sig.dill`:
-
-    identical()/identityHashCode() operand classes:  239
-      215 Object, 40 Zone, 26 Endian, 25 List, 11 Color, 10 Uint32List,
-      then a long tail: every ThemeData family member, TextStyle,
-      BorderSide, RenderObject, SemanticsNode, MenuStyle, ButtonStyle, ..
-    classes whose member calls `super` into `Object`:  2
-      DiagnosticsNode, Widget
-
-The faithful fix for a value class is an identity *token*: a hidden field
-assigned at construction and carried through `clone`, because a clone in
-this model is not a new Dart object -- it is the same object being passed
-around, which is the model's whole premise. That is exactly Dart's
-identity, and it is why the address of a copy is not.
-
-It is also 239 classes. Every one of them would need the field, its
-constructors would need to assign it, its `const` instances would need the
-canonical value Dart's const canonicalisation implies, and the derived
-`PartialEq`/`Hash` would have to be replaced by hand-written impls that
-skip it -- on the whole `ThemeData` family, which is where const instances
-and structural equality both live. For eleven refusals. Not this stretch,
-and not without its own run of fixtures.
-
-The narrow half was tried: `super.==` into `Object` routed through the
-`_identical` machinery, so that it answers where that machinery can and
-refuses where it cannot. It refuses -- at the argument, which arrives as a
-value (`IrCall (Object)`) rather than a reference. The two halves are one
-wall, and the rule is reverted rather than left as a path that only ever
-says no. `super.hashCode` did translate on its own, and took a call
-resolution with it (`hash_code()?` on an `i64`), so it goes back too.
-
 ## Where this stretch stands
 
     from  ws808:  221 stubbed, 130 refusals, 64 reachable crates
@@ -1149,81 +1014,6 @@ them are in four groups that are each one decision, not one rule:
 
 The rest is ones and twos, each with its shape recorded above.
 
-
-## ws864 -- two rules tried, neither shipped, and why
-
-The double box is real and now read from the source rather than guessed at.
-`CupertinoDatePicker.build` emits
-
-    columns.iter().map(|child| (dart_object(Expanded::new(..)) as Rc<dyn Widget>))
-        .collect::<Vec<_>>()
-        .into_iter().map(|v| (dart_object(v) as Rc<dyn Widget>)).collect::<Vec<_>>()
-
--- the `map` closure's body is lowered against the slot it lands in
-(`_withExpectedReturn`) and already hands back the handle, while the chain
-is *recorded* by Dart's static type, `Iterable<Expanded>`, so the coercion
-into `List<Widget>` widens every element a second time. `dart_object`
-around an `Rc<dyn Widget>` makes an `Rc<Rc<dyn Widget>>`, whose pointee
-implements nothing: the same shape ws751 fixed on `!rc`. Three `build`s
-stop there.
-
-Two fixes were written and both reverted, because **neither could be made
-to fail at HEAD**:
-
-  * a trait-typed value is already a handle, so `IrUpcast` should take
-    `_handleOf` and not `dart_object` (traithandle, in two shapes);
-  * the chain's type follows its `map`'s closure, not the static type
-    (mapwiden).
-
-Four fixtures across the two, all agreeing at HEAD as well as with the
-rule. The shape needs the *expected return* to reach inside the closure,
-and that depends on whole-program context -- the erasure census, TFA, the
-closed world -- which a one-file fixture does not recreate. This is the
-same wall ws858 hit and worked around by reading the emission.
-
-Three more attempts followed, each read back from a fresh translate of the
-gallery rather than from a fixture, and each eliminating a candidate:
-
-  * the chain's own `rustType`, set from its `map` closure's recorded
-    return -- which *is* the coerced one (`_returnsType` takes
-    `_expectedReturn` when there is one), so the closure knows. The
-    emission did not change: `expression()` ends with
-    `if (erasedThrough != null) lowered.rustType = erasedThrough`, which
-    overwrites whatever the visitor recorded.
-  * that overwrite guarded for a chain. Still no change.
-  * the element type carried through `toList()`/`toSet()` as well, since
-    `map(..).toList()` is two nodes. Still no change -- this attempt had
-    dropped the guard above, so the clobber was back.
-
-The three together were then tried as well, and the emission still did not
-change -- so the model behind them was wrong, and two traces were added to
-say what is actually there (both reverted; the switches are
-`DART2RUST_TRACE_ELEMENTMAP` and `DART2RUST_TRACE_CHAIN` in the commit
-message of this note if they are wanted again):
-
-  * `TRACE_ELEMENTMAP` -- the second box is `coerce.dart`'s
-    element-by-element rule, and every one of its `have`s is a
-    `List<ConcreteWidget>` against a `List<Widget>` slot
-    (`_TextStyleItem`, `LayoutId`, `DropdownMenuItem<int>`,
-    `_OverlayEntryWidget`, ..). That coercion is *correct* on its own: a
-    list of values does become a list of handles.
-  * `TRACE_CHAIN` -- the `map` closure of the `Expanded` site records
-    `returns=Expanded` (one such closure in the gallery; twelve others
-    record `Widget`), and its `toList()` receiver is `Iterable<Expanded>`.
-
-So the two halves disagree in the *other* direction from what was assumed:
-the closure is declared to return `Expanded` and Dart's static type agrees,
-which makes the element coercion right -- and the closure's **body** has
-already been upcast to `Rc<dyn Widget>` anyway. The box to remove is the
-one inside the closure, not the one after it, and the question for the next
-attempt is what put it there when the closure's own return says `Expanded`.
-Nothing was shipped: five candidate fixes, all reverted, and the shape is
-now pinned to a single closure whose body and declared return disagree.
-
-That is the honest limit here: what is left in the tail is mostly shapes
-whose cause is only visible with the whole gallery in hand, and the
-fixture-first rule this session has kept means they wait for a way to
-reproduce them rather than for a plausible patch.
 
 ## What the fixture harness can and cannot reach
 

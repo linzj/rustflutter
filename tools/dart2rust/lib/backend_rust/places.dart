@@ -411,6 +411,26 @@ augment class RustBackend {
       return 'if ${expr(value.condition)} { ${_returned(_explicitUpcast(value.then))} } '
           'else { ${_returned(_explicitUpcast(value.otherwise))} }';
     }
+    // ..and any other value that is not an object yet. The branch above
+    // knows two ways to make one (`IrNew`, `IrConstInstance`); a *call* is
+    // a third, and the front end narrows `n.abs()` on a `dynamic` receiver
+    // to `f64`'s method, so what is in hand there is an `f64` while the
+    // slot holds an `Rc<dyn Object>` (`NumberFormat.format` and
+    // `_formatFixed`, ws895). Only where the value says what it is: an
+    // expression with no recorded type is left alone, as it was.
+    if (declared != null &&
+        (declared.name == 'dynamic' || declared.name == 'Object') &&
+        declared.arguments.isEmpty &&
+        !isNullable(declared)) {
+      final have = value.rustType;
+      if (have != null &&
+          have.name != 'dynamic' &&
+          have.name != 'Object' &&
+          !have.isFunction) {
+        final adapted = coerceInto(value, declared, _world);
+        if (!identical(adapted, value)) return expr(adapted);
+      }
+    }
     return text;
   }
 
