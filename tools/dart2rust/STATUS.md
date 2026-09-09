@@ -539,7 +539,6 @@ Dart 的循环变量是同一个对象。加 `mut` 只是把「诚实地 panic �
 | 轮 | 规则 / 读数 | 数 |
 |---|---|---|
 | run877 | the reading, after ws875-ws877 | — |
-| ws888 | 复审指出 ws887 的门是字面绊线:`'fails:' not in ...` 被一行 TODO 注释就能打开。换成行为探针——真跑这一轮要用的每个 driver,输出里那个必失败的调用不带 `?` 就拒绝;`--anyway` 从 `testdata/src` 改写进 gitignore 的 `.agree/anyway/` | 探针 21 秒,两个 driver 都当场重现出 `Ok((self.checked(value) * 2.0))`;补上 TODO 注释后旧门放行、新门照拒;`git status` 零改动;check.sh 干净退出,86 条 / 87 checks |
 | ws889 | 两个 fixture driver 现在都发得出 `?`:`_fails` 开头那句 `if (throws == null)` 删掉——它收着一个 `ThrowsAnalysis` 却一行答案都不读,是穿着分析外衣的开关;分析器前端补上 `_callFails`(10 个调用点),两侧共用 `ir.dart` 的 `translatedLibrary`。**顺带撞见这一轮最大的一件事**:删掉那个「什么都不决定」的分析,gallery 输出动了 32,653 行——真正起作用的是它把每个 body 都读了一遍;dill 改成显式 `BinaryBuilder(disableLazyReading: true)` | gallery 仍是 e69150fe(926 模块 / 49 拒绝),eager 读 60 秒 / 1.29 GB;预言机 exit 0,曾经新分叉的 7 个(cascade/failure/freefn/ifnull/mutation/nullcheck/trycatch)重新一致,BEHIND 仍是 16;analyze 86 -> 80,check.sh 上限同步下调 |
 | ws890 | 黄金重生成:32 个文件,driver 已被行为探针证明发得出 `?`,预言机绿着。**验收不是数字**——44 个错误一条不落地读完,归成 7 个根因,全部在生成的代码里,没有一条在 `lib.rs` | lib 139 -> 44 错;`lib.rs` 里另有 317 个是「调用现在返回 Result」的机械改造,还没做,146 个 `#[test]` 仍然全黑;预言机 exit 0,BEHIND 仍 16 |
 | ws890b | 试了 `lib.rs` 的机械改造并**放弃提交**:编译器自己的 span 驱动,317 -> 102 错、289 行改动,然后停手。理由不是难,是**验不了**——那 289 行的唯一检查就是 146 个 test 跑起来,而它们被生成代码里那 44 个错误挡着 | 抽查已见坏编辑(`.collect.unwrap()()`、给一个 `Map` 加 `.unwrap()`);全部回退,`git status` 干净 |
@@ -579,6 +578,7 @@ Dart 的循环变量是同一个对象。加 `mut` 只是把「诚实地 panic �
 | ws956 | **一个浮点字面量做接收者要自己说是 `f64`**——这条规则早就有(HCT 里 21 个 E0689),但它只认**光秃秃的**字面量,而 `math.min(-_kFlingVelocity, ..)` 里那个接收者是一个 `const double` 取负之后折出来的字面量,在 IR 里是 `IrUnary('-', 字面量)`:rustc 眼里它照样是 `{float}`,这边却不认。改成看**值**是不是浮点字面量(穿过取负),并且把后缀写在**字面量身上**——`(-(2.0_f64))`,不是 `(-2.0)_f64`,后缀属于字面量而不属于它外面那层表达式。夹具 `minnegconst` 三种拼法(取负的 const、写在调用里的负字面量、光秃秃的)都覆盖,先红后绿 | stub **108 → 107**(reply 的 `_handleDragEnd`)、拒绝 29、可达 69、0 error;run956 连采五次:707 行 / 类型差异 0 / 0 panic |
 | ws957 | **投影的 `T?` 每过一道边界都要换一次拼法**,radio group 那三个桩是同一件事的三种形状。(a)`??`:`<T as DartNullable>::Or` 是关联类型不是 `Option`,`match` 不了——原来只把**被匹配的那一边**摊平,于是两条臂不一样;要**两边都摊**,再把结果放回这个表达式记着的那个投影里(`registry?.groupValue ?? widget.groupValue`)。(b)**tear-off 的被调方槽**:ws952 只认泛型**方法**自己的类型参数,而泛型**类**的 `T?` 同样是投影(`Registry<T>.changed(T? value)` 撕成 `ValueChanged<T?>`,收到的是体里那个 `Option<T>`)。(c)**绑到 `null` 的 `Let` 什么也不绑**:`null` 没有位置、没有身份、没有副作用,body 读哪儿就把字面量放哪儿——原来那条绑定还是**错的**,因为静态类型 `Null` 的变量拼成 `Option<Null>`,而槽要的是它自己的 `Option<T>`(`registry!.onChanged(null)`)。夹具 `projectednullget` 三种形状都覆盖,先红后绿 | stub **107 → 103**(radio 三个,外加 `_detail_page_route` —— (c) 顺手清的)、拒绝 29、可达 69、0 error;run957 连采五次:707 行 / 类型差异 0 / 0 panic |
 | ws958 | **Dart 的函数子类型是逆变的,Rust 的不是**:`Set.contains(Object?)` 在 Dart 里可以当 `bool Function(String)` 用,而 tear-off 变成的那个闭包按**方法自己的**形参声明,于是 prelude 的 `first_where` 收到 `Fn(Rc<dyn Object>)` 而它要 `Fn(String)`(E0631)。做法:tear-off 落进的那个函数槽记下来(`_expectedTearOff`,和闭包字面量自己的 `_expectedFunction` 分开,免得改了嵌套闭包的降法),闭包按**槽的**形参声明,每个形参在进调用的路上再放宽回方法自己的槽——集合方法那一路借 `_retyped` (生成的调用读的是被调方自己的变量,读完由实参机制放宽),普通那一路借 `passedOn`。夹具 `widetearoff` 覆盖 `firstWhere`、`firstWhere(orElse:)`、`where` 三处,先红(一模一样的 E0631)后绿 | stub **103 → 102**(`commonDirectionalityOf`)、拒绝 29、可达 69、0 error;run958 连采五次:707 行 / 类型差异 0 / 0 panic |
+| ws959 | **rustc 从这个值本身推出来的槽,向上转型就得写出来**。prelude 的泛型和 Dart 的泛型是同一个(`fold<R>(R initial, ..)` 就是 `fold_dart<R>(initial: R, ..)`),所以 `R` 是**从递进去的那个值**读出来的;Rust 在**写明白的**槽上会自己 unsize,而这里没有写明白的槽,于是 `borders.fold<EdgeInsetsGeometry>(EdgeInsets.zero, ..)` 把 `R` 定成了 `Rc<EdgeInsets>`,写在 trait 上的 combine 就对不上了(E0631)。两条:被调方是 `dart:` 的、形参**恰好就是方法自己的类型参数**时,槽取调用写出来的类型实参(`_ownParameterSlots`,与 `_narrowSlots` 合并成 `_preludeSlots`);并且这种槽上的 `IrUpcast` 一律 `explicit`。夹具 `foldwiden` 先红(一模一样的 E0631)后绿 | stub **102 → 100**(`_CompoundBorder.dimensions`,外加顺手清的 `material_tabs.did_update_widget`)、拒绝 29、可达 69、0 error;run959 连采五次:707 行 / 类型差异 0 / 0 panic |
 
 ## 下一步(2026-09-05 重铺)
 
@@ -605,12 +605,12 @@ Dart 的循环变量是同一个对象。加 `mut` 只是把「诚实地 panic �
 trait 泛型方法**已解**(擦除孪生 `m__erased`,ws482/ws494)。6 仍是 **0/168**,
 但 `runtime/` crate 从 09-06 起存在(无头引擎层)。
 
-**(2026-09-10 校注)** 现状:**ws958 102 stub / 29 拒绝 / 69 crate 全可达 / 0 error**,
-运行尺子 run958 **707 行、类型差异 0、0 panic,连采五次一模一样**——尺子从 ws934
+**(2026-09-10 校注)** 现状:**ws959 100 stub / 29 拒绝 / 69 crate 全可达 / 0 error**,
+运行尺子 run959 **707 行、类型差异 0、0 panic,连采五次一模一样**——尺子从 ws934
 起不再抖(根因见〈已知欠账〉第一条),所以「读三次取多数」那套读法可以退休了,
 一次就算数;为了看住回归,每轮仍连采五次。
 
-**剩下的 102 个桩已经没有大簇了**,最大的一族是 3 个(`TickerFuture` 从 `Option`
+**剩下的 100 个桩已经没有大簇了**,最大的一族是 3 个(`TickerFuture` 从 `Option`
 里 await),其余都是一两个;而**拒绝这边还有一族 9 个**——win32 的 `_WindowsMessage`
 / `_WindowingInitRequest` 走 `dart:ffi` 的 `_loadInt32/_loadInt64/_loadPointer` 与
 `Struct` 的 `#fromTypedDataBase`,是 29 个拒绝里唯一还成簇的。按性价比排,下一步值得做的:

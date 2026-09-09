@@ -482,7 +482,7 @@ augment class KernelFrontend {
           instantiated,
           null,
           null,
-          _narrowSlots(node),
+          _preludeSlots(node),
         ),
       );
     } finally {

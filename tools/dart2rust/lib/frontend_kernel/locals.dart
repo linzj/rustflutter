@@ -951,6 +951,60 @@ augment class KernelFrontend {
     return slots.any((s) => s != null) ? slots : null;
   }
 
+  /// A `dart:` method's parameter declared as one of the *method's own*
+  /// type parameters: the slot is the type argument the call wrote out.
+  ///
+  /// The rest of a prelude callee's slots go by shape, because its Rust
+  /// signature is its own (`_calleeTranslated`); this one does not, because
+  /// the prelude is generic over exactly what Dart is -- `fold<R>(R
+  /// initial, ..)` is `fold_dart<R>(initial: R, ..)` -- and Rust infers `R`
+  /// from the value it is handed. A value narrower than the type argument
+  /// therefore fixes `R` to the wrong thing: `borders.fold<
+  /// EdgeInsetsGeometry>(EdgeInsets.zero, ..)` inferred `Rc<EdgeInsets>`
+  /// and the combine, written at the trait, no longer fitted (E0631,
+  /// `_CompoundBorder.dimensions`, ws959).
+  ///
+  /// Only a parameter spelled as the type parameter *itself*: a
+  /// `FutureOr<T>?` or a function type over it is the prelude's own shape
+  /// again (`Completer.complete`, `Iterable.map`).
+  List<IrType?>? _ownParameterSlots(InstanceInvocation node) {
+    final target = node.interfaceTarget;
+    final fn = target.function;
+    final declaring = target.enclosingClass;
+    if (declaring == null ||
+        declaring.enclosingLibrary.importUri.scheme != 'dart' ||
+        fn.typeParameters.isEmpty ||
+        node.arguments.types.length != fn.typeParameters.length) {
+      return null;
+    }
+    IrType? slot(DartType t) {
+      if (t is! TypeParameterType) return null;
+      final at = fn.typeParameters.indexOf(t.parameter);
+      if (at < 0) return null;
+      try {
+        return _type(node.arguments.types[at]);
+      } on Unsupported {
+        return null;
+      }
+    }
+
+    final slots = [for (final p in fn.positionalParameters) slot(p.type)];
+    return slots.any((s) => s != null) ? slots : null;
+  }
+
+  /// The positional slots a `dart:` call's arguments go into: the narrow
+  /// element of a typed list, and the method's own type arguments.
+  List<IrType?>? _preludeSlots(InstanceInvocation node) {
+    final narrow = _narrowSlots(node);
+    final own = _ownParameterSlots(node);
+    if (narrow == null) return own;
+    if (own == null) return narrow;
+    return [
+      for (var i = 0; i < narrow.length; i++)
+        narrow[i] ?? (i < own.length ? own[i] : null),
+    ];
+  }
+
   /// Whether `c` is one of `dart:typed_data`'s lists (`Uint8List`,
   /// `Float64List`, ..): a `Vec` of its element here.
   static bool _typedList(Class c) =>

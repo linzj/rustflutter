@@ -881,15 +881,48 @@ augment class KernelFrontend {
         '${argument.runtimeType} type=${argument.rustType}',
       );
     }
+    // A slot rustc *infers from this very value* has the upcast spelled.
+    // Rust unsizes a handle into a trait object on its own wherever the
+    // slot is written down, and an argument usually is one -- but a
+    // `dart:` method generic over exactly what Dart is generic over
+    // (`fold<R>(R initial, ..)` is `fold_dart<R>(initial: R, ..)`) takes
+    // its `R` *from* the value, so an implicit upcast leaves `R` at the
+    // concrete class and the combine, written at the trait, no longer
+    // fits (E0631, `_CompoundBorder.dimensions`, ws959).
+    final widened = _inferredFromValue(callee, index) && argument is IrUpcast
+        ? (IrUpcast(
+            argument.value,
+            argument.type,
+            handle: argument.handle,
+            explicit: true,
+          )..rustType = argument.rustType)
+        : argument;
     // Into a projected slot of a translated callee: the spelled `T?`.
     return _translatedCallee(callee)
         ? _acrossBinding(
-            argument,
+            widened,
             declaredType,
             _argumentBinding(callee, declaredType),
             toOption: false,
           )
-        : argument;
+        : widened;
+  }
+
+  /// Whether a `dart:` callee's positional parameter `index` is declared as
+  /// one of the *method's own* type parameters, which is what makes rustc
+  /// read the type argument off the value handed in (see `_ownParameterSlots`).
+  bool _inferredFromValue(FunctionNode? callee, int index) {
+    if (callee == null || index >= callee.positionalParameters.length) {
+      return false;
+    }
+    final member = callee.parent;
+    if (member is! Member ||
+        member.enclosingLibrary.importUri.scheme != 'dart') {
+      return false;
+    }
+    final declared = callee.positionalParameters[index].type;
+    return declared is TypeParameterType &&
+        callee.typeParameters.contains(declared.parameter);
   }
 
   /// A closure literal handed to a function-typed parameter returns what
