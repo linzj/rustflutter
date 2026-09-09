@@ -322,6 +322,7 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
   ws898   147 /  38,可达 64 -> 67(l10n 从 app 的 crate 里拆出去)
   ws900   147 /  38,可达 67 -> 69(use 行改从 Kernel 引用写,文本扫描删光)
   ws901   135 /  38,可达 69(counted 普查改读 mixin 应用里的体;引用带上签名类型)
+  ws902   134 /  38,可达 69;运行尺子的渲染树回来了(707 行,类型差异 0)
 
 分区与墙钟(ws898,同一台机器,打桩循环的尾巴):
   改前  merged_gallery_scc 1,026,045 行 / 223 模块,依赖图的尾巴
@@ -485,6 +486,7 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 | ws899 | 黄金 44 个错里 28 个的根因是「夹具 driver 不是同一个编译器」:`dart2rust_kernel.dart` 一个 `TypeEnvironment` 都没建(前端里 34 处读它,全走 null 分支),`const Spacing._(3.0)` 的 `3.0` 因此退化成 `dynamic`,`const` 里发出一次拆箱。另一半:分析器前端一次实参加宽都不做,补上「进对象槽就装箱」(`IrUpcast`,由后端选 `dart_boxed`/`dart_object`/句柄) | testdata **44 → 16** 错;oracle exit 0、BEHIND 16 → 14(`constdirect`/`named_args` 真追上);十个 fx 夹具全 AGREE;gallery 逐字节未动(md5 1aee02ea,拒绝仍 38)——这一轮没碰生产路径 |
 | ws900 | `use` 行一直是从**生成出来的文本**用正则回扫猜出来的,而后端发射时明明知道每个引用指向哪个库——`_ReferenceCollector._member` 手里就是答案,却只留下库和类名、把成员名扔了。改成一次遍历(`referencesOf`)同时交出库、类名、成员,`use` 行照账本写;文本侧十二条补丁一次删完(`_code`/`_identifiersIn`/`_calledIn`/`_boundIn`/`_packageOf`/`everyDefinitionIsAFunction`/`visible`/同包兜底/Dart import 列表/`pub use` 再导出)。账本盖不到的只有**编译器自己发明的名字**,各自在发明处记一笔:`superFn` 与它的 trait 界、类头的 supertrait、`implName`、抽象类的静态、宽 impl 与动态槽两次普查、`_genericOnTrait` 选中的体、被应用的 mixin 体 | stub **147**(未升)、拒绝 38、可达 **67 → 69**、`cargo check --workspace` **0 error**;`dart2rust_package.dart` −290 行;widgets crate 325,924 → 402,903 行(**变大,记债**);oracle exit 0 / BEHIND 14;**run900 红**——账本把 `scheduleMicrotask` 从 `dart:ui` 的空实现改绑到 prelude,microtask 第一次真的跑起来,当场撞上 147 里早就有的那个 `_handle_focus_changed`(下一轮修) |
 | ws901 | run900 停在 `_handle_focus_changed`:`policy.invalidate_scope_data(..)` 要 `&mut self`,而 `policy` 是 `Rc<dyn FocusTraversalPolicy>`。两本普查读的不是同一批体——后端的 `_mutating` 读**降下来的 IR**(里面有 `_policy_data.remove(k)`),前端决定 `counted` 的 `_writesFieldInMethod` 只走类**声明**里的 procedures,而 CFE 把 mixin 的体拷进了匿名**应用**类。让它读同一批:自己的 + 上方匿名应用的 + (是 mixin 声明时)`applications` 里的。顺手把账本欠的三处收了:`_member` 现在也读被引用成员的签名类型(Rust 调用处没有推断——适配实参发射的是被调方的参数类型) | stub **147 → 135**(focus 那组 9 个 + 三处 import 3 个,一个新的都没加)、拒绝 38、可达 69、`cargo check` 0 error;夹具 `mixinmutmap` 先红后绿;oracle exit 0 / BEHIND 14;run901 仍红,但往前挪到了下一个桩(`Completer<void>.complete()`) |
+| ws902 | 两条都在 microtask 刚被叫醒的那条路上。一、`Completer<T?>.complete()` 省略实参是 Dart 的 `complete(null)`,而这里写死成「`Completer<void>`,传 `()`」——改成按接收者的类型实参:`void` 传单元,投影过的 `T?` 用 `from_option`(`IrNullableOf`),其余传 null。二、prelude 的 `_schedule_microtask` 是**同步就地执行**回调的,而 `SCHEDULER.microtasks` 队列和 `run_until_idle` 的排干顺序本来就在——ws900 之前没人调它(名字被解析到 `dart:ui` 那个没有 host 应答的原生上),所以这条一直没被看见。入队后,`FocusManager._markNeedsUpdate` 的回调不再在 build 中途重入 | stub **135 → 134**、拒绝 38、可达 69、0 error;夹具 `completervoid` 先红后绿;**渲染树回来了:707 个节点,与 `ref_render_walk_settled.txt` 类型差异 0**;run903 仍以 panic 收尾——`NotificationListener<T>` 的 `notification is T` 里 `T` 被擦成了界,恒真(下一轮) |
 | ws891 | 第五轮复审抓到:ws889 落地后 `regen.py` 的 `hints()` 会**永远误报**——它按 `'throws:' not in driver` 字面判定,而正确的修法恰恰是把那个参数删掉,所以那条提示从此指向唯一不该做的修法。换成 `DECIDED_IN`:只指出决定写在哪两个函数里,不对文件的现状下任何断言。顺手分开探针的两种失败(没调用 vs 调用了没 `?`) | `fails:` 在 frontend.dart 已 11 处、`throws:` 在 kernel driver 已 0 处——两条提示一条正确变哑、一条永久说谎,实测属实;两个诊断分支各跑一次验过 |
 
 ## 下一步(2026-09-05 重铺)
@@ -842,6 +844,31 @@ ws344 才照到它,一量 26199 个,削到 782。
 int 分支不够:Dart 的 `(-7).abs()` 是 **int 7**,印 `7`;当成 double 印
 `7.0`。要的是按运行时类型的一次真派发,两条臂各自的结果类型也不同。ws895
 只收了装箱那条,int 那条此前是桩 panic、现在是 unwrap panic,run896 没走到。
+
+**(2026-09-09 新增,ws902 量到)`x is T` 在擦除过的类型参数上恒真**
+
+`NotificationListener<T>` 的元素是这样写的:
+
+    if (listener.onNotification != null && notification is T) { .. }
+
+发射出来是
+
+    if { listener.on_notification.clone();
+         notification.dart_cast_to::<dyn Notification>().is_some() } { .. }
+
+两处都错。`is T` 里的 `T` 被擦成了它的界 `Notification`,于是**恒真**:
+`ScrollMetricsNotification` 走进了只接 `ScrollNotification` 的监听器,
+`EditableText.build` 的闭包在里面 `unwrap` 了一个 `None`——run903 就死在这里。
+另一处是 `f != null` 变成了一句被丢掉的 `f.clone();`,这里被非空掩着,但它是
+独立的缺陷。
+
+零件都已经在了:`_typeLiteralParams` 已经找出「被当类型字面量读的擦除参数」,
+`_typeArgumentGetters` 已经给每个这样的参数在 trait 上开了 `_typeArg<C><T>`
+getter、由每个具体子类回答自己的实参;prelude 的 `Type` 已经有
+`id: Option<TypeId>` 这个槽,而 `DartAny::dart_cast(TypeId)` 就是 Dart 的
+`is`。缺的是三件:让 `_TypeLiteralFinder` 也认 `is T` / `as T`;让
+`Type` 在翻译类上带上 `id`;把 `IrIs(x, 擦除的 T)` 降成
+`x.dart_cast(self._type_arg_c_t().id.unwrap()).is_some()`。**下一轮做这条。**
 
 **(2026-09-09 新增,ws900 挖出来的)microtask 从来没跑过,现在跑了**
 

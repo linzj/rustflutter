@@ -534,13 +534,33 @@ augment class KernelFrontend {
         args[i] = _unboxed(args[i]);
       }
     }
-    // `completer.complete()` on a `Completer<void>`: the value is `()`.
+    // `completer.complete()` with the argument left off is Dart's
+    // `complete(null)`, and the prelude's `complete` takes `<T as
+    // DartNullable>::Or` -- so what to pass is the *null of the completer's
+    // own type argument*, which this used to assume was always `void`.
+    // `Route<T>._disposeCompleter` is a `Completer<T?>`, its `Or` is an
+    // `Option`, and `()` there was E0308 (the completervoid fixture; the
+    // stub that stopped run901 once microtasks began running).
     if (owner == 'Completer' &&
         name == 'complete' &&
         (args.isEmpty ||
             (args.length == 1 && node.arguments.positional.isEmpty))) {
+      final held = _staticType(node.receiver);
+      final completed = held is InterfaceType && held.typeArguments.length == 1
+          ? held.typeArguments.single
+          : null;
+      final slot = completed == null ? null : _edgeType(completed);
       return IrCall(_receiver(node.receiver), 'complete', [
-        IrLiteral('()', const IrType('raw')),
+        // `void`'s only value is the unit, and its `Or` is the unit too.
+        if (completed == null || completed is VoidType)
+          IrLiteral('()', const IrType('raw'))
+        // Into a projected `T?` the null crosses by `from_option`, as it
+        // does into any such slot (`IrNullableOf`; a bare `None` there is
+        // "expected associated type").
+        else if (slot != null && slot.projected)
+          IrNullableOf(_nullLiteral(), slot.name, toOption: false)
+        else
+          _nullLiteral(),
       ]);
     }
     // `s[i]` on a String is a one-character String, not an index into a

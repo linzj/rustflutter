@@ -6265,8 +6265,20 @@ pub fn dart_print(object: std::rc::Rc<dyn Object>) {
     println!("{}", dart_object_str_ref(&*object));
 }
 
+/// `dart:async`'s `scheduleMicrotask`, as the translated code reaches it.
+///
+/// Queued, not run: a microtask runs *after* the turn that scheduled it, and
+/// calling it inline re-enters the framework in the middle of a build.
+/// `FocusManager._markNeedsUpdate` schedules one and the callback applies
+/// focus changes; run902 ran it under the build that armed it and came out
+/// with a two-node render tree. `run_until_idle` already drains this queue
+/// ahead of the tasks and the timers, which is Dart's order.
+///
+/// Nothing called this until ws900 -- the importer had been resolving the
+/// name to `dart:ui`'s `_scheduleMicrotask`, whose native no host answers --
+/// so every microtask in the program was dropped and this was never seen.
 pub fn _schedule_microtask(callback: std::rc::Rc<dyn Fn() -> Result<(), DartError>>) {
-    run_callback("a microtask", || callback());
+    schedule_microtask(Box::new(move || callback()));
 }
 
 thread_local! {
