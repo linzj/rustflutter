@@ -346,15 +346,21 @@ augment class RustBackend {
         return 'vec![${expr(args[1])}; ${expr(args[0])} as usize]';
       }
       // ..and `List.unmodifiable(xs)`: a copy that nothing here writes to.
+      //
+      // `List.from(xs, growable: false)` is the same copy: a `Vec` is always
+      // growable and the flag changes nothing that can be said here.
+      //
+      // A copy of a *list* is a clone; a copy of any other iterable has to
+      // be collected. `List<_ListenerEntry>.from(_listeners!)` on a
+      // `LinkedList` came out as a `LinkedList` in a `Vec` slot
+      // (`_ScrollNotificationObserverState._notifyListeners`; the
+      // listfromiterable fixture).
       if ((name == 'from' || name == 'of' || name == 'unmodifiable') &&
-          args.length == 1) {
-        return '${expr(args[0])}.clone()';
-      }
-      // `List.from(xs, growable: false)`: a `Vec` is always growable and a
-      // copy is a copy; the flag changes nothing that can be said here.
-      if ((name == 'from' || name == 'of' || name == 'unmodifiable') &&
-          args.length == 2) {
-        return '${expr(args[0])}.clone()';
+          (args.length == 1 || args.length == 2)) {
+        final have = args[0].rustType;
+        return have != null && have.name != 'List' && !have.isFunction
+            ? '${expr(args[0])}.to_list()'
+            : '${expr(args[0])}.clone()';
       }
       if (name == 'empty' && args.isEmpty) return 'Vec::new()';
       throw Unsupported(

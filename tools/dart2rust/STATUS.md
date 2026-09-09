@@ -324,6 +324,7 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
   ws901   135 /  38,可达 69(counted 普查改读 mixin 应用里的体;引用带上签名类型)
   ws902   134 /  38,可达 69;运行尺子的渲染树回来了(707 行,类型差异 0)
   ws905   134 /  38,可达 69;`is T` 不再恒真,运行尺子往前走到旧桩上
+  ws906   133 /  38,可达 69;`List.from` 非列表要收集
 
 分区与墙钟(ws898,同一台机器,打桩循环的尾巴):
   改前  merged_gallery_scc 1,026,045 行 / 223 模块,依赖图的尾巴
@@ -489,6 +490,7 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 | ws901 | run900 停在 `_handle_focus_changed`:`policy.invalidate_scope_data(..)` 要 `&mut self`,而 `policy` 是 `Rc<dyn FocusTraversalPolicy>`。两本普查读的不是同一批体——后端的 `_mutating` 读**降下来的 IR**(里面有 `_policy_data.remove(k)`),前端决定 `counted` 的 `_writesFieldInMethod` 只走类**声明**里的 procedures,而 CFE 把 mixin 的体拷进了匿名**应用**类。让它读同一批:自己的 + 上方匿名应用的 + (是 mixin 声明时)`applications` 里的。顺手把账本欠的三处收了:`_member` 现在也读被引用成员的签名类型(Rust 调用处没有推断——适配实参发射的是被调方的参数类型) | stub **147 → 135**(focus 那组 9 个 + 三处 import 3 个,一个新的都没加)、拒绝 38、可达 69、`cargo check` 0 error;夹具 `mixinmutmap` 先红后绿;oracle exit 0 / BEHIND 14;run901 仍红,但往前挪到了下一个桩(`Completer<void>.complete()`) |
 | ws902 | 两条都在 microtask 刚被叫醒的那条路上。一、`Completer<T?>.complete()` 省略实参是 Dart 的 `complete(null)`,而这里写死成「`Completer<void>`,传 `()`」——改成按接收者的类型实参:`void` 传单元,投影过的 `T?` 用 `from_option`(`IrNullableOf`),其余传 null。二、prelude 的 `_schedule_microtask` 是**同步就地执行**回调的,而 `SCHEDULER.microtasks` 队列和 `run_until_idle` 的排干顺序本来就在——ws900 之前没人调它(名字被解析到 `dart:ui` 那个没有 host 应答的原生上),所以这条一直没被看见。入队后,`FocusManager._markNeedsUpdate` 的回调不再在 build 中途重入 | stub **135 → 134**、拒绝 38、可达 69、0 error;夹具 `completervoid` 先红后绿;**渲染树回来了:707 个节点,与 `ref_render_walk_settled.txt` 类型差异 0**;run903 仍以 panic 收尾——`NotificationListener<T>` 的 `notification is T` 里 `T` 被擦成了界,恒真(下一轮) |
 | ws905 | `x is T` 在擦除过的类型参数上**恒真**(夹具 `iserased` 给的是错答案:`Sink<ScrollNote>().accepts(MetricsNote())` rust true / dart false)。`_typeArgumentGetters` 只给抽象/open 类开 `_typeArg<C><T>` getter——具体类没有子类能回答,只有 `new` 那一处知道。改成:被自己的体当类型读、且**界是一个具体翻译类**的参数不擦(界读自声明,不读实例化普查——普查是边降边填的,先降的库和后降的库会给出不同答案,`WidgetStateMapper` 就在一个模块里是泛型、另一个里不是);留住还要**顺着实参传播**——`NotificationListener<T>.createElement()` 造 `_NotificationElement<T>`,而那个签名里没有它,得走构造调用的类型实参 | stub **134**(集合与 ws903 完全相同,零进零出)、拒绝 38、可达 69、0 error;夹具 `iserased` 先红后绿;run905 渲染树 707 行 / 类型差异 0,`editable_text` 那个 panic 没了,现在停在 `_ScrollNotificationObserverState._notify_listeners`——134 个旧桩里的一个 |
+| ws906 | `List.from(xs)` 发的是 `xs.clone()`——只有 `xs` 已经是 `Vec` 时才对。`List<_ListenerEntry>.from(_listeners!)` 的 `_listeners` 是 `LinkedList`,于是一个 `LinkedList` 落进 `Vec` 槽。按实参的 Rust 类型分:是列表就克隆,不是就 `to_list()` 收集 | stub **134 → 133**、拒绝 38、可达 69、0 error;夹具 `listfromiterable` 先红后绿;run906 越过了 `_notify_listeners`,停在 `RenderObjectElement.renderObject` 的 `unwrap`——`_LayoutBuilderElement` 在 `didChangeDependencies` 里取渲染对象,而它还没挂上(microtask 醒来后才走到的一条新路) |
 | ws891 | 第五轮复审抓到:ws889 落地后 `regen.py` 的 `hints()` 会**永远误报**——它按 `'throws:' not in driver` 字面判定,而正确的修法恰恰是把那个参数删掉,所以那条提示从此指向唯一不该做的修法。换成 `DECIDED_IN`:只指出决定写在哪两个函数里,不对文件的现状下任何断言。顺手分开探针的两种失败(没调用 vs 调用了没 `?`) | `fails:` 在 frontend.dart 已 11 处、`throws:` 在 kernel driver 已 0 处——两条提示一条正确变哑、一条永久说谎,实测属实;两个诊断分支各跑一次验过 |
 
 ## 下一步(2026-09-05 重铺)
