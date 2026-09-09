@@ -385,7 +385,6 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 
 | 轮 | 规则 / 读数 | 数 |
 |---|---|---|
-| ws828 | N catch clauses are one catch that dispatches on the type | stub **202**,拒绝 70,可达 64 |
 | ws830 | `jsonEncode`, by the value's own type | stub **203**,拒绝 69,可达 64 |
 | ws831 | the `toEncodable` shape | stub **202**,拒绝 69,可达 64 |
 | ws832 | `const Stream()`, `stdout`, and a generic local function that needs its call site too | stub **203**,拒绝 64,可达 64 |
@@ -425,6 +424,7 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 | ws881 | 两个 god class 各拆成一个目录的 part(`augment class`),搬运零改字 | stub **152**,拒绝 49,可达 64;**生成的 Rust 与拆前逐字节相同** |
 | ws882 | part 文件再切细:按成员边界切进两个 5k 文件,最大 part 1,841 行 | **生成的 Rust 与拆前逐字节相同**(md5 4429c8f1),故 152/49/64 不变——这一轮只跑了翻译,没跑 cargo 九轮 |
 | ws883 | `_expressionRaw` 1,717 行一个方法拆成十段 run,`the_class` 再切四份;最大 part 1,452 | **生成的 Rust 仍与拆前逐字节相同**(md5 4429c8f1) |
+| ws884 | 拒绝回滚的名单补全(9→22 字段)并加 `bin/statecheck.py` 守住 | stub **152**,拒绝 49,可达 64;**生成的 Rust 一字未动**——是陷阱不是活 bug |
 
 ## 下一步(2026-09-05 重铺)
 
@@ -625,6 +625,30 @@ ws601:  722 stub / 252 拒绝 / 63 crate 全可达(138 分区,延迟库合并后
   把关键字从副本上摘掉、用同一个 SDK 的同一个 formatter 跑、再放回去。
   `bin/check.sh` 和 `.githooks/pre-commit` 都走它。dart_style 哪天认了
   `augment`,把 `bin/fmt.py` 删掉换回 `dart format` 就行。
+
+## 隐式状态:量出来的形状(ws884,2026-09-09)
+
+评审说「隐式可变上下文是自招的 bug 农场」,点名 `ws478 一个拒绝把
+`_expectedReturn` 留给了下一个成员`。量下来,这个病有个很具体的形状,
+而且两半的答案是相反的:
+
+- **前端**的逐成员 `catch`(`declarations.dart`)**什么都不还原**,所以它
+  靠的是每一处自己的 `try/finally`——24 处,一处不漏。
+- **后端**靠中央回滚 `RustBackend._member`,注释写着「every scrap of state
+  a member's emission sets」。**但它是一份手写名单,只列了九个**,而到
+  2026-09-09 已经有 13 个字段在别处被加进来没同步:`_asyncBody`、
+  `_boundByValue`、`_cellLocals`、`_closureCaptured`、`_fallsOff`、
+  `_inFlowClosure`、`_inSuperFn`、`_lateCellLocals`、`_lendingClosure`、
+  `_methodTypeParams`、`_returns`、`_selfBinding`、`_spellsReturn`。
+
+补全之后 **生成的 Rust 一个字节没变**——所以这 13 个是**潜在**的,不是正在
+生效的:今天 gallery 里没有哪个拒绝落在会让它们被下一个成员读到的位置。
+修是对的(它是个陷阱),但不能说它修好了什么。
+
+`bin/statecheck.py` 现在同时管住两条规则,进了 `bin/check.sh`。它管不到的
+一件事写在它自己的文档注释里:**在一个成员内部**被接住的拒绝,仍然会跳过
+后端某个 scope 自己的还原,而守卫要到成员结束才跑。今天没有这种写法;
+真出现了,后端那些 scope 就得**同时**有 `try/finally`,而不是二选一。
 
 ## 已知欠账
 

@@ -23,6 +23,10 @@ echo "== dart format (via bin/fmt.py: dart_style cannot read `augment`) =="
 python3 bin/fmt.py --check || status_fmt=1
 
 echo
+echo "== state a refusal would leave behind =="
+python3 bin/statecheck.py || status_state=1
+
+echo
 echo "== dart analyze =="
 # Warnings do not fail the run yet: `lib/frontend.dart`, the analyzer front
 # end the Kernel one replaced, no longer compiles against the current
@@ -31,7 +35,7 @@ dart analyze --no-fatal-warnings lib bin test || true
 
 echo
 echo "== tests =="
-status=${status_fmt:-0}
+status=$(( ${status_fmt:-0} | ${status_state:-0} ))
 for t in test/*_test.dart; do
     dart run $DART2RUST_EXPERIMENTS "$t" || status=1
 done

@@ -328,6 +328,13 @@ class RustBackend {
     // work", one level down: a refusal has to undo the *state* as well as the
     // output, and listing it here is cheaper than remembering a `finally` at
     // each of the dozen places that set some.
+    //
+    // The list below said "every scrap" and named nine. `bin/statecheck.py`
+    // counted the fields a member's emission actually saves and restores
+    // around a call that can refuse, and found thirteen more (2026-09-09) --
+    // the list had gone stale the ordinary way, one field at a time. The
+    // check now fails if it happens again, which is the only reason a list
+    // like this can be trusted.
     final selfName = _selfName;
     final fieldsAreAccessors = _fieldsAreAccessors;
     final inTrait = _inTrait;
@@ -337,6 +344,19 @@ class RustBackend {
     final failure = _failure;
     final rustReturns = _rustReturns;
     final implBinding = _implBinding;
+    final asyncBody = _asyncBody;
+    final boundByValue = _boundByValue;
+    final cellLocals = _cellLocals;
+    final closureCaptured = _closureCaptured;
+    final fallsOff = _fallsOff;
+    final inFlowClosure = _inFlowClosure;
+    final inSuperFn = _inSuperFn;
+    final lateCellLocals = _lateCellLocals;
+    final lendingClosure = _lendingClosure;
+    final methodTypeParams = _methodTypeParams;
+    final returns = _returns;
+    final selfBinding = _selfBinding;
+    final spellsReturn = _spellsReturn;
     try {
       body();
       return true;
@@ -374,6 +394,19 @@ class RustBackend {
       _failure = failure;
       _rustReturns = rustReturns;
       _implBinding = implBinding;
+      _asyncBody = asyncBody;
+      _boundByValue = boundByValue;
+      _cellLocals = cellLocals;
+      _closureCaptured = closureCaptured;
+      _fallsOff = fallsOff;
+      _inFlowClosure = inFlowClosure;
+      _inSuperFn = inSuperFn;
+      _lateCellLocals = lateCellLocals;
+      _lendingClosure = lendingClosure;
+      _methodTypeParams = methodTypeParams;
+      _returns = returns;
+      _selfBinding = selfBinding;
+      _spellsReturn = spellsReturn;
     }
   }
 

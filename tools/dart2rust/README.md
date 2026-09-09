@@ -201,11 +201,37 @@ the way in -- it takes the keyword off a copy, runs the same formatter from
 the same SDK, and puts it back. `bin/check.sh` and the pre-commit hook both go
 through it.
 
+## What a refusal leaves behind
+
+The compiler refuses what it does not understand, which means a member's
+lowering can stop anywhere. Whatever state it had set is then charged to the
+*next* member unless something puts it back, and this has cost real rounds: a
+refused constructor once left `_selfName` as `__new` and every later method in
+that class read its fields off a name that does not exist there -- 97 `E0425`s
+in `SemanticsFlags` alone.
+
+The two halves answer it in opposite ways, and `bin/statecheck.py` holds each
+to its own rule:
+
+* The **front end**'s per-member `catch` restores nothing, so every scope it
+  opens is a `try/finally` -- 24 of them, and the check fails on a 25th
+  written without one.
+* The **back end** rolls back centrally in `RustBackend._member`, which is
+  cheaper than remembering a `finally` at each of the sixteen places that set
+  something -- but it is a list, and a list goes stale. Its comment said
+  "every scrap of state a member's emission sets" and named nine; thirteen
+  more had been added elsewhere by 2026-09-09. The check now recomputes what
+  belongs there and fails when the list is short.
+
+Closing that gap changed nothing the gallery can see -- the generated Rust is
+byte for byte what it was -- so it was a trap rather than a live bug. It is
+still shut.
+
 ## Checks
 
     bin/check.sh
 
-Formatting, `dart analyze` and `test/`. Neither existed before 2026-09-09: with no
+Formatting, the refusal-rollback check, `dart analyze` and `test/`. Neither existed before 2026-09-09: with no
 `.dart_tool/package_config.json` in this directory the analyzer could not
 resolve `package:kernel`, so it had never been run, and the compiler reached
 51k lines with it off. The first run found 165 issues, among them a dropped
