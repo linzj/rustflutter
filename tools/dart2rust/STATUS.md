@@ -423,6 +423,21 @@ Dart 的循环变量是同一个对象。加 `mut` 只是把「诚实地 panic �
 把 `List<T>` 换成 `Rc<RefCell<Vec<T>>>`(work.md 第 3 条)。夹具 `forinmut`
 留着并且**预期是红的**,和 `ffistruct` 一样——它是那个改动的验收条件。
 
+**(2026-09-10,ws945/946 试过又撤回;两次都更坏)** 让「落进可空槽的 `null` 字面量
+带上那个槽的类型」。动机是真的:后端早就有「知道槽就写 `None::<T>`」那条规则,
+而一个被提升成临时变量的 `null` 出来是 `let __t12: Option<Null> = None`,
+被调用方要的是 `Option<Rc<dyn ScrollController>>`。
+
+第一版(只要 `_type(param)` 拼得出来就记上):**拒绝 32 → 37**,五个构造函数
+翻不出来了。第二版按后端那条规则的闸收窄(可空、非投影、非函数、不是
+`Null`/`dynamic`):拒绝回到 32,前四轮的错也少了——**而第 5 轮 2019 个错**
+(ws943 同一轮是 16),诊断直接撑爆 512 MB。
+
+原因是这个改动只改了**记录的类型**,没改**发出来的东西**:`None` 还是那个
+`None`,而下游每一处 coerce 从此都以为这个值已经在槽的类型上了,该转的不转。
+要做对,得让「记类型」和「发 `None::<T>`」是同一件事——也就是在这里就把字面量
+换成一个带类型的节点,而不是给旧节点贴个标签。
+
 近期的(细节在活账/git):
 
 - **ws879**:泛型局部函数(`T? effectiveValue<T>(..)`,4 个拒绝)——声明按 bound 擦除、
@@ -507,7 +522,6 @@ Dart 的循环变量是同一个对象。加 `mut` 只是把「诚实地 panic �
 | 轮 | 规则 / 读数 | 数 |
 |---|---|---|
 | run877 | the reading, after ws875-ws877 | — |
-| ws879 | 泛型局部函数:翻得出来,编不过,整轮撤回(见〈撤回与作废〉) | stub **152**,拒绝 49,可达 64(未动) |
 | ws880 | 编译器自身:装回分析器与单测,四份变异名表并作一处,删死码 387 行 | stub **152**,拒绝 49,可达 64;**生成的 Rust 与 `HEAD~1` 逐字节相同** |
 | ws881 | 两个 god class 各拆成一个目录的 part(`augment class`),搬运零改字 | stub **152**,拒绝 49,可达 64;**生成的 Rust 与拆前逐字节相同** |
 | ws882 | part 文件再切细:按成员边界切进两个 5k 文件,最大 part 1,841 行 | **生成的 Rust 与拆前逐字节相同**(md5 4429c8f1),故 152/49/64 不变——这一轮只跑了翻译,没跑 cargo 九轮 |
@@ -546,6 +560,7 @@ Dart 的循环变量是同一个对象。加 `mut` 只是把「诚实地 panic �
 | ws938/939 | **同一条继承链上参数不一致时,方向应该是「都擦」而不是「都不擦」——但只在两边都担得起的时候**。`_InheritedProviderScopeElement<T> implements InheritedContext<T>`:下面被真实流点标了(`element = this` 落进 `_InheritedProviderScopeElement<T?>` 的槽),上面没标,原规则把两边一起丢掉,于是 provider 六个成员手里是 `X<T>`、声明写的是 `X<T?>`。先试「一律往上抬」(ws938):清掉那 6 个,却因为把 `Animatable.T` 也擦了而**新增 7 个**(`Tween.lerp`、滑块 demo 的 `paint`……),净 +1,**撤回**。加一道闸再来(ws939):**只在这个位置上每一个传自己参数进来的子类都已经标了的时候才抬**——`InheritedContext` 只有一个子类且已标,`Animatable` 有 `TweenSequence`/`_ChainedEvaluation` 没标,于是只抬前者。`DART2RUST_RAISE=0` 退回原来的丢弃 | stub **119 → 113**(逐条比新增 **0**,少的正是 provider 的 `build`/`mount`/`unmount`/`update` 那一族六个)、拒绝 33、可达 69、0 error;run939 连采五次:707 行 / 类型差异 0 / 0 panic |
 | ws940 | **被树摇空了的增强枚举,现在照样发出它的变体**。原来的规则是:增强枚举(每个变体带自己的字段)如果那些字段的值从常量里读不回来,就整个发成空枚举——理由写着「不然就会把它当普通枚举发、把成员丢掉」。可是空枚举**把成员和名字一起丢了**,而且是悄悄地:`enum KeyboardLockMode {}`,于是 `KeyboardLockMode::NumLock` 指着一个不存在的变体、`Set<KeyboardLockMode>` 连 `DartEq` 都没有。变体发出来之后,只有真去读那份状态的成员编不过,而编不过就是一个桩——看得见,一个一个数得清。`valueFields` 仍旧是空的,所以那份状态不发 getter | stub **113 → 112**、拒绝 **33 → 32**(`KeyboardLockMode.findLockByLogicalKey` 从「拒绝」变成一个桩,`handle_key_event` 和 `_should_accept_num_lock` 两个桩清掉)、可达 69、0 error;run940 连采五次:707 行 / 类型差异 0 / 0 panic |
 | ws943 | **`a ?? b` 两边是同一个类、但类型实参不同时,左边的拼法只有在右边真放得进去的时候才算数**。`children ?? buttonItems` 一边是 `List<Widget>`、一边是 `List<ContextMenuButtonItem>`,Dart 说整个是 `List<Object>`;而 `lub` 的判定只比 `classNode`,两边都是 `List` 就取了左边,于是右边逐元素被抬成一个它并不实现的 `Widget`。判定改成「类不同**或者**右边不是左边的子类型」(`typeEnvironment.isSubtypeOf`)。夹具 `ifnulllub` 先红(3 个编译错)后绿 | stub **112 → 110**(逐条比新增 **0**,少了两个 `adaptive_text_selection_toolbar.rs` 的 `build`)、拒绝 32、可达 69、0 error;run943 连采五次:707 行 / 类型差异 0 / 0 panic |
+| ws947 | `String.fromCharCodes(codes)` 是前端手写的一条 prelude 调用,而它的实参**一个转换都没走**:`Uint8List` 是 `Vec<u8>`,prelude 收 `Vec<i64>`。手写的 prelude 调用得自己要那次加宽(`_widensNarrowElements` 给别的 `List<int>` 槽做的那次)| stub **110 → 109**(逐条比新增 **0**,少了 `crypto_below/src/digest.rs` 的 `_hex_encode`)、拒绝 32、可达 69、0 error;run947 连采五次:707 行 / 类型差异 0 / 0 panic |
 | ws891 | 第五轮复审抓到:ws889 落地后 `regen.py` 的 `hints()` 会**永远误报**——它按 `'throws:' not in driver` 字面判定,而正确的修法恰恰是把那个参数删掉,所以那条提示从此指向唯一不该做的修法。换成 `DECIDED_IN`:只指出决定写在哪两个函数里,不对文件的现状下任何断言。顺手分开探针的两种失败(没调用 vs 调用了没 `?`) | `fails:` 在 frontend.dart 已 11 处、`throws:` 在 kernel driver 已 0 处——两条提示一条正确变哑、一条永久说谎,实测属实;两个诊断分支各跑一次验过 |
 
 ## 下一步(2026-09-05 重铺)

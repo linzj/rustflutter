@@ -294,9 +294,19 @@ augment class KernelFrontend {
     if (owner == 'String' &&
         target.name.text == 'fromCharCodes' &&
         positional.length >= 1) {
-      return IrStaticCall(null, 'string_from_char_codes', [
-        expression(positional[0]),
-      ]);
+      // `Uint8List` is a `Vec<u8>` and the prelude's takes a `Vec<i64>`:
+      // the widening every other `List<int>` slot gets
+      // (`_widensNarrowElements`), which a hand-written prelude call has
+      // to ask for itself (`Digest._hexEncode` builds its char codes in a
+      // `Uint8List`, ws945).
+      var codes = expression(positional[0]);
+      final held = _staticType(positional[0]);
+      final narrow = held is InterfaceType ? _narrowElement(held) : null;
+      if (narrow != null && narrow != 'f32' && narrow != 'f64') {
+        codes = IrCall(codes, '!widen', const [])
+          ..rustType = IrType('List', arguments: [const IrType('int')]);
+      }
+      return IrStaticCall(null, 'string_from_char_codes', [codes]);
     }
     // ..and `String.fromCharCode(code)`, one rune (`Icon.build` spells the
     // glyph of an `IconData.codePoint`, run695).
