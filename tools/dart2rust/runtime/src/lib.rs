@@ -82,6 +82,12 @@ pub fn report() {
             ),
         }
     }
+    // `DART2RUST_COUNT_COPIES=1`: what the `Iterable` handle costs in
+    // whole-collection copies (`copy_counts_report`). Empty when off.
+    let copies = dart_prelude::copy_counts_report();
+    if !copies.is_empty() {
+        eprint!("{}", copies);
+    }
     let frames = FRAMES.with(|f| *f.borrow());
     let panicked = FRAME_PANICS.with(|f| *f.borrow());
     let messages = MESSAGES.with(|m| m.borrow().clone());

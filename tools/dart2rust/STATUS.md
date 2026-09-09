@@ -329,6 +329,7 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
   ws908   133 /  38,可达 69;`Iterable` 成了 trait(`dyn DartIterable` 0 -> 660 处 / 126 个文件),`OverlayState.rearrange` 掉了
   ws909   132 /  38,可达 69;窄元素列表的加宽排到装箱之前
   ws910   132 /  38,可达 69;`Map` 的索引按版本而不是按条数判有效——**运行尺子回来了**:432 帧 0 panic、渲染树 707 行、与 ref 类型差异 0
+  ws911   130 /  38,可达 69;界是 `Iterable` 的类型参数,槽跟着声明走;装箱不再无条件克隆(274 -> 42 处)
 
 分区与墙钟(ws898,同一台机器,打桩循环的尾巴):
   改前  merged_gallery_scc 1,026,045 行 / 223 模块,依赖图的尾巴
@@ -499,6 +500,7 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 | ws908 | `Iterable` 早就是一个 trait(`DartIterable`),`Vec` 和 `Set` 都实现了它,而生成的 Rust 里 `dyn DartIterable` 出现 **0 次**:类型下降见到 Dart 的 `Iterable` 就无条件写成 `Vec<T>`,于是「静态类型写着 `Iterable`、手里是 `Set` 或 `LinkedList`」的位置每次都是类型错误。先量两个数再动手——`Iterable` 作为槽出现 **1662** 处(在类型下降处打点,不是文本 grep);一个体向 `Iterable` 要的成员是 **25 个名字 501 处**(`toList` 148、`forEach` 78、`where` 39、`first` 33)。既然要的东西都写在列表上,trait 就只带两件列表做不到的事:`iterator` 和 `dart_to_list`;`Iterable<T>` 落成 `Rc<dyn DartIterable<T>>`,`Vec`/`Set`/`VecDeque`/`LinkedList` 各一个 impl。边界只有两句话:**翻译过的代码说 `Iterable`,prelude 说 `List`**——prelude 成员产出的 `Iterable` 按 `List` 记账(`expression` 的收尾),prelude 形参的 `Iterable` 槽按 `List` 记账(`_overList`),其余全部交给 `coerceInto` 的一进一出两条规则。顺带删掉四条现在说的是假话的旧账:`normalName` 里 `Iterable => List`(把两个不同的 Rust 类型当成同一个,`sameRust` 每处都因此放行),后端 `_returned` 里那条返回时装箱的补丁(返回值本来就走 `_widened`),`_widenedInto` 里那条往翻译过的 `Iterable` 形参装箱的特例(通用 `coerce` 会做,而且它会先按元素类型转换),以及 `dart:` 的几个 Set 类不在 `normalName` 里 | stub **133**(集合一进一出:`OverlayState.rearrange` 掉了——`LinkedHashSet` 一直是以陌生人的身份走过每一条 `Set` 规则的,ws638 起挂到今天;新挂 `hash_sink._finalizeData`,`Uint8List` 的元素加宽被装箱抢在了前面)、拒绝 38、可达 69、0 error;`dyn DartIterable` **0 → 660 处 / 126 个文件**;夹具 `iterableread`、`iterableparam`、`listfromiterable` 三绿;run918 与 run907 **逐字节相同**(同一处 `widgets_framework.rs:5471` 的 `unwrap`,同样 18 帧、同样两行渲染树)——运行尺子没被这一轮动过 |
 | ws909 | ws908 换进来的那个桩:`Uint8List` 是 `Vec<u8>`,`Uint8Buffer.addAll(Iterable<int>)` 的槽是 `Rc<dyn DartIterable<i64>>`,中间要一次 `!widen`(`v as i64`)。那条规则在 `_widenedInto` 的**尾巴**上——ws907 时通用 `coerce` 对这两个是恒等,所以尾巴跑得到;现在 `coerce` 在中间就装箱返回了,尾巴再也到不了。把判定抽成 `_widensNarrowElements`,槽是 `Iterable` 时在 `coerce` **之前**先加宽,尾巴上那条留给 `List` 槽并加一位「已经加过」 | stub **133 → 132**(与 ws907 的集合逐条比:新增 0,少了 `OverlayState.rearrange`)、拒绝 38、可达 69、0 error;夹具 `iterableread`/`iterableparam`/`listfromiterable` 三绿;新写的 `iterablebound` **是红的**,它钉住的是下一条:界是 `Iterable<E>` 的类型参数,声明按界拼、实参的槽却按实例化拼(`equality.rs` 三个桩) |
 | ws910 | 渲染树从 ws906 起就塌成两行,STATUS 记的线索是「6488 次卸载里 1192 次 `_dependents.remove` 没命中」。根因不在 Element 那一侧,在 prelude 的 `Map`:它维护一个惰性索引,而**索引是否还有效是拿建索引时的条数和现在的条数比出来的**。条数会回来。八条以下查找走线性扫描、索引根本不维护,于是一张跌破八条又长回同样条数的表,带着为**已经不在了的那批条目**建的索引被当成有效的:`contains_key` 对在场的键说不在、`remove` 找不到东西删、`insert` 把一个它看不见的键又追加了一遍。`InheritedElement._dependents` 每一帧都在做这件事——同一个元素被插了两次、只删掉一次,失效的 `_LayoutBuilderElement` 就留在依赖表里被通知,`renderObject` 拿 `None` 去 `unwrap`。改成一个 `version` 计数器:每一次改动 `entries` 都自增,索引记下它建立时的版本,追加是唯一能顺着走而不用重建的改动 | stub **132**、拒绝 38、可达 69、0 error;夹具 `mapindexstale` 由错答案(rust `11/12/4/null/107/null`,dart `11/11/8/103/107/11`)转绿;**run921:0 panic、432 帧(run919 是 18 帧)、渲染树 707 行、与 `ref_render_walk_settled.txt` 的类型差异 0** |
+| ws911 | 三件。一、**界是 `Iterable<E>` 的类型参数,声明按界拼、实参的槽却按实例化拼**:`_type` 把 `T extends Iterable<E>` 拼成界(现在是 `Rc<dyn DartIterable<E>>`),而 `_landingSlot` 把接收者的 `T := Set<E>` 代进去,说槽收 `Set`,于是 `coerceInto` 觉得两边同型、原样放行。让 `_landingSlot` 对这种参数交回 null,`_argument` 也按声明走(`_atBound`),读的一侧 `_listReceiver` 认得这种接收者(`_iterableSpelling`)。**只对 `Iterable` 界**——`_spelledAsBound` 还答 `String`/`int`/`double`/`bool`/`List`,那几种实例化和拼写同型,拿声明去换是把对的换错。二、**装箱不再无条件克隆**:`!as_iterable` 原先总补 `.clone()`,理由写的是「接收者常常是借用」,而对着生成的 Rust 数,`&Vec<`/`&Set<` 各 0 处,只有 26 个 `&mut Vec<` 形参是真借用;问一句「`expr` 发出来的东西已经是自己的了吗」(`_ownedWhenSpelled`:调用、字面量、构造、块值是,裸局部不是)。三、**给复制挂上计数器**(`DART2RUST_COUNT_COPIES`),这是第 3 条大改动的前置 | stub **132 → 130**(与 ws921 逐条比:新增 0,少了 `equality.rs` 的 `hash`/`equals`)、拒绝 38、可达 69、0 error;夹具 `iterablebound` 先红后绿;装箱里还带 `.clone()` 的 **274 → 42**(共 280 处装箱);run924 树 707 行、类型差异 0、0 panic |
 | ws891 | 第五轮复审抓到:ws889 落地后 `regen.py` 的 `hints()` 会**永远误报**——它按 `'throws:' not in driver` 字面判定,而正确的修法恰恰是把那个参数删掉,所以那条提示从此指向唯一不该做的修法。换成 `DECIDED_IN`:只指出决定写在哪两个函数里,不对文件的现状下任何断言。顺手分开探针的两种失败(没调用 vs 调用了没 `?`) | `fails:` 在 frontend.dart 已 11 处、`throws:` 在 kernel driver 已 0 处——两条提示一条正确变哑、一条永久说谎,实测属实;两个诊断分支各跑一次验过 |
 
 ## 下一步(2026-09-05 重铺)
@@ -686,6 +688,34 @@ ws344 才照到它,一量 26199 个,削到 782。
 真出现了,后端那些 scope 就得**同时**有 `try/finally`,而不是二选一。
 
 ## 已知欠账
+
+**(2026-09-09 量出来的三个数,ws911)**
+
+- **一次完整启动里,整表复制发生 86259 次、复制了 440334 个元素**
+  (`DART2RUST_COUNT_COPIES=1`,run924):
+
+  ```
+  Vec::dart_to_list   calls=71735  elements=426869  longest=119
+  Vec::iterator       calls=14524  elements=13465   longest=1
+  Set::dart_to_list   calls=0      Set::iterator    calls=0
+  ```
+
+  平均一张表 **5.95 个元素**,最长 119。元素几乎都是 `Rc`,复制一个是一次
+  引用计数加一。**这是把 `List<T>` 从 `Vec<T>` 换成 `Rc<RefCell<Vec<T>>>`
+  之前要拿到的数**:它说这些复制是四十几万次引用计数,不是热点,所以那个
+  改动要靠**语义**(别名写得回去、`identical` 对列表不再恒假)来立论,
+  不能靠性能。
+
+- **渲染树尺子在 60 秒预算的边界上会抖**:同一个二进制连跑三次,两次是
+  707 行 / 432 帧,第三次是 2 行 / **433** 帧——多画的那一帧把树清空了。
+  run922 的 2 行、run925 的 6 行都是这个,不是当轮改动。**对这把尺子的
+  读数要么连跑三次取多数,要么把预算从「秒」换成「帧」**(`DART2RUST_
+  RUN_SECONDS` -> 帧数),后者才是能跨机器复现的写法。没做,记在这里。
+
+- **`gallery_above` 那 42 秒是冷缓存,不是 crate 重**:`touch` 它的源码后
+  连续两次 `cargo build -p dart_main` 是 **8.1 秒 / 7.8 秒**。所以「给大库
+  分子模块」这条不要做,该想的是别让 build 那份增量缓存每轮都作废
+  (链子重写了全部源码)。
 
 **(2026-09-09 新增,ws908 自己换出来的)**
 

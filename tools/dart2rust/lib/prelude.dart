@@ -72,6 +72,70 @@ pub trait DartIterator<T> {
     fn current(&self) -> T;
 }
 
+/// How often a whole collection is copied to satisfy `DartIterable`, and
+/// how many elements that comes to: `DART2RUST_COUNT_COPIES=1` turns the
+/// counters on and the runtime prints them beside the render tree.
+///
+/// The counts of *sites* say nothing about time on their own -- most of
+/// these lists are three elements long -- so this measures the thing that
+/// would decide whether `List<T>` is worth changing from a `Vec<T>` to an
+/// `Rc<Vec<T>>`: how many elements actually get copied in one startup,
+/// and how long the longest copy is.
+#[derive(Default)]
+pub struct CopyCounter {
+    calls: std::cell::Cell<u64>,
+    elements: std::cell::Cell<u64>,
+    longest: std::cell::Cell<u64>,
+}
+
+impl CopyCounter {
+    fn saw(&self, n: usize) {
+        self.calls.set(self.calls.get() + 1);
+        self.elements.set(self.elements.get() + n as u64);
+        if n as u64 > self.longest.get() {
+            self.longest.set(n as u64);
+        }
+    }
+}
+
+/// The four copies a handle costs: a `Vec`'s list, a `Vec`'s iterator, a
+/// `Set`'s list, a `Set`'s iterator.
+pub const COPY_SITES: [&str; 4] =
+    ["Vec::dart_to_list", "Vec::iterator", "Set::dart_to_list", "Set::iterator"];
+
+thread_local! {
+    static COPY_COUNTS: [CopyCounter; 4] = Default::default();
+    static COUNTING_COPIES: bool = std::env::var("DART2RUST_COUNT_COPIES").is_ok();
+}
+
+pub fn count_copy(site: usize, n: usize) {
+    if !COUNTING_COPIES.with(|on| *on) {
+        return;
+    }
+    COPY_COUNTS.with(|c| c[site].saw(n));
+}
+
+/// One line per site: calls, elements copied, the longest single copy.
+/// Empty when the counters are off.
+pub fn copy_counts_report() -> String {
+    if !COUNTING_COPIES.with(|on| *on) {
+        return String::new();
+    }
+    COPY_COUNTS.with(|c| {
+        let mut out = String::new();
+        for (i, name) in COPY_SITES.iter().enumerate() {
+            out.push_str(&format!(
+                "dart2rust copies: {} calls={} elements={} longest={}\n",
+                name,
+                c[i].calls.get(),
+                c[i].elements.get(),
+                c[i].longest.get()
+            ));
+        }
+        out
+    })
+}
+
 /// `xs.iterator` on the prelude's collections: Dart's `Iterator` over the
 /// elements, which a translated class that *is* an `Iterable` hands out
 /// as its own (`_History.iterator` is `_value.iterator`, ws499).
@@ -154,9 +218,11 @@ impl<T> std::fmt::Debug for dyn DartIterable<T> {
 
 impl<T: Clone + DartAny + 'static> DartIterable<T> for Vec<T> {
     fn iterator(&self) -> std::rc::Rc<dyn DartIterator<T>> {
+        count_copy(1, self.len());
         std::rc::Rc::new(VecIterator { items: self.clone(), at: std::cell::Cell::new(-1) })
     }
     fn dart_to_list(&self) -> Vec<T> {
+        count_copy(0, self.len());
         self.clone()
     }
 }
@@ -178,9 +244,11 @@ impl<T: Clone + DartAny + 'static> DartIterable<T>
 
 impl<T: Clone + DartAny + 'static> DartIterable<T> for Set<T> {
     fn iterator(&self) -> std::rc::Rc<dyn DartIterator<T>> {
+        count_copy(3, self.items.len());
         std::rc::Rc::new(VecIterator { items: self.items.clone(), at: std::cell::Cell::new(-1) })
     }
     fn dart_to_list(&self) -> Vec<T> {
+        count_copy(2, self.items.len());
         self.items.clone()
     }
 }

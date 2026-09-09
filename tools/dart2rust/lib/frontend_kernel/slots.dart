@@ -121,6 +121,13 @@ augment class KernelFrontend {
       }
     }
     if (declared == null) return null;
+    // ..and a parameter this compiler spells at its *bound* is that bound
+    // whatever the receiver put in for it: `T extends Iterable<E>` is a
+    // `Rc<dyn DartIterable<E>>` in the callee's signature, and putting the
+    // `Set<E>` the call site holds in for `T` says the slot takes a `Set`
+    // (`collection`'s `_UnorderedEquality.equals`; the iterablebound
+    // fixture).
+    if (_atBound(declared)) return null;
     // The method's own parameters are instantiated at the call: Dart's
     // type is the better answer there.
     if (fn.typeParameters.isNotEmpty &&

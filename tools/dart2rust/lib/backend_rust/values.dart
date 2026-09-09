@@ -242,6 +242,32 @@ augment class RustBackend {
   String _asList(IrExpr e) =>
       e.rustType?.name == 'Iterable' ? '${expr(e)}.dart_to_list()' : expr(e);
 
+  /// Whether `expr(e)` hands out a value of its own, rather than naming a
+  /// place someone else holds.
+  ///
+  /// A local is the one thing this backend spells bare -- `xs` -- and a
+  /// lent `&mut Vec<T>` parameter is one of those; a field read comes out
+  /// of its cell already copied (`get()`, `borrow().clone()`), and a call,
+  /// a literal, a construction and a block's value are values by
+  /// construction. Asked where a handle has to own what it holds
+  /// (`!as_iterable`), so the clone is paid only where it buys something.
+  bool _ownedWhenSpelled(IrExpr? e) => switch (e) {
+    null => false,
+    IrBlockValue(:final value) => _ownedWhenSpelled(value),
+    // ..except the one call that spells a borrow.
+    IrCall(:final name) => name != '!fn_ref',
+    IrStaticCall() ||
+    IrListLiteral() ||
+    IrMapLiteral() ||
+    IrMapElements() ||
+    IrNew() ||
+    IrConstInstance() ||
+    IrConditional() ||
+    IrIterChain() ||
+    IrInterpolation() => true,
+    _ => false,
+  };
+
   /// Whether an argument is the omitted one, written out.
   ///
   /// Kernel fills a default in and the analyzer leaves it off, so a member

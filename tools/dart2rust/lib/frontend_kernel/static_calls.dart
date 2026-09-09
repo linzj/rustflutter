@@ -677,7 +677,8 @@ augment class KernelFrontend {
         (declaredOverride == null
             ? _landingSlot(callee: callee, index: index)
             : null) ??
-        (declaredType != null && _mentionsErased(declaredType)
+        (declaredType != null &&
+                (_mentionsErased(declaredType) || _atBound(declaredType))
             ? declaredType
             : instantiated != null &&
                   index < instantiated.positionalParameters.length
@@ -955,6 +956,28 @@ augment class KernelFrontend {
     // as it was (9 at ws779).
     if (!_translatedCallee(callee)) return lowered;
     return _toF64(lowered)..rustType = const IrType('double');
+  }
+
+  /// Whether a declared type is a type parameter this compiler spells at
+  /// its bound (`_spelledAsBound`): `T extends Iterable<E>` is written
+  /// `Rc<dyn DartIterable<E>>` in the callee's Rust signature whatever the
+  /// call site put in for `T`, so the *declared* type is the slot and the
+  /// instantiation is not. Said here beside the erased case, which is the
+  /// same shape of answer -- "the declaration knows better than the
+  /// substitution" (`collection`'s `_UnorderedEquality<E, T extends
+  /// Iterable<E>>` took a `Set<E>` where its own signature says the
+  /// handle; the iterablebound fixture).
+  bool _atBound(DartType t) {
+    if (t is! TypeParameterType) return false;
+    // Only an `Iterable` bound. `_spelledAsBound` also answers for
+    // `String`, `int`, `double`, `bool` and `List`, and for those the
+    // instantiation and the spelling agree in kind, so taking the
+    // declaration there changes slots that were right -- the render tree
+    // came back as two nodes the round that did (run922).
+    final bound = t.parameter.bound;
+    return bound is InterfaceType &&
+        bound.classNode.name == 'Iterable' &&
+        bound.classNode.enclosingLibrary.importUri.scheme == 'dart';
   }
 
   IrExpr _namedArgument(

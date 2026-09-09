@@ -501,6 +501,14 @@ augment class RustBackend {
     // A collection into an `Iterable` slot: the trait handle
     // (`DartIterable`, ws908).
     if (name == '!as_iterable' && args.isEmpty) {
+      // Cloned only when the receiver is a *place* someone else holds.
+      // The rule used to be "always", on the grounds that the receiver is
+      // a borrow as often as a value; counted against the output, that is
+      // 26 `&mut Vec<T>` parameters and no `&Vec<T>`/`&Set<T>` at all,
+      // while 267 of the 274 boxings clone a temporary nobody holds --
+      // and 56 of those had already been cloned by `expr` itself
+      // (`(x.clone()).clone()`).
+      final owned = _ownedWhenSpelled(target);
       // The *value's* own element, not the slot's: the two are the same
       // by the time this runs (the coercion shapes the list element by
       // element first), and a callee's slot may spell a type parameter
@@ -511,10 +519,8 @@ augment class RustBackend {
           target?.rustType?.arguments.singleOrNull ??
           resultType?.arguments.singleOrNull;
       final spelled = element == null ? '_' : type(element);
-      // Cloned: the receiver is a borrow as often as a value -- a lent
-      // `&Vec<T>` parameter, a `&Set<T>` field read -- and the handle owns
-      // what it holds (`&Vec<Rc<dyn _SemanticsFragment>>: DartIterable`).
-      return '(std::rc::Rc::new(($receiver).clone()) as '
+      final held = owned ? receiver : '($receiver).clone()';
+      return '(std::rc::Rc::new($held) as '
           'std::rc::Rc<dyn DartIterable<$spelled>>)';
     }
     if (name == '!cast' && args.isEmpty) return receiver;

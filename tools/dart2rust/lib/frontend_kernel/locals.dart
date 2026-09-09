@@ -1185,6 +1185,28 @@ augment class KernelFrontend {
   /// list of its elements, `to_list`, which the backend writes from the
   /// class's `iterator`. Any other receiver is itself.
 
+  /// The `E` of a receiver this compiler spells `Rc<dyn DartIterable<E>>`:
+  /// `dart:core`'s own `Iterable<E>` written outright, or a type parameter
+  /// bounded by one, which `_type` spells at that bound (`T extends
+  /// Iterable<E>` in `collection`'s `_UnorderedEquality`; the
+  /// iterablebound fixture). Null for anything else -- a `T extends
+  /// List<E>` included, since a `List` is the `Vec` a body reads already.
+  DartType? _iterableSpelling(DartType? type) {
+    var seen = type;
+    var hops = 0;
+    while (seen is TypeParameterType && hops++ < 8) {
+      if (!_spelledAsBound(seen.parameter)) return null;
+      seen = seen.parameter.bound;
+    }
+    if (seen is InterfaceType &&
+        seen.classNode.name == 'Iterable' &&
+        seen.classNode.enclosingLibrary.importUri.scheme == 'dart' &&
+        seen.typeArguments.length == 1) {
+      return seen.typeArguments.single;
+    }
+    return null;
+  }
+
   IrExpr _listReceiver(Expression e, [String? member]) {
     // A mutating member's receiver as it is: an erased `List<ChildType>`
     // read as a `List<Sliver>` is a narrowing *copy*, and `children.add
@@ -1203,10 +1225,8 @@ augment class KernelFrontend {
     // back -- would be boxed into the handle only to be materialised
     // again on the same line (`items.where(..).length`, the iterableread
     // fixture).
-    if (static is InterfaceType &&
-        static.classNode.name == 'Iterable' &&
-        static.classNode.enclosingLibrary.importUri.scheme == 'dart' &&
-        static.typeArguments.length == 1) {
+    final iterableElement = _iterableSpelling(static);
+    if (iterableElement != null) {
       final value = expression(e);
       final handle = value.rustType;
       // The list Dart's members are written over. Materialised at the
@@ -1218,10 +1238,7 @@ augment class KernelFrontend {
       // everything after this is written in Dart's terms
       // (`_RenderChip.visitChildren`, whose `forEach` adapter was built
       // for `RenderBox`; five of them at ws908).
-      final wanted = IrType(
-        'List',
-        arguments: [_typeNested(static.typeArguments.single)],
-      );
+      final wanted = IrType('List', arguments: [_typeNested(iterableElement)]);
       if (handle?.name == 'Iterable') {
         final element = handle!.arguments.length == 1
             ? handle.arguments.single
