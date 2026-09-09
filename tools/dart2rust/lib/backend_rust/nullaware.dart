@@ -427,7 +427,21 @@ augment class RustBackend {
       };
       final narrow = element[owner];
       if (narrow != null) {
-        return '${expr(args.single)}.iter().map(|v| *v as $narrow).collect::<Vec<$narrow>>()';
+        // The *source* spelled: a Dart `List<int>` is a `Vec<i64>` and a
+        // `List<double>` a `Vec<f64>`, but the conversion below says
+        // nothing about what it reads, so Rust's integer defaulting made
+        // a literal list `i32` -- and five of the eight SHA-256 initial
+        // values do not fit one ("literal out of range for `i32`", which
+        // is denied; crypto's `Sha256Sink`, ws963).
+        // Whatever the value's own recorded type is, not `List` by name:
+        // a list literal is recorded as the runtime class the CFE names
+        // it (`_GrowableList<int>`), which spells the same `Vec<i64>`.
+        final from = args.single.rustType;
+        final spelled = from == null || from.isFunction ? null : type(from);
+        final source = spelled == null
+            ? expr(args.single)
+            : '{ let __src: $spelled = ${expr(args.single)}; __src }';
+        return '$source.iter().map(|v| *v as $narrow).collect::<Vec<$narrow>>()';
       }
       return '${expr(args.single)}.clone()';
     }
