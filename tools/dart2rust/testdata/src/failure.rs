@@ -22,7 +22,9 @@ impl Bounds {
     /// Throws directly. Its Rust signature becomes `Result<f32, RangeError>`.
     pub fn checked(&self, value: f64) -> Result<f64, std::rc::Rc<dyn Object>> {
         if (value > self.limit) {
-            return Err(dart_boxed(RangeError::new("over the limit".to_string())));
+            return Err(dart_boxed(RangeError::new(dart_boxed(
+                "over the limit".to_string(),
+            ))));
         }
         Ok(value)
     }

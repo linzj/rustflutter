@@ -14,7 +14,10 @@
 import 'dart:io';
 
 import 'package:kernel/binary/ast_from_binary.dart';
+import 'package:kernel/class_hierarchy.dart';
+import 'package:kernel/core_types.dart';
 import 'package:kernel/kernel.dart';
+import 'package:kernel/type_environment.dart';
 
 import '../lib/backend_rust.dart';
 import '../lib/frontend_kernel.dart';
@@ -73,10 +76,29 @@ Future<void> main(List<String> args) async {
   }
 
   final (enumValues, enumFields) = enumsIn(component);
+  // The program's types, as `dart2rust_package.dart` builds them. Without
+  // this the front end runs with a third of its type knowledge switched off
+  // -- 34 places read `typeEnvironment`, and every one of them takes the
+  // null branch -- so what this driver writes is not what the compiler
+  // writes. `_constantStaticType` is the one the golden shows: a
+  // `DoubleConstant` has no type without `coreTypes`, so `const Spacing._
+  // (3.0)` was widened as if the 3.0 were a `dynamic`, and came out as
+  // `3.0.as_any().downcast_ref::<f64>().unwrap().clone()` inside a `const`
+  // -- 24 of `testdata`'s 44 errors, in a file only this driver writes.
+  //
+  // "Deliberately the same backend, the same IR, and the same output" (the
+  // line at the top of this file) was true of everything but the front
+  // end's own configuration.
+  final coreTypes = CoreTypes(component);
+  final typeEnvironment = TypeEnvironment(
+    coreTypes,
+    ClassHierarchy(component, coreTypes),
+  );
   final (lib, refused) = KernelFrontend(
     matches.first,
     enumValues: enumValues,
     enumFields: enumFields,
+    typeEnvironment: typeEnvironment,
   ).lowerLibrary();
   final (rust, backendRefused) = RustBackend.emitLibrary(
     lib,

@@ -27,7 +27,11 @@ impl Sieve {
                 __scrutinee
             } {
                 Some(__value) => __value,
-                None => return Err(dart_boxed(RangeError::new("nothing given".to_string()))),
+                None => {
+                    return Err(dart_boxed(RangeError::new(dart_boxed(
+                        "nothing given".to_string(),
+                    ))))
+                }
             },
         )
     }

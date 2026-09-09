@@ -66,7 +66,6 @@ import dill as dill_tool  # noqa: E402
 BEHIND = {
     'building',
     'closures',
-    'constdirect',
     'counted',
     'generic',
     'identity',
@@ -74,7 +73,6 @@ BEHIND = {
     'lists',
     'loops',
     'mixins',
-    'named_args',
     'nullaware',
     'pieces',
     'setters',

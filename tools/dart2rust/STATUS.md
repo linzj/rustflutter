@@ -361,6 +361,17 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
   成了 `Option<Rc<dyn Fn(..)>>`,只是那四个成员先被借用/移动的错停住,类型错没显形。
   借用/移动那一面的根因也不是捕获规则:Kernel 的 `LocalFunctionInvocation` 不带
   `VariableGet`,`_LocalFinder` 因此看不见「闭包调用了兄弟局部函数」这次读。
+- **ws899 的两次误判**(都被尺子当场抓住,记着别再犯):
+  1. 「进对象槽就装箱」这条规则一落地,`loops` 就**翻译了它声明要拒绝的东西**——
+     `identical(Object? a, Object? b)` 的形参就是对象槽,两边一装箱,
+     `isTheCopy(Ladder other)` 不再被拒绝,改为比较两个刚装出来的箱子的地址,
+     **编得过而且永远答 false**。收法:`identical` 问的是引用不是值,在前端已经
+     识别它的那一处把操作数上的 upcast 取回来。
+  2. `fixtures.py` 报「agree now, so take them out of BEHIND」**不可尽信**:
+     「追上了」算的是 `BEHIND - behind`,而一个以别的方式**失败**的名字(`loops`
+     当时正卡在 REFUSES 那条)根本不进 `behind`,于是一次失败被读成了一次追上。
+     我照着把 `loops` 划掉了,下一轮它就以老样子重新差异出来。有失败时,先修失败,
+     再看追上。
 - **ws721**:「接收者的静态类不是具体类就一律走 trait 访问器」(想修 `notification.metrics`
   的字段访问)——**stub 805**(基线 449),撤回。窄解是只对**重定类型的形参**按声明的类判断。
 - **ws704–706**(已作废,ws708 走通了):把「覆盖关系」算成 covariance 的 flow site
@@ -461,6 +472,7 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 | ws894 | `dart:ffi` 的 `_abi()`:结构体布局是「按 ABI 一项的常量表 + `_abi()` 下标」,prelude 按目标机的 `OS`/`ARCH` 在 `Abi.values` 里查,查不到就说没有 | 拒绝 **45 → 38**,stub 149(未升),可达 64;run895 708 行 / 差异 0 / 0 panic;夹具 `ffisizeof` |
 | ws895 | 窄化过的动态 `num` 调用要记下手里剩的是什么(按 prelude 的 `DartDouble` 签名);`_returned` 原先只认识 `IrNew`/`IrConstInstance` 两种「能变成对象的东西」,一次调用是第三种 | stub **149 → 147**,拒绝 38,可达 64;run896 708 行 / 差异 0 / 0 panic / 196 帧;夹具 `dyncall` |
 | ws896 | 模块图的边是从生成文本正则回扫出来的,连字符串和注释一起扫:五个翻译文案里的单词("Header"、"Sac a main")就是五条真边。扫描前剥掉注释与字面量;再加一条配对规则——只有当一个「所有定义处都是 `fn`」的名字在本模块**既被绑定、又从未被调用/走路径**时才不算引用 | 拒绝 38、stub **147**(未升)、可达 64 → 67;`merged_gallery_scc` 1,026,045 行拆成 `scc_gallery` 942,252(l10n)+ `gallery_above` 82,892(app,**-91.9%**);链尾 53s → 33s;先只用前半句时 rustc 当场给了 188 条 `cannot find value`(自由函数当值传),那正是配对规则的由来 |
+| ws899 | 黄金 44 个错里 28 个的根因是「夹具 driver 不是同一个编译器」:`dart2rust_kernel.dart` 一个 `TypeEnvironment` 都没建(前端里 34 处读它,全走 null 分支),`const Spacing._(3.0)` 的 `3.0` 因此退化成 `dynamic`,`const` 里发出一次拆箱。另一半:分析器前端一次实参加宽都不做,补上「进对象槽就装箱」(`IrUpcast`,由后端选 `dart_boxed`/`dart_object`/句柄) | testdata **44 → 16** 错;oracle exit 0、BEHIND 16 → 14(`constdirect`/`named_args` 真追上);十个 fx 夹具全 AGREE;gallery 逐字节未动(md5 1aee02ea,拒绝仍 38)——这一轮没碰生产路径 |
 | ws891 | 第五轮复审抓到:ws889 落地后 `regen.py` 的 `hints()` 会**永远误报**——它按 `'throws:' not in driver` 字面判定,而正确的修法恰恰是把那个参数删掉,所以那条提示从此指向唯一不该做的修法。换成 `DECIDED_IN`:只指出决定写在哪两个函数里,不对文件的现状下任何断言。顺手分开探针的两种失败(没调用 vs 调用了没 `?`) | `fails:` 在 frontend.dart 已 11 处、`throws:` 在 kernel driver 已 0 处——两条提示一条正确变哑、一条永久说谎,实测属实;两个诊断分支各跑一次验过 |
 
 ## 下一步(2026-09-05 重铺)

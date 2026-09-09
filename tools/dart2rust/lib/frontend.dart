@@ -781,11 +781,48 @@ class Frontend {
           boxed: true,
         );
       }
+      // A slot that takes an `Object` takes the object the value *becomes*,
+      // not the value: `RangeError('over the limit')` hands a `String` to
+      // `RangeError(Object message)`. `IrUpcast` is the node whose job that
+      // is -- `dart_boxed` for a core value, `dart_object` for a translated
+      // class, the handle itself for a counted one -- so the choice stays
+      // the backend's, as it is everywhere else.
+      //
+      // The Kernel front end widens every argument into its parameter's
+      // type and this one has none of that machinery. This is the half of
+      // it the golden asked for: `RangeError::new` given a `String` where
+      // it wants an object is 4 of `testdata`'s errors, and the two front
+      // ends stopped agreeing on `control`, `failure` and `trycatch` the
+      // hour the Kernel side learned it (ws897).
+      final slot = callee != null && index < callee.formalParameters.length
+          ? callee.formalParameters[index].type
+          : null;
+      if (slot != null &&
+          _isObjectSlot(slot) &&
+          !_isObjectSlot(value.staticType)) {
+        return IrUpcast(
+          lowered,
+          const IrType('dynamic'),
+          handle: false,
+          explicit: false,
+        )..rustType = const IrType('dynamic');
+      }
       return lowered;
     } finally {
       _borrowedArgument = was;
     }
   }
+
+  /// An argument with the object-slot coercion taken back off: what the
+  /// caller wrote, for the one caller that asks about the value's identity
+  /// rather than its value.
+  static IrExpr _asItStands(IrExpr e) =>
+      e is IrUpcast && e.type.name == 'dynamic' ? e.value : e;
+
+  /// Whether a slot holds *the object*: `Object`, `Object?` and `dynamic`
+  /// are one type here, the `Rc<dyn Object>` every value can become.
+  static bool _isObjectSlot(DartType? type) =>
+      type is DynamicType || (type != null && type.isDartCoreObject);
 
   List<IrExpr> _argumentList(
     ArgumentList list,
@@ -952,7 +989,14 @@ class Frontend {
       );
     }
     if (node.methodName.name == 'identical' && args.length == 2) {
-      return IrIdentical(args[0], args[1]);
+      // Unboxed. `identical(Object? a, Object? b)` declares object slots, so
+      // the rule in `_argumentAt` would make an object of each side -- and
+      // two freshly boxed copies sit at two addresses, so the test would
+      // compile and always answer false. Identity is asked of the value as
+      // it stands; that is what `IrIdentical` is for, and it is why the
+      // `loops` fixture declares `isTheCopy(Ladder other)` a refusal. The
+      // oracle caught this the hour the boxing landed.
+      return IrIdentical(_asItStands(args[0]), _asItStands(args[1]));
     }
     // dart:math's `max`/`min` and Flutter's `clampDouble`. Rust has all three,
     // and `max` is one spelling for floats and integers alike.

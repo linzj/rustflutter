@@ -26,12 +26,8 @@ impl Spacing {
         Ok({ Self { amount: amount } })
     }
 
-    pub const TIGHT: Spacing = (Spacing {
-        amount: 3.0.as_any().downcast_ref::<f64>().unwrap().clone(),
-    });
-    pub const WIDE: Spacing = (Spacing {
-        amount: 17.0.as_any().downcast_ref::<f64>().unwrap().clone(),
-    });
+    pub const TIGHT: Spacing = (Spacing { amount: 3.0 });
+    pub const WIDE: Spacing = (Spacing { amount: 17.0 });
 
     pub fn twice(&self) -> Result<f64, std::rc::Rc<dyn Object>> {
         Ok((self.amount * 2.0))
@@ -322,13 +318,10 @@ impl Span {
         })
     }
 
-    pub const FIRST: Span = (Span {
-        start: 2.as_any().downcast_ref::<i64>().unwrap().clone(),
-        end: 13.as_any().downcast_ref::<i64>().unwrap().clone(),
-    });
+    pub const FIRST: Span = (Span { start: 2, end: 13 });
     pub const SECOND: Span = (Span {
-        start: 40.as_any().downcast_ref::<i64>().unwrap().clone(),
-        end: 100.as_any().downcast_ref::<i64>().unwrap().clone(),
+        start: 40,
+        end: 100,
     });
 
     pub fn width(&self) -> Result<i64, std::rc::Rc<dyn Object>> {

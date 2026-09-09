@@ -6037,6 +6037,54 @@ pub fn dart_nullable(value: std::rc::Rc<dyn Object>) -> Option<std::rc::Rc<dyn O
 /// platform check is not a constant. None of it runs on the host this
 /// targets, and none of it can: these are the names, with no behaviour, so
 /// that the code around them compiles and the refusal is at the call.
+/// `dart:ffi`'s `_abi()`: the index into `Abi.values` (sdk/lib/ffi/abi.dart)
+/// of the machine this was compiled for.
+///
+/// It is not an implementation detail that can be left out. The CFE's ffi
+/// transform writes every struct's layout as a *constant list indexed by
+/// this*, one entry per ABI --
+///
+///     _WindowsMessage.wParam#offsetOf => const <int>[16, 24, 16, 24, ..][_abi()]
+///     _WindowingInitRequest.#sizeOf   => const <int>[ 4,  8,  4,  8, ..][_abi()]
+///
+/// -- so without it every `#offsetOf` and `#sizeOf` in the program is a
+/// refusal, and with it they are arithmetic. A struct's layout is a runtime
+/// question about the machine, and this answers it as one: the target's own
+/// `OS`/`ARCH`, looked up in the order `Abi.values` declares. Not a guess
+/// and not a target this compiler picks -- an unlisted machine says so
+/// rather than returning a number that would silently be another ABI's.
+pub fn _abi() -> i64 {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("android", "arm") => 0,
+        ("android", "aarch64") => 1,
+        ("android", "x86") => 2,
+        ("android", "x86_64") => 3,
+        ("android", "riscv64") => 4,
+        ("fuchsia", "aarch64") => 5,
+        ("fuchsia", "x86_64") => 6,
+        ("fuchsia", "riscv64") => 7,
+        ("ios", "arm") => 8,
+        ("ios", "aarch64") => 9,
+        ("ios", "x86_64") => 11,
+        ("linux", "arm") => 12,
+        ("linux", "aarch64") => 13,
+        ("linux", "x86") => 14,
+        ("linux", "x86_64") => 15,
+        ("linux", "riscv32") => 16,
+        ("linux", "riscv64") => 17,
+        ("macos", "aarch64") => 18,
+        ("macos", "x86_64") => 20,
+        ("windows", "aarch64") => 21,
+        ("windows", "x86") => 22,
+        ("windows", "x86_64") => 23,
+        (os, arch) => panic!(
+            "dart:ffi: no Abi.values index for {}_{}; a struct's layout \
+             cannot be read without one",
+            os, arch
+        ),
+    }
+}
+
 pub struct Pointer<T>(pub usize, std::marker::PhantomData<T>);
 
 impl<T> Pointer<T> {
