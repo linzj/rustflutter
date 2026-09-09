@@ -12,6 +12,7 @@ library;
 import 'dart:convert';
 
 import 'coerce.dart';
+import 'member_names.dart';
 
 import 'dart:io' show Platform, stderr;
 
@@ -56,12 +57,16 @@ const _primitives = {
   // emitter substitutes `!` for the one position that takes it.
   'Never': 'std::convert::Infallible',
   // Dart's `num` is the supertype of `int` and `double`, and Rust has no such
-  // thing. `f32` is the choice that keeps arithmetic working and matches what
-  // `double` already maps to -- 2511 uses of the bare name `num`, three
+  // thing. A float is the choice that keeps arithmetic working and matches
+  // what `double` already maps to -- 2511 uses of the bare name `num`, three
   // quarters of every "cannot find" in the package, and every one of them a
   // parameter or return that takes either.
   //
-  // The cost, written down rather than discovered: an `int` beyond 2^24 does
+  // `f32` at first, and `f64` since: this comment argued for `f32` long after
+  // the map said `f64` (corrected 2026-09-09), which is how a reader ends up
+  // believing a precision the code does not have.
+  //
+  // The cost, written down rather than discovered: an `int` beyond 2^53 does
   // not survive the round trip, and a `num` used as an index needs a cast that
   // an `i64` would not. Upstream's `num`s are sizes, offsets and factors, so
   // neither has come up -- but this is where to look when one does.
@@ -71,11 +76,16 @@ const _primitives = {
   'void': '()',
 };
 
-/// Dart operators that are Rust traits, and the trait's method name.
 /// `dart:core` collections a value is downcast to, by their spelling here.
 const _downcastNames = {'List': 'Vec'};
 
-const _operatorTraits = {
+/// Dart operators that are Rust traits, and the trait's method name.
+///
+/// The same operators `ir.dart`'s `stdOperators` names, which is what the
+/// front end decides propagation by. Public so that `test/naming_test.dart`
+/// can hold the two lists to each other, which is what the comment in each
+/// file pointing at the other used to stand in for.
+const operatorTraits = {
   '+': ('Add', 'add'),
   '-': ('Sub', 'sub'),
   '*': ('Mul', 'mul'),
@@ -1985,7 +1995,7 @@ class RustBackend {
     // fundamental), so it is the trait's method, which fails like any
     // method (`Size.lerp`, ws473).
     final leftName = left.rustType?.name;
-    final mapping = _operatorTraits[op];
+    final mapping = operatorTraits[op];
     if (mapping != null &&
         leftName != null &&
         library[leftName] != null &&
@@ -2233,17 +2243,6 @@ class RustBackend {
       // Another module's: `numberFormatSymbols` read from `NumberFormat`
       // was a bare `NUMBER_FORMAT_SYMBOLS.get(..)` against its `LazyLock`.
       (library.constantsElsewhere[name]?.isMutable ?? false);
-
-  /// `Fn(..) -> ..` for a function type, without the `impl`/`dyn`/`Box`.
-  String _fnSignature(IrType t) {
-    final args = t.parameters!
-        .map(
-          (p) =>
-              p.isFunction ? '&dyn ${_fnSignature(p)}' : type(p, owned: false),
-        )
-        .join(', ');
-    return 'Fn($args) -> ${_wrapped(type(t.returns!))}';
-  }
 
   /// `List.generate(n, f)` and friends, which are Dart's list constructors
   /// wearing a static's clothes. Rust builds a `Vec` from an iterator.
@@ -3023,11 +3022,12 @@ class RustBackend {
         : '::<_${[...baseArguments.map(type), ...own].map((a) => ', $a').join()}>';
     final call =
         '${superFn(base, name, isSetter: isSetter)}$turbofish(${[receiver, ...args.map(expr)].join(', ')})';
-    // An async super function is an `async fn`; the caller's trait wants
-    // the boxed future every `Future<T>` is here.
-    final isAsync = baseClass.methods.any(
-      (m) => m.name == name && !m.isStatic && m.isAsync,
-    );
+    // KNOWN GAP (found by the analyzer 2026-09-09, never measured): an async
+    // super function is an `async fn`, and the caller's trait wants the boxed
+    // future every `Future<T>` is here -- so this call should be awaited and
+    // boxed. The flag that says so was computed here and never read, which is
+    // why nothing has been awaiting it. Closing it changes what is emitted at
+    // every async super call, so it is a round of its own.
     return call;
   }
 
@@ -3819,61 +3819,13 @@ class RustBackend {
   /// Whether `self` is held by value (an `std::ops` operator's body).
   var _selfByValue = false;
 
-  /// Rust names of the collection methods that change their receiver.
-  static const _inPlace = {
-    'push',
-    'insert',
-    'remove',
-    'remove_value',
-    '!map_remove',
-    'clear',
-    'extend',
-    'add',
-    'retain',
-    'truncate',
-    'pop',
-    'sort',
-    'sort_natural',
-    'sort_by',
-    'reverse',
-    'swap',
-    'drain',
-    'remove_at',
-    'insert_all',
-    'remove_where',
-    'retain_where',
-    'add_all',
-    'remove_last',
-    'remove_first',
-    'push_back',
-    'push_front',
-    'pop_front',
-    'pop_back',
-    'remove_all',
-    'retain_all',
-    'set_range',
-    'fill_range',
-    'shuffle',
-    'add_first',
-    'add_last',
-    'put_if_absent',
-    'update',
-    'remove_range',
-    'add_entries',
-    'replace_range',
-    'set_all',
-    // `ByteData`'s setters: a byte view written in place (`WriteBuffer.
-    // putUint16` on its `_eightBytes`, run509).
-    'set_int8',
-    'set_uint8',
-    'set_int16',
-    'set_uint16',
-    'set_int32',
-    'set_uint32',
-    'set_int64',
-    'set_uint64',
-    'set_float32',
-    'set_float64',
+  /// Rust names of the collection methods that change their receiver: every
+  /// Dart mutator that has a Rust method of the same name, snaked, plus the
+  /// prelude's and `Vec`'s own (`member_names.dart`).
+  static final Set<String> _inPlace = {
+    for (final name in mutatingNames)
+      if (!noRustMutatorNames.contains(name)) snake(name),
+    ...mutatingRustOnlyNames,
   };
 
   // ..by either spelling: a prelude collection's method arrives under its
@@ -4323,9 +4275,8 @@ class RustBackend {
     final turbofish = typeArguments.isEmpty
         ? ''
         : '::<${typeArguments.map(type).join(', ')}>';
-    // Read before the receiver and arguments print: a call inside them
-    // would otherwise take the `await`'s flag.
-    final awaited = _awaiting;
+    // Cleared before the receiver and arguments print: a call inside them
+    // would otherwise take this `await`'s flag.
     _awaiting = false;
     // Before the receiver is rendered: rendering a chain on its own is
     // refused, and this is the one place a chain is not on its own.
@@ -7300,38 +7251,6 @@ class RustBackend {
     return _out.join('\n') + '\n';
   }
 
-  /// Whether a class's own declaration spells a projected `T?` anywhere:
-  /// a field, a constructor's or a method's parameter, a result.
-  bool _usesProjection(IrClass c) =>
-      _allFields(c).any((f) => f.type.projected) ||
-      c.constructors.any((k) => k.params.any((p) => p.type.projected)) ||
-      [...c.methods, ...c.abstractMethods].any(
-        (m) => m.returnType.projected || m.params.any((p) => p.type.projected),
-      );
-
-  /// Whether a class's type parameters need `DartNullable`: it or a class
-  /// it implements spells `<T as DartNullable>::Or`. Not every class: the
-  /// bound shuts a future out (`_CallbackHookProvider<Future<bool>>`), and
-  /// only a projection asks for it.
-  bool _needsNullable(IrClass c) {
-    final seen = <String>{};
-    bool walk(IrClass k) {
-      if (!seen.add(k.name)) return false;
-      if (_usesProjection(k)) return true;
-      for (final name in [
-        if (k.superclass != null) k.superclass!,
-        ...k.mixins.map((m) => m.name),
-        ...k.interfaces.map((i) => i.name),
-      ]) {
-        final other = library[name];
-        if (other != null && walk(other)) return true;
-      }
-      return false;
-    }
-
-    return walk(c);
-  }
-
   /// `DartNullable` on every type parameter after all: a bound only where
   /// a projection asks for it has to be repeated by everything that names
   /// the generic type (`SlottedRenderObjectElement<SlotType>` in a trait
@@ -7922,19 +7841,6 @@ class RustBackend {
     return text;
   }
 
-  /// ` + Trait<..>` for a method type parameter bounded by a translated
-  /// abstract class, or nothing.
-  String _traitBoundOf(IrMethod method, String p) {
-    final bound = method.typeParameterBounds[p];
-    if (bound == null) return '';
-    final trait = library[bound.name];
-    if (trait == null || !library.isAbstract(bound.name)) return '';
-    final args = trait.typeParameters.isEmpty || bound.arguments.isEmpty
-        ? ''
-        : '<${bound.arguments.map(type).join(', ')}>';
-    return ' + ${bound.name}$args';
-  }
-
   /// A top-level constant whose Rust type has a destructor, kept as a
   /// lazily built `static` rather than a `const`.
   bool _isLazyConst(String name) {
@@ -8037,18 +7943,7 @@ class RustBackend {
   /// its methods are missing, which is loud where it matters.
   String _implGenerics(IrClass cls, {bool keyed = true}) {
     if (cls.typeParameters.isEmpty) return '';
-    // A parameter that keys a `Map` or fills a `Set` in one of the fields
-    // needs what the prelude's `Map` asks of a key: `keys()` and `get()`
-    // "exist but their trait bounds were not satisfied", 9 in `collection`.
-    final fields = [
-      ..._allFields(cls).map(_fieldType),
-      for (final m in cls.methods) ...[
-        type(m.returnType),
-        for (final p in m.params) type(p.type),
-      ],
-    ].join(' ');
     String bound(String p) {
-      final key = RegExp('(Map|Set)<$p[,>]').hasMatch(fields);
       // `PartialEq`: `self._value == new_value` on a `T` (`ValueNotifier`).
       // `Clone + DartNullable<Or: Clone> + 'static` only (2026-09-04): `PartialEq + Debug` on every
       // type parameter shut out closures and futures -- `ObserverList<
@@ -8629,7 +8524,7 @@ class RustBackend {
     // `set _ticker(v)` put two `fn _ticker` in one impl -- 839 `E0201`s.
     if (method.isSetter) return 'set_${snake(method.name)}';
     if (op == null) return snake(method.name);
-    final mapping = _operatorTraits[op];
+    final mapping = operatorTraits[op];
     return mapping == null ? _operatorName(op) : 'op_${mapping.$2}';
   }
 
@@ -8718,7 +8613,7 @@ class RustBackend {
     if (_sharedMutation(method)) return '&mut self';
     if (!_mutating.contains(_rustName(method))) return '&self';
     if (method.operator != null &&
-        _operatorTraits.containsKey(method.operator)) {
+        operatorTraits.containsKey(method.operator)) {
       throw Unsupported(
         'a field write inside `operator ${method.operator}`',
         'std::ops takes `self`, so the receiver is not this class\'s to change',
@@ -11120,9 +11015,6 @@ class RustBackend {
     _selfBinding = const {};
   }
 
-  /// The base the impl block currently being written is for.
-  late IrClass _implBase;
-
   /// The base's type parameters, bound to what this class passed them.
   ///
   /// A trait method is declared in the base's terms -- `_RRectLike<T>` has
@@ -11396,7 +11288,7 @@ class RustBackend {
         // for EdgeInsets`'s `op_mul` got `*self * other.map(|__v| ..)`,
         // which mapped the *operand*, 6 at ws757).
         final infallible =
-            have.operator != null && _operatorTraits.containsKey(have.operator);
+            have.operator != null && operatorTraits.containsKey(have.operator);
         final wrapsOk = _returnType(need).startsWith('Result<');
         String infallibleText(String inner) => wrapsOk ? 'Ok($inner)' : inner;
         _line(
@@ -11615,7 +11507,7 @@ class RustBackend {
       );
     }).toList();
     final op = method.operator;
-    if (op != null && _operatorTraits.containsKey(op)) {
+    if (op != null && operatorTraits.containsKey(op)) {
       if (op == 'unary-') return '-*self';
       return '*self $op ${args.single}';
     }
@@ -12074,7 +11966,6 @@ class RustBackend {
       while (chain.isNotEmpty && chain.last.$2.body == null) {
         chain.removeLast();
       }
-      final kept = chain.length;
       for (final (_, baseCtor, superArgs) in chain) {
         _line('{');
         _indent++;
@@ -12429,7 +12320,7 @@ class RustBackend {
 
   void _emitOperator(IrMethod method, String op) {
     {
-      final mapping = _operatorTraits[op];
+      final mapping = operatorTraits[op];
       if (mapping == null) {
         // `~/` has no Rust trait. Emitted as an inherent method rather than
         // forced into one that means something else.

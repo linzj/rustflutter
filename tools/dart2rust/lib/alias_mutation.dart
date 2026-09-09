@@ -11,44 +11,7 @@
 // class is counted: an identity, shared by handle, is what its Dart is.
 import 'package:kernel/ast.dart';
 
-/// Members of the prelude's collections and byte views that change the
-/// receiver, by Dart name.
-const _mutatingNames = {
-  '[]=',
-  'add',
-  'addAll',
-  'insert',
-  'insertAll',
-  'remove',
-  'removeAt',
-  'removeLast',
-  'removeWhere',
-  'retainWhere',
-  'clear',
-  'setRange',
-  'fillRange',
-  'replaceRange',
-  'removeRange',
-  'setAll',
-  'sort',
-  'shuffle',
-  'addFirst',
-  'addLast',
-  'removeFirst',
-  'putIfAbsent',
-  'update',
-  'updateAll',
-  'setInt8',
-  'setUint8',
-  'setInt16',
-  'setUint16',
-  'setInt32',
-  'setUint32',
-  'setInt64',
-  'setUint64',
-  'setFloat32',
-  'setFloat64',
-};
+import 'member_names.dart';
 
 bool _translated(Class c) {
   final uri = c.enclosingLibrary.importUri;
@@ -129,7 +92,7 @@ class _MutatorFinder extends RecursiveVisitor {
     if (node.receiver is ThisExpression) {
       thisCalls.add(node.interfaceTarget);
     } else if (_onThis(node.receiver) &&
-        _mutatingNames.contains(node.name.text)) {
+        mutatingNames.contains(node.name.text)) {
       writes = true;
     }
     super.visitInstanceInvocation(node);

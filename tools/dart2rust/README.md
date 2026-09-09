@@ -55,70 +55,96 @@ saying so out loud is not.
 
 ## The runtime crate
 
-`tools/dart2rust/runtime/` **does not exist yet**, and `embedder_api.py` prints
-`0 implemented` rather than skipping the line, because the distance is the point
-of the ruler. Its first contents are already written: the 1248 lines of
-`lib/prelude.dart`, a hand-written subset of `dart:core` and `dart:typed_data`
-that is currently emitted as a string alongside the generated code. Round 44
-measured why it is hand-written rather than translated -- feeding the dill's own
-`dart:core` through the translator took the error count from 6608 to 16955,
-because its members are `external` and come out as empty traits.
+`tools/dart2rust/runtime/` exists: 547 lines of Rust, and `embedder_api.py`
+counts them against the 168 `Dart_*` functions above. **An earlier version of
+this file said it did not exist yet, and said the prelude was 1248 lines. Both
+were true when they were written and neither was updated** -- the prelude is
+10,519 lines of Rust now, and it is still emitted as a string alongside the
+generated code (`lib/prelude.dart`) rather than compiled from `runtime/`.
 
-## The front end: analyzer today, Kernel next
+Round 44 measured why the prelude is hand-written rather than translated:
+feeding the dill's own `dart:core` through the translator took the error count
+from 6608 to 16955, because its members are `external` and come out as empty
+traits. That measurement stands.
+
+## The front end: Kernel
 
 `dart2wasm` consumes Kernel (`.dill`), which is the right input: resolved,
 desugared, constant-evaluated, and -- the part that matters for shipping -- a
 whole *program* rather than a pile of files. An app.dill is what the toolchain
 actually builds and what a release would be translated from.
 
-**An earlier version of this file said Kernel was unobtainable here. That was
-wrong.** `package:kernel` is in the engine checkout:
+`lib/frontend_kernel.dart` is that front end and is the one everything uses:
+`bin/dart2rust_package.dart`, which `bin/run_chain.sh` runs, goes through it,
+and so does every fixture. `package:kernel` comes from the engine checkout
+(`bin/dill.py` finds it); the SDK cache's own dill is a revision behind and
+fails with `Unexpected Kernel Format Version`.
 
-    E:/source/flutter/engine/src/flutter/third_party/dart/pkg/kernel/
+**`lib/frontend.dart`, the analyzer front end this started with, no longer
+compiles.** `dart analyze` reports 49 errors in it, every one API drift against
+the current analyzer element model (`ClassDeclaration.name`, `isSynthetic`,
+`DefaultFormalParameter`, `NamedExpression`). So do its two drivers,
+`bin/dart2rust.dart` and `bin/census.dart`. What that costs: `bin/regen.py`
+regenerates `testdata/src/*.rs` through `dart2rust.dart`, so only
+`constinstance.rs` -- the one file that comes from the Kernel side -- can be
+regenerated today. It is left in the tree rather than deleted because deleting
+a second front end is a decision about the project, not a cleanup; but nothing
+should be added to it, and `bin/check.sh` exempts it by name.
 
-The earlier search looked under `engine/src/third_party/` and used a depth limit
-one level short of `engine/src/flutter/third_party/dart/pkg/kernel`, and the
-conclusion was written down as if it were a fact about the machine. It is
-recorded here rather than quietly deleted, because a wrong reason left in place
-is how a project keeps making the same choice.
-
-Verified working, in this order:
-
-1. `pkg/kernel` reading the SDK cache's `dart2js_platform.dill` fails with
-   `Unexpected Kernel Format Version 140 (expected 139)` -- it read the file and
-   parsed the header; the checkout is one revision behind the Flutter SDK.
-2. The same checkout has a revision-matched dill and toolchain:
-   `engine/src/out/host_release/flutter_patched_sdk/platform_strong.dill` reads
-   cleanly -- 20 libraries, 1374 classes, with `isAbstract` and resolved
-   superclasses -- and `engine/src/out/host_release/gen/frontend_server_aot.dart.snapshot`
-   can produce matching dills for an app.
-
-So the front end is `package:analyzer` **for now**, and the IR was written
-front-end agnostic from the first commit precisely so this swap costs only the
-front end. Everything in `lib/backend_rust.dart`, the census, and the tests
-carries over unchanged.
-
-What analyzer gives that Kernel does not: source-shaped output, which is easier
-to read and to check against upstream by eye. What Kernel gives that analyzer
-does not: the whole linked program, mixins applied, `async` lowered, implicit
-coercions explicit, and reachability -- so a release translates what the app
-uses instead of every class in the framework.
+What analyzer gave that Kernel does not: source-shaped output, easier to read
+and to check against upstream by eye. What Kernel gives that analyzer does not:
+the whole linked program, mixins applied, `async` lowered, implicit coercions
+explicit, and reachability -- so a release translates what the app uses instead
+of every class in the framework.
 
 ## Layout
 
-    lib/ir.dart           the IR. Knows nothing about analyzer or about Rust.
-    lib/frontend.dart     analyzer's resolved AST -> IR
-    lib/backend_rust.dart IR -> Rust source
-    lib/prelude.dart      the hand-written `dart:core` subset the output needs
-    bin/dart2rust.dart    the driver
-    bin/census.dart       the ruler for the translation half: refusals, queued
-    bin/embedder_api.py   the ruler for the runtime half: what the engine asks
-    runtime/              the Rust VM. Not written yet; see STATUS.md.
+    lib/ir.dart            the IR. Knows nothing about Kernel or about Rust.
+    lib/frontend_kernel.dart  Kernel -> IR. The front end in use.
+    lib/frontend.dart      analyzer -> IR. Superseded, and does not compile.
+    lib/backend_rust.dart  IR -> Rust source
+    lib/coerce.dart        one rule for a value entering a slot, both ways
+    lib/covariance.dart    where an override widens what a slot takes
+    lib/throws.dart        which members can fail, over the whole program
+    lib/alias_mutation.dart  which classes are mutated through an alias
+    lib/member_names.dart  the members that change their receiver
+    lib/prelude.dart       the hand-written `dart:core` subset the output needs
+    runtime/               the Rust VM
+    bin/dart2rust_package.dart  the driver: a dill in, a crate workspace out
+    bin/run_chain.sh       the ruler: how much translates and compiles
+    bin/fx.sh              the other ruler: whether Rust and Dart agree
+    bin/run_main.sh        runs the translated gallery headlessly
+    bin/check.sh           the analyzer and the unit tests
+    bin/embedder_api.py    what the engine asks of whatever replaces libdart
+    testdata/              33 fixtures and the Rust they translate to
+    STATUS.md              every round, with its numbers
 
 ## Running
 
-    dart run --packages="$RUSTFLUTTER_FLUTTER/.dart_tool/package_config.json" \
-        tools/dart2rust/bin/dart2rust.dart <file.dart> <ClassName>
+Once per machine, so that `dart analyze` and the tests can resolve imports:
+
+    python3 bin/devsetup.py
+
+There is deliberately **no `pubspec.yaml`**. With one present, `dart run` and
+`dart test` perform an implicit `pub get` that overwrites
+`.dart_tool/package_config.json` with a resolution that has no
+`package:kernel` in it, and the compiler then cannot start. `package:kernel`
+is not a published package at the revision this reads -- it comes from the
+engine checkout -- so resolution is written, not resolved.
+
+The two rulers:
+
+    bin/run_chain.sh $S/stubs.txt $S/ws.log    # translate + 9 cargo rounds
+    bin/fx.sh <fixture>                        # one fixture, both ends, diff
+
+`cargo` runs in both, and two `cargo check`s side by side once took the whole
+WSL2 VM down -- so they must not run at the same time. `run_chain.sh` watches
+`MemAvailable` and kills the compile rather than the machine;
+`DART2RUST_MIN_FREE_GB` is the floor.
+
+The compiler itself, on one library:
+
+    dart run --packages=<config> bin/dart2rust_package.dart <app.dill> <prefix> <out>
 
 Paths come from `bin/paths.py`: `RUSTFLUTTER_FLUTTER`, `RUSTFLUTTER_APP` and
 `RUSTFLUTTER_ENGINE`, defaulting to `~/flutter_sdk`, `~/gallery_upstream` and
@@ -127,6 +153,22 @@ Paths come from `bin/paths.py`: `RUSTFLUTTER_FLUTTER`, `RUSTFLUTTER_APP` and
 Output is not formatted. Pipe it through `rustfmt --edition 2021` before use --
 the backend spends its effort on being right about what to emit, and layout is
 a solved problem it should not be re-solving.
+
+## Checks
+
+    bin/check.sh
+
+`dart analyze` and `test/`. Neither existed before 2026-09-09: with no
+`.dart_tool/package_config.json` in this directory the analyzer could not
+resolve `package:kernel`, so it had never been run, and the compiler reached
+51k lines with it off. The first run found 165 issues, among them a dropped
+`isAsync` at a super call, four sets of receiver-changing member names that had
+drifted apart, and 2500 lines of a front end that no longer compiles.
+
+The tests are plain Dart programs, not `package:test`, for the pubspec reason
+above. They cover what is pure and what everything else is decided by: the type
+algebra in `coerce.dart`, the name mangling in `backend_rust.dart`, and the
+member-name tables in `member_names.dart`.
 
 ## What it refuses to do
 

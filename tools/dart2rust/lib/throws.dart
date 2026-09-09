@@ -23,11 +23,9 @@ class ThrowsAnalysis {
     this.functionValueCalls,
     this._callers,
     this._dispatch,
-    this._hierarchy,
   );
 
   final Set<Member> Function(Member) _dispatch;
-  final ClosedWorldClassHierarchy _hierarchy;
   final Map<Member, bool> _familyCache = {};
 
   /// Whether the *signature* of `m` is a failing one: it, an override of
@@ -195,7 +193,6 @@ class ThrowsAnalysis {
       functionValueCalls,
       callers,
       dispatch,
-      hierarchy,
     );
   }
 }

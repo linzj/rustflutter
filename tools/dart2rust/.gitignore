@@ -1,0 +1,9 @@
+# Written by `bin/devsetup.py`: absolute paths into this machine's Flutter and
+# engine checkouts, the same reason `bin/dill.py` writes its config rather than
+# committing one.
+/.dart_tool/
+
+# `pub get` has no business here -- `package:kernel` comes from the engine
+# checkout, not from pub -- but a stray `dart test` can still write these.
+/pubspec.lock
+/.packages

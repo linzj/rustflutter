@@ -20,6 +20,7 @@ import 'package:kernel/type_algebra.dart';
 import 'package:kernel/type_environment.dart';
 
 import 'coerce.dart';
+import 'member_names.dart';
 import 'throws.dart';
 
 import 'dart:io' show Platform, stderr;
@@ -444,26 +445,6 @@ class KernelFrontend implements TypeWorld {
     return member is Constructor || (member is Procedure && member.isFactory);
   }
 
-  /// `dynamic` anywhere in a type: the prelude spells it as translated
-  /// code does (`Map<String, dynamic>` is `Map<String, Rc<dyn Object>>`),
-  /// so such a slot of a prelude callee is coerced too (`Uri.replace(
-  /// queryParameters: uri.queryParametersAll)`, 16 at ws421).
-  static bool _mentionsDynamic(DartType t) {
-    if (t is FutureOrType) return _mentionsDynamic(t.typeArgument);
-    if (t is RecordType) {
-      return t.positional.any(_mentionsDynamic) ||
-          t.named.any((n) => _mentionsDynamic(n.type));
-    }
-    if (t is DynamicType) return true;
-    if (t is InterfaceType) return t.typeArguments.any(_mentionsDynamic);
-    if (t is FunctionType) {
-      return _mentionsDynamic(t.returnType) ||
-          t.positionalParameters.any(_mentionsDynamic) ||
-          t.namedParameters.any((n) => _mentionsDynamic(n.type));
-    }
-    return false;
-  }
-
   /// The instantiations a named one *implies*: `BasicMessageChannel<
   /// String?>` holds a `MessageCodec<T> codec`, so the program names
   /// `MessageCodec<String?>` without spelling it anywhere, and the
@@ -846,8 +827,6 @@ class KernelFrontend implements TypeWorld {
 
   /// What each enum variant carries. See `enumsIn`.
   final Map<Class, Map<String, Map<String, String>>> enumFields;
-  String? _superclass;
-
   // -- Types ------------------------------------------------------------------
 
   /// How deep inside a type `_type` is: a `T?` *inside* a type -- a type
@@ -1822,7 +1801,7 @@ class KernelFrontend implements TypeWorld {
             : (IrLocal(name)..rustType = _recordedType(declared));
         final downcast = IrDowncast(
           read,
-          _rustScalar(to.name),
+          rustScalar(to.name),
           arguments: to.arguments,
         );
         // ..and a promotion that is itself nullable -- `if (parent is
@@ -1840,7 +1819,7 @@ class KernelFrontend implements TypeWorld {
           final bound = IrBound()
             ..rustType = held == null ? null : nonNull(held);
           final inner = IrCall(
-            IrDowncast(bound, _rustScalar(to.name), arguments: to.arguments),
+            IrDowncast(bound, rustScalar(to.name), arguments: to.arguments),
             'clone',
             const [],
           )..rustType = nonNull(to);
@@ -1879,7 +1858,7 @@ class KernelFrontend implements TypeWorld {
           IrDowncast(
             // A `dynamic` is a handle, never an `Option`; an `Object?` is.
             _nullChecked(IrLocal(name)..rustType = _recordedType(declared)),
-            _rustScalar(asName),
+            rustScalar(asName),
             arguments: to.arguments,
           ),
           'clone',
@@ -2989,8 +2968,7 @@ class KernelFrontend implements TypeWorld {
           from is DynamicType ||
           (from is InterfaceType &&
               ((_abstractLike(from.classNode) &&
-                      _rustScalar(from.classNode.name) ==
-                          from.classNode.name) ||
+                      rustScalar(from.classNode.name) == from.classNode.name) ||
                   from.classNode.name == 'Object'));
       if (fromObject &&
           from != null &&
@@ -2999,7 +2977,7 @@ class KernelFrontend implements TypeWorld {
           // .current[#Intl.locale])` wants the same `Any` downcast a struct
           // gets: the prelude's `String` is what an `Rc<dyn Object>` holds.
           (!_abstractLike(to.classNode) ||
-              _rustScalar(to.classNode.name) != to.classNode.name ||
+              rustScalar(to.classNode.name) != to.classNode.name ||
               to.classNode.name == 'String' ||
               // `dart:core`'s collections are abstract there and values
               // here: `systemMessage as Map<String, dynamic>` is the
@@ -3015,7 +2993,7 @@ class KernelFrontend implements TypeWorld {
           return IrCall(
             IrDowncast(
               expression(node.operand),
-              _rustScalar(to.classNode.name),
+              rustScalar(to.classNode.name),
               arguments: target.arguments,
             ),
             'clone',
@@ -3036,7 +3014,7 @@ class KernelFrontend implements TypeWorld {
                 !operandType.nullable);
         if (dynamicOperand && to.nullability == Nullability.nullable) {
           return IrCall(operandLowered, '!as_opt', [
-            IrLiteral(_rustScalar(to.classNode.name), const IrType('raw')),
+            IrLiteral(rustScalar(to.classNode.name), const IrType('raw')),
           ], typeArguments: _type(to).arguments);
         }
         // `_objects![2] as _ImageFilter?`: an `Option<Rc<dyn Object>>` to an
@@ -3055,7 +3033,7 @@ class KernelFrontend implements TypeWorld {
                   ..rustType = _recordedType(
                     from.withDeclaredNullability(Nullability.nonNullable),
                   ),
-                _rustScalar(to.classNode.name),
+                rustScalar(to.classNode.name),
               ),
               'clone',
               const [],
@@ -5109,11 +5087,6 @@ class KernelFrontend implements TypeWorld {
             type.classNode.name == '_Location');
   }
 
-  /// `a.b = v` as a statement.
-  ///
-  /// Its own method because a `return a.b = v;` in a void function is this
-  /// statement and then a bare return -- the CFE writes `=> x = v` that way,
-  /// 171 times in the gallery's dill, every one in a setter or a void closure.
   /// The receiver's static class, when it is a translated one.
   Class? _staticClass(Expression receiver) {
     final t = _staticType(receiver);
@@ -5130,6 +5103,11 @@ class KernelFrontend implements TypeWorld {
   /// (`Matrix4.clone()` gave every `.clone()` a `Result`, 179).
   static String _dartName(String name) => name == 'clone' ? 'clone_' : name;
 
+  /// `a.b = v` as a statement.
+  ///
+  /// Its own method because a `return a.b = v;` in a void function is this
+  /// statement and then a bare return -- the CFE writes `=> x = v` that way,
+  /// 171 times in the gallery's dill, every one in a setter or a void closure.
   IrStmt _instanceSet(InstanceSet value) {
     // The value widens into the type the write lands on (`_writeSlot`): a
     // mixin clone's field, or the trait's setter -- `_cache = s` into a
@@ -5756,39 +5734,13 @@ class KernelFrontend implements TypeWorld {
   /// (`Navigator`'s `_History extends Iterable<_RouteEntry>`, ws499): the
   /// list of its elements, `to_list`, which the backend writes from the
   /// class's `iterator`. Any other receiver is itself.
-  /// Dart names of the list members that change the receiver: the
-  /// receiver of one is the place itself, never a narrowing copy.
-  static const _mutatingListNames = {
-    '[]=',
-    'add',
-    'addAll',
-    'insert',
-    'insertAll',
-    'remove',
-    'removeAt',
-    'removeLast',
-    'removeWhere',
-    'retainWhere',
-    'clear',
-    'setRange',
-    'fillRange',
-    'replaceRange',
-    'removeRange',
-    'setAll',
-    'sort',
-    'shuffle',
-    'addFirst',
-    'addLast',
-    'removeFirst',
-    'length',
-  };
 
   IrExpr _listReceiver(Expression e, [String? member]) {
     // A mutating member's receiver as it is: an erased `List<ChildType>`
     // read as a `List<Sliver>` is a narrowing *copy*, and `children.add
     // (x)` pushed into it (the erased tear-off fixture, ws528). The element
     // goes in as the slot's type and rustc upcasts it to the erased one.
-    if (member != null && _mutatingListNames.contains(member)) {
+    if (member != null && mutatingListNames.contains(member)) {
       return expression(e);
     }
     final lowered = _receiver(e);
@@ -7847,7 +7799,7 @@ class KernelFrontend implements TypeWorld {
         return IrCall(
           IrDowncast(
             expression(positional.single),
-            _rustScalar(toIr.name),
+            rustScalar(toIr.name),
             arguments: toIr.arguments,
           ),
           'clone',
@@ -8950,35 +8902,6 @@ class KernelFrontend implements TypeWorld {
     return _landing(interface, receiver) is Field;
   }
 
-  /// The type a write into `interface` on `receiver` must produce: the
-  /// landing member's -- a mixin clone's field, or the trait's setter.
-  /// The mixin's own member behind a copy the CFE made in an anonymous
-  /// application (`_MixinApplication8&RenderBox&RenderObjectWithChildMixin
-  /// .child=` for `RenderObjectWithChildMixin.child=`): what the trait
-  /// declares, with the mixin's parameter (`ChildType?`) where the copy
-  /// has the application's argument (`RenderBox?`).
-  /// Whether `t` names a type parameter that is *kept* (not erased): a
-  /// copy's type substituted for one is that application's own, and the
-  /// declaration's cannot replace it (`LayoutInfoType get layoutInfo`
-  /// returning `BoxConstraints` in `RenderLayoutBuilder`, ws477).
-  bool _mentionsKeptParameter(DartType t) {
-    if (t is FutureOrType) return _mentionsKeptParameter(t.typeArgument);
-    if (t is RecordType) {
-      return t.positional.any(_mentionsKeptParameter) ||
-          t.named.any((n) => _mentionsKeptParameter(n.type));
-    }
-    if (t is TypeParameterType) return !_erasedParameter(t.parameter);
-    if (t is InterfaceType) {
-      return t.typeArguments.any(_mentionsKeptParameter);
-    }
-    if (t is FunctionType) {
-      return _mentionsKeptParameter(t.returnType) ||
-          t.positionalParameters.any(_mentionsKeptParameter) ||
-          t.namedParameters.any((n) => _mentionsKeptParameter(n.type));
-    }
-    return false;
-  }
-
   /// The declaration a copy in an anonymous application is lowered under
   /// (see `_lowerProcedure`'s `signature`), or null for a member that is
   /// its own declaration.
@@ -9105,13 +9028,6 @@ class KernelFrontend implements TypeWorld {
         : null;
     if (type == null) return null;
     return _recordedType(_asApplied(declared(type), owner));
-  }
-
-  /// The function whose parameters a call to `m` fills: the mixin's own
-  /// declaration behind a copy (see `_originalOf`).
-  FunctionNode _originalFunction(Member m) {
-    final original = _originalOf(m);
-    return original is Procedure ? original.function : m.function!;
   }
 
   /// A type of a copy in `application`, with the arguments the application
@@ -9267,6 +9183,13 @@ class KernelFrontend implements TypeWorld {
     forWrite: true,
   );
 
+  /// The type a write into `interface` on `receiver` must produce: the
+  /// landing member's -- a mixin clone's field, or the trait's setter.
+  /// The mixin's own member behind a copy the CFE made in an anonymous
+  /// application (`_MixinApplication8&RenderBox&RenderObjectWithChildMixin
+  /// .child=` for `RenderObjectWithChildMixin.child=`): what the trait
+  /// declares, with the mixin's parameter (`ChildType?`) where the copy
+  /// has the application's argument (`RenderBox?`).
   DartType _writeSlot(Member interface, Expression receiver) {
     final landing = _writeLanding(interface, receiver);
     final declared = landing is Procedure && landing.isSetter
@@ -9418,7 +9341,7 @@ class KernelFrontend implements TypeWorld {
   Map<String, Class>? _classesByName;
 
   /// The static and top-level fields some body mutates in place: the
-  /// receivers of a collection mutator (`_mutatingListNames`), of a field
+  /// receivers of a collection mutator (`mutatingListNames`), of a field
   /// write, or a `List`/`Set` argument a callee fills -- also through a
   /// cascade's `let #t = field in #t.add(..)`. Once, over every translated
   /// library of the component: a library may fill another's.
@@ -9460,9 +9383,6 @@ class KernelFrontend implements TypeWorld {
     return index[name];
   }
 
-  static const _scalarNames = {'int', 'double', 'num', 'bool', 'String'};
-  static const _collectionNames = {'List', 'Iterable', 'Set'};
-
   bool _isTraitName(String name) {
     if (const {
       'Object',
@@ -9472,7 +9392,7 @@ class KernelFrontend implements TypeWorld {
     }.contains(name)) {
       return true;
     }
-    if (_scalarNames.contains(name) || _collectionNames.contains(name)) {
+    if (scalarNames.contains(name) || collectionNames.contains(name)) {
       return false;
     }
     // This library's own class first: `dart:ui`'s `Gradient` is a struct
@@ -9510,7 +9430,7 @@ class KernelFrontend implements TypeWorld {
   });
 
   bool _isStructName(String name) {
-    if (_isTraitName(name) || _scalarNames.contains(name)) return false;
+    if (_isTraitName(name) || scalarNames.contains(name)) return false;
     final c = _classNamed(name);
     return c != null && _translatedClass(c) && !c.isEnum;
   }
@@ -9549,8 +9469,6 @@ class KernelFrontend implements TypeWorld {
     final c = _classNamed(name);
     return c != null && !_closureCallsMethod(c) && c.typeParameters.isNotEmpty;
   }
-
-  bool _sameRust(IrType a, IrType b) => sameRust(a, b);
 
   static IrType _nonNull(IrType t) => nonNull(t);
 
@@ -10402,7 +10320,7 @@ class KernelFrontend implements TypeWorld {
   }
 
   /// Whether `callee` fills its `index`th positional parameter: a `List`
-  /// or `Set` it adds to, removes from or writes into (`_mutatingListNames`),
+  /// or `Set` it adds to, removes from or writes into (`mutatingListNames`),
   /// directly or by lending it to a callee that does. Only a member with
   /// one body -- a static, a top-level function, a private method -- is
   /// asked: an override family would have to agree on the signature.
@@ -11732,7 +11650,7 @@ class KernelFrontend implements TypeWorld {
     final target = to.classNode;
     final cast = IrDowncast(
       lowered,
-      _rustScalar(target.name),
+      rustScalar(target.name),
       arguments: _erasedArguments(target, to.typeArguments),
     );
     if (!_closureCallsMethod(target) && target.typeParameters.isNotEmpty) {
@@ -12641,18 +12559,6 @@ class KernelFrontend implements TypeWorld {
     );
   }
 
-  bool _returnsEarly(Statement body) {
-    final finder = _EarlyExit();
-    body.accept(finder);
-    return finder.found;
-  }
-
-  bool _reads(Statement body, Variable variable) {
-    final finder = _VariableReader(variable);
-    body.accept(finder);
-    return finder.found;
-  }
-
   IrAssert _assert(Expression condition, Expression? message) {
     if (message is StringLiteral) {
       return IrAssert(expression(condition), literalMessage: message.value);
@@ -12662,17 +12568,6 @@ class KernelFrontend implements TypeWorld {
       message: message == null ? null : _sample(message),
     );
   }
-
-  /// A function's return type, which is the one place `Never` is allowed.
-  ///
-  /// Dart's `Never` is Rust's `!`, and stable Rust accepts `!` as a function's
-  /// return type and nowhere else: as a type argument it is "experimental",
-  /// and the first round that mapped it everywhere got 22 of those from rustc.
-  /// `noSuchMethod` declared `Never` is what this is for; a `Never` anywhere
-  /// else still refuses, through `_type`.
-  IrType _returnType(FunctionNode function) => function.returnType is NeverType
-      ? const IrType('Never')
-      : _type(function.returnType);
 
   /// The error the enclosing `catch` bound, for a `rethrow` to name.
   String? _caught;
@@ -12946,11 +12841,6 @@ class KernelFrontend implements TypeWorld {
     return lowered;
   }
 
-  /// The operators a `dynamic` receiver is downcast to `f64` for (see
-  /// `expression`): their result is an `f64` whatever the static type says,
-  /// and a `dynamic` slot taking it needs the sharing an `f64` gets.
-  static const _dynamicNumOperators = {'+', '-', '*', '/', '%', '~/'};
-
   /// The `num` members a `dynamic` receiver is downcast for.
   static const _dynamicNumMethods = {
     'abs',
@@ -12967,17 +12857,6 @@ class KernelFrontend implements TypeWorld {
     'toStringAsFixed',
     'sign',
   };
-
-  /// A downcast names a Rust type: the core scalars by their Rust names.
-  static String _rustScalar(String name) =>
-      const {
-        'num': 'f64',
-        'double': 'f64',
-        'int': 'i64',
-        'bool': 'bool',
-        'String': 'String',
-      }[name] ??
-      name;
 
   /// Whether an expression reads a variable, field or static *declared*
   /// `num` -- the one place the word can be trusted (see the operators).
@@ -13724,7 +13603,6 @@ class KernelFrontend implements TypeWorld {
           ? {for (final v in recovered) v: carriedValues[v]!}
           : const {},
     )..enumElementsDeclared = node.fields.any((f) => f.isEnumElement);
-    _superclass = cls.superclass;
     final refused = <String>[];
     if (base != null && _isStreamView(base)) {
       cls.fields.add(
@@ -14572,7 +14450,7 @@ class _CapturedWrites extends RecursiveVisitor {
   void visitInstanceInvocation(InstanceInvocation node) {
     final receiver = node.receiver;
     if (receiver is VariableGet &&
-        KernelFrontend._mutatingListNames.contains(node.name.text) &&
+        mutatingListNames.contains(node.name.text) &&
         node.name.text != 'length' &&
         _fromOutside(receiver.variable)) {
       found.add(receiver.variable);
@@ -14802,34 +14680,10 @@ class _ThisWriteFinder extends RecursiveVisitor {
   /// behind a `&self` trait, `_SystemFontsNotifier.removeListener`).
   @override
   void visitInstanceInvocation(InstanceInvocation node) {
-    const mutating = {
-      'add',
-      'addAll',
-      'remove',
-      'removeAt',
-      'removeLast',
-      'removeWhere',
-      'retainWhere',
-      'clear',
-      'insert',
-      'insertAll',
-      'sort',
-      'shuffle',
-      'addFirst',
-      'addLast',
-      'removeFirst',
-      'putIfAbsent',
-      'update',
-      'setRange',
-      'fillRange',
-      'replaceRange',
-      'setAll',
-      '[]=',
-    };
     final receiver = node.receiver;
     if (receiver is InstanceGet &&
         receiver.receiver is ThisExpression &&
-        mutating.contains(node.name.text)) {
+        mutatingThisFieldNames.contains(node.name.text)) {
       found = true;
     }
     super.visitInstanceInvocation(node);
@@ -15157,34 +15011,6 @@ class _ThrowFinder extends RecursiveVisitor {
       _ => 'Object',
     });
     super.visitThrow(node);
-  }
-}
-
-/// Whether a statement reads a particular variable.
-class _VariableReader extends RecursiveVisitor {
-  _VariableReader(this.variable);
-
-  final Variable variable;
-  bool found = false;
-
-  @override
-  void visitVariableGet(VariableGet node) {
-    if (node.variable == variable) found = true;
-    super.visitVariableGet(node);
-  }
-}
-
-/// Finds a `return` that belongs to the enclosing method, not to a closure
-/// written inside it -- hence the empty `visitFunctionNode`.
-class _EarlyExit extends RecursiveVisitor {
-  bool found = false;
-
-  @override
-  void visitFunctionNode(FunctionNode node) {}
-
-  @override
-  void visitReturnStatement(ReturnStatement node) {
-    found = true;
   }
 }
 
@@ -15785,7 +15611,7 @@ class _TempMutationFinder extends RecursiveVisitor {
     final receiver = node.receiver;
     if (receiver is VariableGet &&
         receiver.variable == variable &&
-        KernelFrontend._mutatingListNames.contains(node.name.text) &&
+        mutatingListNames.contains(node.name.text) &&
         node.name.text != 'length') {
       found = true;
       return;
@@ -15839,7 +15665,7 @@ class _StaticFillFinder extends RecursiveVisitor {
   void visitInstanceInvocation(InstanceInvocation node) {
     final field = _staticOf(node.receiver);
     if (field != null &&
-        KernelFrontend._mutatingListNames.contains(node.name.text) &&
+        mutatingListNames.contains(node.name.text) &&
         node.name.text != 'length') {
       found.add(field);
     }
@@ -15890,7 +15716,7 @@ class _FillFinder extends RecursiveVisitor {
   void visitInstanceInvocation(InstanceInvocation node) {
     if (found) return;
     if (_isParam(node.receiver) &&
-        KernelFrontend._mutatingListNames.contains(node.name.text) &&
+        mutatingListNames.contains(node.name.text) &&
         node.name.text != 'length') {
       found = true;
       return;

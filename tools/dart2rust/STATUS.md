@@ -385,8 +385,6 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 
 | 轮 | 规则 / 读数 | 数 |
 |---|---|---|
-| ws820 | `x is DateTime`, and one convention for a callback slot | stub **201**,拒绝 85,可达 64 |
-| ws821 | `.indexed`, `unawaited`, and what identity cannot answer | stub **202**,拒绝 80,可达 64 |
 | ws822 | `Map.addEntries`, and two rules that measured to nothing | stub **202**,拒绝 79,可达 64 |
 | ws823 | `x is Function` is a test on a signature, not on being a function | stub **203**,拒绝 78,可达 64 |
 | ws826 | an enum the tree shaker emptied is not a refusal | stub **202**,拒绝 71,可达 64 |
@@ -426,6 +424,7 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 | run877 | the reading, after ws875-ws877 | — |
 | ws878 | `identityHashCode` on a handle is the address behind it | stub **152**,拒绝 49,可达 64 |
 | ws879 | 泛型局部函数:翻得出来,编不过,整轮撤回(见〈撤回与作废〉) | stub **152**,拒绝 49,可达 64(未动) |
+| ws880 | 编译器自身:装回分析器与单测,四份变异名表并作一处,删死码 387 行 | stub **152**,拒绝 49,可达 64(**stub 集逐条与 ws878 相同**) |
 
 ## 下一步(2026-09-05 重铺)
 
@@ -565,6 +564,26 @@ ws601:  722 stub / 252 拒绝 / 63 crate 全可达(138 分区,延迟库合并后
    第 25 轮想比时发现任何组合都复现不出,那一轮的进度记录就此作废。
 
 ## 已知欠账
+
+**(2026-09-09 新增,ws880 由分析器查出,三条都还没量)**
+
+- **`super.<async 方法>()` 没有 await**:`_superCall` 算出了 `isAsync`
+  ——注释写着「async 的 super 函数是 `async fn`,调用方的 trait 要的是
+  盒装 future」——然后**这个值一次都没被读**,函数直接 `return call;`。
+  也就是说至今每个 async 的 super 调用都是当同步调的。改它会动到每一个
+  async super 调用点的输出,是独立一轮。位置:`lib/backend_rust.dart`
+  的 `KNOWN GAP` 注释处。
+- **变异名表的三处缺口**:四份表并进 `lib/member_names.dart` 时量出来的
+  (原样保留,没有顺手补):`_ThisWriteFinder` 缺 `removeRange`、`updateAll`
+  和全部 `ByteData` setter,所以 `this._x.removeRange(..)` 不算对象的写;
+  `_inPlace` 缺 `update_all`。补任何一条都会加宽哪些方法拿 `&mut self`,
+  要过链子。`test/member_names_test.dart` 把这三个差集钉死了,补的时候
+  测试会红,和量数的那次提交一起改。
+- **分析器前端不再编译**:`lib/frontend.dart` 有 49 个错,全是 analyzer
+  元素模型的 API 漂移;它的两个 driver(`bin/dart2rust.dart`、
+  `bin/census.dart`)同理。代价是 `bin/regen.py` 只有 `constinstance` 这
+  一个走 Kernel 的文件还能重生成,其余 35 个 `testdata/src/*.rs` 都不能。
+  留着还是删掉是项目决定,不是清理。
 
 - **RegExp 无引擎**(intl 的某些路径依赖;目前没踩到)。
 - **typed_data 共享 buffer 视图**:`_eightBytesAsList` 是拷贝不是视图,
