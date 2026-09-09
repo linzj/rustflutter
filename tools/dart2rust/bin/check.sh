@@ -41,7 +41,7 @@ echo "== dart analyze =="
 # with no ruler is what let this file's `|| true` sit here, so the *count* is
 # the gate: it may fall, never rise, and when it falls this number comes down
 # with it in the same commit.
-analyze_ceiling=80
+analyze_ceiling=76
 analyze_out=$(dart analyze --no-fatal-warnings lib bin test 2>&1) || status_analyze=1
 printf '%s\n' "$analyze_out"
 issues=$(printf '%s\n' "$analyze_out" |

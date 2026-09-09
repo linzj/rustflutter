@@ -1310,7 +1310,31 @@ augment class KernelFrontend {
       ..rustType = IrType('List', arguments: handle.arguments);
   }
 
-  IrExpr _receiver(Expression e) {
+  /// Whether `have` is `want` with an erased parameter still at its bound:
+  /// the same class, the same arity, and every argument either the same or
+  /// a top type where `want` names something else.
+  bool _sameButErased(IrType? have, IrType want) {
+    if (have == null || have.name != want.name) return false;
+    if (have.arguments.length != want.arguments.length) return false;
+    if (have.arguments.isEmpty) return false;
+    for (var i = 0; i < have.arguments.length; i++) {
+      final a = have.arguments[i];
+      final b = want.arguments[i];
+      final top =
+          (a.name == 'Object' || a.name == 'dynamic') && a.arguments.isEmpty;
+      if (!top && !sameRust(a, b)) return false;
+    }
+    return true;
+  }
+
+  /// `keepErased`: the call this receiver is for hands its result back from
+  /// the bound (`_throughReceiver` typed it `dynamic`, and the slot put a
+  /// `from_dynamic` around it). Casting the receiver back to the
+  /// instantiation Kernel's substitution wrote would make the callee hand
+  /// back its own `T` instead, under a conversion written for the erased
+  /// spelling -- `item.tween.transform(t)` in `TweenSequence._evaluateAt`,
+  /// which is the one site the erased-instantiation cast broke (ws934).
+  IrExpr _receiver(Expression e, {bool keepErased = false}) {
     final lowered = expression(e);
     var static = _staticType(e);
     // A receiver typed by a type parameter is its bound here (`_type`
@@ -1335,7 +1359,9 @@ augment class KernelFrontend {
     }
     if (!coerceByType || static is! InterfaceType) return lowered;
     try {
-      final out = coerce(lowered, _type(static));
+      final want = _type(static);
+      if (keepErased && _sameButErased(lowered.rustType, want)) return lowered;
+      final out = coerce(lowered, want);
       return out;
     } on Unsupported {
       return lowered;

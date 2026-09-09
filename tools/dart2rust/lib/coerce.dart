@@ -859,7 +859,25 @@ IrExpr coerceInto(
             for (var i = 0; i < have.arguments.length; i++)
               sameRust(have.arguments[i], slot.arguments[i]),
           ].every((s) => s);
-      if (same || !_concreteArguments(slot, world)) return value;
+      // ..and a value the *erased* spelling handed back -- `_Delegate<Rc<dyn
+      // Object>>` read off a `dyn InheritedProvider`, whose parameter is
+      // erased -- into the instantiation the code here works with: the
+      // object answers for its own by id, and a declaration's type
+      // parameter is a type with an id, since every one this compiler
+      // writes is `'static` (`_InheritedProviderScopeElement._delegate`,
+      // 7 stubs at ws934).
+      final erasedBack =
+          !same &&
+          have.arguments.length == slot.arguments.length &&
+          have.arguments.isNotEmpty &&
+          [
+            for (var i = 0; i < have.arguments.length; i++)
+              sameRust(have.arguments[i], slot.arguments[i]) ||
+                  _isTopType(have.arguments[i]),
+          ].every((s) => s);
+      if (same || (!_concreteArguments(slot, world) && !erasedBack)) {
+        return value;
+      }
       return IrCastTo(value, slot)..rustType = slot;
     }
     // A supertrait *without* arguments unsizes (`Rc<dyn Sub>` as `Rc<dyn
@@ -1001,6 +1019,10 @@ const preludeValueTypes = {
 };
 
 const _dynamicType = IrType('dynamic');
+
+/// A top type: what an erased parameter is spelled as.
+bool _isTopType(IrType t) =>
+    (t.name == 'Object' || t.name == 'dynamic') && t.arguments.isEmpty;
 
 /// Whether every name in a type's arguments is a class, scalar or prelude
 /// type the world knows -- not a type parameter of some declaration, which

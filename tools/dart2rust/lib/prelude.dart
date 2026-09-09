@@ -308,8 +308,23 @@ impl PartialEq for dyn Object {
 
 /// Dart's `Object.==` on two values whose classes are not known.
 pub fn object_eq(a: &dyn Object, b: &dyn Object) -> bool {
-    fn same<T: PartialEq + 'static>(a: &dyn Object, b: &dyn Object) -> Option<bool> {
-        match (a.as_any().downcast_ref::<T>(), b.as_any().downcast_ref::<T>()) {
+    dart_any_eq(a.as_any(), b.as_any())
+}
+
+/// The same, reached through a value's `Any` rather than through a `dyn
+/// Object`: a *trait object* (`dyn Key`) cannot be unsized into one, and
+/// `as_any` on it already answers about the struct inside. This is what a
+/// translated trait's `DartEq` calls, so `==` on an `Rc<dyn Key>`
+/// dispatches to the class's own `operator ==` the way Dart does --
+/// `GlobalObjectKey(this) == GlobalObjectKey(this)` is true, and comparing
+/// the two by address instead re-inflated `WidgetsApp` on every rebuild
+/// (193 times a run, ws934).
+pub fn dart_any_eq(a: &dyn std::any::Any, b: &dyn std::any::Any) -> bool {
+    fn same<T: PartialEq + 'static>(
+        a: &dyn std::any::Any,
+        b: &dyn std::any::Any,
+    ) -> Option<bool> {
+        match (a.downcast_ref::<T>(), b.downcast_ref::<T>()) {
             (Some(x), Some(y)) => Some(x == y),
             (Some(_), None) | (None, Some(_)) => Some(false),
             (None, None) => None,
@@ -317,11 +332,11 @@ pub fn object_eq(a: &dyn Object, b: &dyn Object) -> bool {
     }
     // The object's own answer where it is registered (`DART_EQS`: every
     // translated value made, the core values boxed); the core values below
-    // for what was never registered.
-    let any_a = a.as_any();
-    let id = std::any::Any::type_id(any_a);
+    // for what was never registered, and identity for what is neither --
+    // which is what a trait object answered before this dispatched.
+    let id = std::any::Any::type_id(a);
     let f = DART_EQS.with(|c| c.borrow().get(&id).copied());
-    if let Some(answer) = f.and_then(|f| f(any_a, b.as_any())) {
+    if let Some(answer) = f.and_then(|f| f(a, b)) {
         return answer;
     }
     same::<String>(a, b)
@@ -1035,7 +1050,12 @@ pub fn dart_register<T: DartAny>() {
 /// `hashCode` of an object reached through `dyn Object`: its own, by the
 /// registry; identity of the box for what was never registered.
 pub fn dart_object_hash(value: &dyn Object) -> i64 {
-    let any = value.as_any();
+    dart_any_hash(value.as_any())
+}
+
+/// The same through a value's `Any`, for a trait object's `DartEq` (see
+/// `dart_any_eq`): equal objects must hash alike, so the two go together.
+pub fn dart_any_hash(any: &dyn std::any::Any) -> i64 {
     let id = std::any::Any::type_id(any);
     let f = DART_HASHES.with(|c| c.borrow().get(&id).copied());
     match f.and_then(|f| f(any)) {

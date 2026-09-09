@@ -381,8 +381,11 @@ nullability 是 `nullable`,照字面读它,每一次往 `void` 槽里存都被�
 
 所以这条记在这里的意思不是「这个改动错」,而是:**在尺子能稳定读之前,
 不要合并这种半径的改动**。那条闸管的是全程序每一个 `void` 槽,两个桩换
-不起一次读不出来的回归。要重做,先把尺子做稳(见「已知欠账」里那条),
-再把这个改动放回去量一次。
+不起一次读不出来的回归。
+
+**(2026-09-10 补)尺子已经稳了**——ws934 治好了抖动(连采五次全是 707 行 /
+类型差异 0 / 0 panic),所以这条现在**可以重做**:把 `param is VoidType`
+放回去,跑一次链和五次渲染树,读数就有意义了。这是下一步该做的事之一。
 
 近期的(细节在活账/git):
 
@@ -467,23 +470,6 @@ nullability 是 `nullable`,照字面读它,每一次往 `void` 槽里存都被�
 
 | 轮 | 规则 / 读数 | 数 |
 |---|---|---|
-| ws853 | a class that *is* the prelude's future has no members of its own | stub **201**,拒绝 57,可达 64 |
-| ws854 | a tear-off adapter returns into its slot, like any other value | stub **201**,拒绝 57,可达 64 |
-| ws855 | an adapter holds `this` itself, or it borrows whoever does | stub **195**,拒绝 57,可达 64 |
-| ws856/857 | a closure into an optional function slot is spelled, by a binding and not a cast | stub **195**,拒绝 57,可达 64 |
-| ws858 | a null-aware map spells its return where the body cannot fail | stub **193**,拒绝 57,可达 64 |
-| ws859/860 | a trait that implements one of the prelude's has it above it | stub **189**,拒绝 57,可达 64 |
-| ws861 | a value widens under the `Option` only when it is in one | stub **186**,拒绝 57,可达 64 |
-| ws862 | the prelude's `DateTime` says what Dart's says | stub **184**,拒绝 57,可达 64 |
-| ws863 | an `Option` hashes whatever it holds, not only a handle | stub **181**,拒绝 57,可达 64 |
-| ws866 | a chain step returns against its own return, as any closure does | stub **178**,拒绝 57,可达 64 |
-| ws867 | each arm of a conditional widens, not the conditional | stub **175**,拒绝 57,可达 64 |
-| ws868 | an arm that never arrives is one whether or not a `Some` is on it | stub **172**,拒绝 57,可达 64 |
-| ws869 | `Uri.tryParse` is a name the prelude did not have | stub **171**,拒绝 57,可达 64 |
-| ws870 | a wider impl's field is read in this class's terms | stub **169**,拒绝 57,可达 64 |
-| ws871 | a mapped element's body unwraps, as a chain step's does | stub **166**,拒绝 57,可达 64 |
-| ws872 | `hashCode` on a handle reaches the class's own, not `Rc`'s blanket | stub **164**,拒绝 57,可达 64 |
-| ws873 | identity on a nullable slot asks the spelling, not the class table | stub **159**,拒绝 57,可达 64 |
 | ws874 | a method body falls into the null of its own type, once | stub **156**,拒绝 57,可达 64 |
 | ws875 | a scalar stands in an interface slot it implements | stub **154**,拒绝 57,可达 64 |
 | ws876 | `a ?? b` is an object where Dart says `Object`, not its text | stub **152**,拒绝 57,可达 64 |
@@ -523,6 +509,7 @@ nullability 是 `nullable`,照字面读它,每一次往 `void` 槽里存都被�
 | ws913 | 两条都是「槽的 Rust 类型和送进去的东西对不上,而中间那道转换没人叫」。一、**`<num>[..]` 里的 `int` 元素**:prelude 把 `num` 拼成 `f64`,而 `coerceInto` 里 `slot.name == 'num'` 是**原样放行**——那条是为算术写的(`num.+` 收 `num`,`i + 1` 还是 `i64`),对元素位置就是错的。`TextInput._setSelectionRects` 建的是 `<num>[bounds.left, .., rect.position, rect.direction.index]`,double 和 int 混着,`Vec<f64>` 只收一种。判定放在列表字面量的元素上(`listElement`),两个降列表字面量的地方(`_listLiteral` 和 CFE 的 `_GrowableList._literalN`)共用它。二、**`dynamic` 进 prelude 的标量槽**:`DateTime.fromMillisecondsSinceEpoch(arguments)` 的 `arguments` 是从 `Map<String, Object?>` 里读出来的句柄,而 prelude 收 `i64`;`translated` 那道闸从来不问,因为标量形参不提任何顶类型 | stub 129 → **127**、拒绝 33、可达 69、0 error;与 ws927 逐条比新增 0,少了 `set_selection_rects` 和 `_date_picker_route` |
 | ws915 | **`SynchronousFuture.then` 必须当场回调**,而这里它派了个任务。Flutter 自己在 `_RootRestorationScopeState._replaceRootBucket` 里写了断言:`assert(!_isWaitingForRootBucket); // Ensure that load finished synchronously.`——靠的就是 `rootBucket` 在桶已经有效时返回 `SynchronousFuture`,`then` 同步回调。派任务的话,那一帧 `build` 返回 `SizedBox.shrink()`,整棵子树就没了。prelude 的 `DartFuture` 加一位 `synchronous`(只有 `DartFuture::synchronous` 会置),`then` 见到它就当场跑 `on_value` 并交回另一个同步 future;`Future.value(x).then(f)` 不受影响——Dart 那个本来就是微任务。**认哪个类不看名字**:问它自己的 `then` 体里有没有把回调参数当函数调用(`_CallsParameter`)——`SynchronousFuture.then` 里是 `onValue(_value)`,`package:async` 的 `DelegatingFuture.then` 是转交给别的 future,不算。这个程序里 `_futureLike` 只匹配到 `SynchronousFuture` 一个类(`package:async` 不在可达集里),但判定是照体写的,再来一个也答得对 | stub **127**(不变)、拒绝 33、可达 69、0 error;`future_synchronous` 出现在 10 个文件里,包括 `services_restoration.rs`;**渲染树的抖动没治好**:5 次采样 2 满 3 空,和改之前分不出来。**帧数 432 → 290(降 33%),原因没查**——这是这条改动已知的代价,记在这里 |
 | ws916 | `xs.iter().map(|child| ..)` 交给体的是 `&Rc<dyn X>`,比句柄多一层引用,而接收者按 `_isHandle` 拼成 `&*child`——少解一层,于是 `FocusNode::to_diagnostics_node(&*child, ..)` 说「`Rc<dyn FocusNode>` 没有实现 `FocusNode`」。空安全绑定(`IrBound`)早就有这条 `&**`,缺的是**谁知道这个局部是按引用绑的**——只有 `_stepClosure` 知道,所以它像记 `_cellLocals` 一样把这些名字记进 `_refLocals`,接收者那一处照着 `IrBound` 的样子多解一层 | stub 127 → **126**、拒绝 33、可达 69、0 error;与 ws932 逐条比新增 0,少了 `focus_node_super_debug_describe_children` |
+| ws934 | **trait 对象的 `==` 按地址比,而 Dart 的 `==` 派发到对象**:`WidgetsApp(key: GlobalObjectKey(this))` 的两把钥匙包着同一个 state,Dart 说相等、这里说不等,于是 `canUpdate` 说不能更新,`WidgetsApp` 连同整棵子树每次 rebuild 都重建(60 秒 193 次)——渲染尺子抖了十几轮就是这件事,细节在〈已知欠账〉。改成和 `dyn Object` 一样走对象自己的答案(prelude 的 `dart_any_eq`/`dart_any_hash`:注册表里有就用类的 `==`,没有退回地址)。顺路两条:擦除过的实例化在槽上 cast 回来(类型参数带 `'static`,`TypeId` 问得出),而「结果按界读回来」的调用上接收者不做这次 cast(否则转换两次);`statecheck.py` 点名的 `_refLocals` 补进 `_member` 的存/还 | stub **126 → 124**(逐条比新增 **0**)、拒绝 33、可达 69、0 error;21 个 fixture 全 AGREE;**run935 连采五次全是 707 行 / 类型差异 0 / 0 panic**——尺子第一次不抖 |
 | ws891 | 第五轮复审抓到:ws889 落地后 `regen.py` 的 `hints()` 会**永远误报**——它按 `'throws:' not in driver` 字面判定,而正确的修法恰恰是把那个参数删掉,所以那条提示从此指向唯一不该做的修法。换成 `DECIDED_IN`:只指出决定写在哪两个函数里,不对文件的现状下任何断言。顺手分开探针的两种失败(没调用 vs 调用了没 `?`) | `fails:` 在 frontend.dart 已 11 处、`throws:` 在 kernel driver 已 0 处——两条提示一条正确变哑、一条永久说谎,实测属实;两个诊断分支各跑一次验过 |
 
 ## 下一步(2026-09-05 重铺)
@@ -728,72 +715,83 @@ ws344 才照到它,一量 26199 个,削到 782。
   改动要靠**语义**(别名写得回去、`identical` 对列表不再恒假)来立论,
   不能靠性能。
 
-- **渲染树尺子的读数不是每次都一样,而且不是「帧数边界」那么简单**。
-  同一个二进制,只改预算:
+- **渲染树尺子抖了十几轮,根因找到了,尺子现在不抖了(ws934)。**
+
+  根因是**一条 `==`**:`impl DartEq for dyn Trait` 后端写的是
+  `std::ptr::addr_eq`——按地址比。Dart 的 `==` 是**派发到对象**上的,
+  `Key` 的每个子类都自己重写了 `==`。`_MaterialAppState._buildWidgetApp`
+  建的是 `WidgetsApp(key: GlobalObjectKey(this))`:两次 build 造出两个
+  `GlobalObjectKey`,包着同一个 state,Dart 说相等,这里说不等。于是
 
   ```
-  45 秒   树 2 行    325 帧
-  60 秒   树 707 行  432 帧   ← 连跑三次:707 / 707 / 2
-  90 秒   树 2 行    653 帧
+  Widget.canUpdate(old, new)  ->  runtimeType 相同,key 不等  ->  false
+  Element.updateChild         ->  deactivate + inflate,整棵子树重建
   ```
 
-  45 秒空、60 秒多半满、90 秒空——所以**树是周期性地被清空又建起来的**,
-  不是「跑到某一帧之后就塌了」。换成帧预算解决不了,因为这个程序是定时器
-  驱动的,第 N 帧对应的状态本身就跟着墙钟走。
-
-  **不是周期,是这个程序有时候根本没把首页建起来。**在每 20 帧打一次树的
-  大小(`DART2RUST_TREE_EVERY`,`dart_runtime` 里)之后看得很清楚:那一次
-  跑的整整 380 帧里,树一直是 **6 行**,从来没到过 707。而且帧数自己就在
-  说这件事——
+  在 `element_super_update_child` 的重建分支上挂一个**静默**普查(累加到
+  `thread_local`,预算用尽时打一行),一次跑得到:
 
   ```
-  好的读数   432 / 432 / 436 / 432 帧   树 707 行
-  坏的读数   433 / 433 / 433 / 429 帧   树 2 行
+  PROBE reinflate total=291
+    [WidgetsApp -> WidgetsApp tyeq=true keyeq=false okey=GlobalObjectKey nkey=GlobalObjectKey x193]
+    [SizedBox -> Semantics x97]
+    [SizedBox -> UnmanagedRestorationScope x1]
   ```
 
-  **坏的那些帧数更多**:树是空的,每一帧就便宜,所以画得更多。也就是说
-  不是「建好了又被拆掉」,而是**那一次启动里首页压根没建起来**。gallery
-  启动时要等 `flutter/assets`、`path_provider`、`flutter/restoration` 这些
-  异步的东西回话,这更像是一场**跟资源加载的竞态**:赢了就有 707 行,输了
-  就停在启动页。
-
-  副作用也量到了:**打这个探针本身会输**——每 20 帧走一次树的开销足够让
-  它每次都建不起来。所以这个探针只能用来看形状,不能用来当尺子。
-
-  **再查一层,是「建起来了又退回去」,不是「没建起来」。**空的那次把元素树
-  也 dump 出来:23 个节点,最底下是
+  **193 次**。每重建一次,下面就有一个新的 `_LocalizationsState`,它的
+  `_locale` 又是 null,`build` 返回 `SizedBox.shrink()`——树就只剩 6 行,
+  直到那一份代理加载完(`LocaleNamesLocalizationsDelegate.load` 在坏的那次
+  正挂着,好的那次不挂)。所以树是**来回摆**的,不是「建不起来」:
 
   ```
-  RootRestorationScope (StatefulElement)
-    SizedBox (SingleChildRenderObjectElement)
+  DART2RUST_TREE_EVERY=50   frame 50 707 / 100 6 / 150 6 / 200 707 / 250 6
   ```
 
-  这是 Flutter 自己的形状——`_RootRestorationScopeState.build` 在
-  `_isWaitingForRootBucket` 时返回 `SizedBox.shrink()`。而**空的那次同样
-  造出了一堆 `MaterialPageRouteImpl` 的 completer**(在预算用尽时报的
-  「哪些 completer 没完成」里,好的坏的一模一样),说明首页**是建起来过
-  的**,之后才退回等待态。宿主对 `flutter/restoration` 只答一次(null),
-  好坏两次的消息数也一样。
+  预算到期时 dump 落在哪一相,读数就是哪一个。改完之后连采五次:
+  **707 行 / 类型差异 0 / 0 panic,五次一模一样**;而且程序现在会**自己跑完**
+  (6 帧后空闲退出,`RUN-DONE exit=0`),不再是每帧重建整棵树撑到 432 帧。
 
-  再查下去,`_replaceRootBucket` **一次都没被调用过**(好坏两边都是 0),
-  引擎那一趟也好好地回来了(探针:`begin` / `replied pending=true` /
-  `parsed ok`,好坏两边一模一样)。所以不是「重新进入等待」,是**新的一个
-  `_RootRestorationScopeState` 走了 `_rootBucketIsValid` 那条路**——那条路
-  Dart 返回的是 `SynchronousFuture`,`then` 当场回调,`didChangeDependencies`
-  结束时 `_rootBucketValid` 已经是 true;而这里 `then` 派了个任务,
-  于是那一帧 `build` 返回 `SizedBox.shrink()`,整棵子树没了。
+  **这条线索上此前记错的三件,一并更正:**
 
-  **`SynchronousFuture` 的 `then` 现在是同步的了(ws915),但抖动没治好**。
-  ws933 之后一共采了 8 次:先 3 次全满(当时以为治好了,**是运气**),
-  再 5 次里 2 满 3 空。合起来 **8 次 5 满**,大约六成——和改之前分不出来。
-  所以 `SynchronousFuture` 那条是**另一件对的事**(见活账),不是这一件。
+  1. 「那一次跑的整整 380 帧里,树一直是 6 行,从来没到过 707」——**错**。
+     那个探针是每 20 帧走一遍树,开销本身把它压住了;换成每 50 帧就看得见
+     707 和 6 交替。
+  2. 空树的那个 `SizedBox` 不是 `_RootRestorationScopeState` 的。它的
+     blank 分支在好坏两次里都只走 **1** 次(静默计数器量的)。空树的第 5 层
+     是 `_LocalizationsState.build` 的 `SizedBox.shrink()`——比它低四层。
+  3. 「一次跑里有 197 个不同的 `_RootRestorationScopeState`」——数是真的
+     (以 `Rc::as_ptr(&self._root_bucket_valid)` 作身份,约 194 个),但**好坏
+     两次一样**(好的那次 194/193),所以它是同一个重建的**后果**,不是
+     区分好坏的那一条。
 
-  **读法**:连采三次,有一次是 707 行且 diff 为 0 就算没破线;三次全空才
-  算破线。这条线索还开着,查的方向仍是「那一次输掉的是什么」。
+  **量这种东西必须用静默探针**:每次 build 打一行(196 行)会让 7/7 次都变空,
+  而同一个二进制不打就是六成满。计数器累加在 prelude 的 `thread_local` 里,
+  预算报告时打一行——这条已写进 memory。
 
-  (顺带:预算用尽时现在会一起报「还挂着哪些 future / 哪些 completer 没完成」,
-  以前只报定时器;`DART2RUST_TREE_EVERY` 每 n 帧打一次树的大小。两个都是
-  这次查出来的工具。)
+  (`DART2RUST_TREE_EVERY` 和预算用尽时的「还挂着哪些 future / 哪些 completer
+  没完成」都是这次查出来的工具,留着。)
+
+- **provider 的擦除账还剩 6 个桩,卡在 `<T as DartNullable>::Or` 这一层。**
+  ws934 的「擦除过的实例化在槽上 cast 回来」让
+  `widget.owner._delegate()` 这一步过了(`dart_cast_to::<dyn _Delegate<T>>()`,
+  对象的 `dart_cast` 本来就答得出这个 `TypeId`),但下一句立刻换了个错:
+
+  ```
+  cascaded.set_element(Some(self.dart_self_ref().get()))
+  expected Rc<_InheritedProviderScopeElement<<T as DartNullable>::Or>>
+  found    Rc<_InheritedProviderScopeElement<T>>
+  ```
+
+  也就是**投影(`Or`)和裸参数在同一个类上混着用**。这是另一条规则,不是
+  这一条;6 个桩(`value` / `unmount` / `build` / `update` / `reassemble` /
+  `mount`)全是同一形状,清起来应该是一次。
+
+- **`erasedread` 夹具还没真正复现那条规则。**两端 AGREE,但生成出来的
+  `Owner<T>` **没有被擦除**——协变扫描确实标了它
+  (`TRACE_COVARIANT_SITE Owner<T> ... Owner<int> -> Owner<Object>`,
+  `TRACE_COVARIANT Owner <T>`),而 `_erasedParameter` 仍答 false,原因没查出来。
+  所以这条规则目前的证据是**链上的桩数**(2 个清掉、0 个新增)和
+  provider 生成代码里那句 cast,不是夹具。夹具欠着。
 
 - **`Rc<Self>` 做 `dyn` 接收者是合法的,验过了**(work.md 第 3 条动手前的
   那个「别假设」)。十行 Rust,`rustc --edition 2021` 直接过并跑出 `ab/3`:

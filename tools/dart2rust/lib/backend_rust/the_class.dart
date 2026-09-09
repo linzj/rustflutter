@@ -373,18 +373,24 @@ augment class RustBackend {
     for (final bound in _superBoundTraits) {
       if (already.add(bare(bound))) supers.add(bound);
     }
-    // A trait object compares by identity (`DartEq`), as `dyn Object` does.
+    // A trait object compares as `dyn Object` does: the *object's* own
+    // `operator ==`, by the registry, and identity for a class that
+    // declares none (the prelude's `dart_any_eq`). By address instead --
+    // which this wrote until ws934 -- `GlobalObjectKey(this) ==
+    // GlobalObjectKey(this)` was false, so `Widget.canUpdate` said no and
+    // `MaterialApp`'s `WidgetsApp` element was thrown away and re-inflated
+    // on every rebuild: 193 times in a 60s run, each one a fresh
+    // `_LocalizationsState` whose locale had to load again, which is what
+    // emptied the render tree between frames.
     _line(
       'impl${_generics(cls, static: true, clone: false)} DartEq for dyn ${cls.name}${cls.typeParameters.isEmpty ? '' : '<${cls.typeParameters.join(', ')}>'} {',
     );
     _indent++;
     _line(
-      'fn dart_eq(&self, other: &Self) -> bool { std::ptr::addr_eq(self as *const Self, other as *const Self) }',
+      'fn dart_eq(&self, other: &Self) -> bool { dart_any_eq(self.as_any(), other.as_any()) }',
     );
-    // ..and hashes by it, consistently (see the prelude's `DartEq`).
-    _line(
-      'fn dart_hash_code(&self) -> i64 { (self as *const Self as *const u8 as usize as i64) & 0x3fff_ffff }',
-    );
+    // ..and hashes the same way, consistently (see the prelude's `DartEq`).
+    _line('fn dart_hash_code(&self) -> i64 { dart_any_hash(self.as_any()) }');
     _indent--;
     _line('}');
     _line('');

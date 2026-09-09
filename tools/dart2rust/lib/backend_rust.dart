@@ -369,6 +369,7 @@ class RustBackend {
     final returns = _returns;
     final selfBinding = _selfBinding;
     final spellsReturn = _spellsReturn;
+    final refLocals = _refLocals;
     try {
       body();
       return true;
@@ -419,6 +420,7 @@ class RustBackend {
       _returns = returns;
       _selfBinding = selfBinding;
       _spellsReturn = spellsReturn;
+      _refLocals = refLocals;
     }
   }
 

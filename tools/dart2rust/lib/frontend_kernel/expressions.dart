@@ -69,7 +69,7 @@ augment class KernelFrontend {
               _throughReceiver(
                 receiver,
                 interfaceTarget,
-                interfaceTarget.function?.returnType,
+                interfaceTarget.function.returnType,
               ),
             InstanceGet(:final interfaceTarget, :final receiver) =>
               _erasedRead(interfaceTarget, interfaceTarget.getterType) ??
@@ -90,8 +90,8 @@ augment class KernelFrontend {
       // it into a `dynamic` slot from there.
       final projected = switch (node) {
         InstanceInvocation(:final interfaceTarget) =>
-          _topBound(interfaceTarget.function?.returnType, static) ??
-              _erasedResult(interfaceTarget.function?.returnType),
+          _topBound(interfaceTarget.function.returnType, static) ??
+              _erasedResult(interfaceTarget.function.returnType),
         InstanceGet(:final interfaceTarget) =>
           _topBound(interfaceTarget.getterType, static) ??
               _erasedResult(interfaceTarget.getterType),
@@ -109,7 +109,7 @@ augment class KernelFrontend {
       // `from_option` that took an `Option`, the gentrait fixture).
       final declaredReturn = switch (node) {
         InstanceInvocation(:final interfaceTarget) =>
-          interfaceTarget.function?.returnType,
+          interfaceTarget.function.returnType,
         StaticInvocation(:final target) => target.function.returnType,
         SuperMethodInvocation(:final interfaceTarget) =>
           interfaceTarget.function.returnType,
@@ -117,7 +117,7 @@ augment class KernelFrontend {
       };
       final calleeParams = switch (node) {
         InstanceInvocation(:final interfaceTarget) =>
-          interfaceTarget.function?.typeParameters ?? const <TypeParameter>[],
+          interfaceTarget.function.typeParameters,
         StaticInvocation(:final target) => target.function.typeParameters,
         SuperMethodInvocation(:final interfaceTarget) =>
           interfaceTarget.function.typeParameters,
@@ -542,7 +542,7 @@ augment class KernelFrontend {
   DartType? _declaredTypeOf(Expression e) {
     if (e is InstanceGet) return e.interfaceTarget.getterType;
     if (e is VariableGet) return e.variable.type;
-    if (e is InstanceInvocation) return e.interfaceTarget.function?.returnType;
+    if (e is InstanceInvocation) return e.interfaceTarget.function.returnType;
     if (e is StaticGet) return e.target.getterType;
     if (e is StaticInvocation) return e.target.function.returnType;
     return null;

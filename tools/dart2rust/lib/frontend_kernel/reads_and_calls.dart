@@ -55,7 +55,18 @@ augment class KernelFrontend {
       final element = _currentOf[receiver.variable];
       if (element != null) return IrLocal(element);
     }
-    final target = receiver is ThisExpression ? null : _receiver(receiver);
+    final target = receiver is ThisExpression
+        ? null
+        : _receiver(
+            receiver,
+            keepErased:
+                _throughReceiver(
+                  receiver,
+                  node.interfaceTarget,
+                  node.interfaceTarget.getterType,
+                ) !=
+                null,
+          );
     // A getter whose landing member is a field this class holds (a mixin
     // clone's) is read as the field, typed as the clone declares it -- as
     // a write to it is stored (`_instanceSet`). Through the trait's getter
@@ -1142,7 +1153,18 @@ augment class KernelFrontend {
         node.arguments.types.length == target.function.typeParameters.length;
     final call = _qualified(
       IrCall(
-        receiver is ThisExpression ? null : _receiver(receiver),
+        receiver is ThisExpression
+            ? null
+            : _receiver(
+                receiver,
+                keepErased:
+                    _throughReceiver(
+                      receiver,
+                      node.interfaceTarget,
+                      node.interfaceTarget.function.returnType,
+                    ) !=
+                    null,
+              ),
         name,
         args,
         typeArguments: withTypeArgs

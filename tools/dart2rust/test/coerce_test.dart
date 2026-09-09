@@ -36,7 +36,10 @@ void main() {
   expect(rustScalar('Widget'), 'Widget', 'anything else is left alone');
 
   group('normalName');
-  expect(normalName('Iterable'), 'List', 'an Iterable is a List here');
+  // Since ws908 an `Iterable` is a trait of its own (`Rc<dyn DartIterable<T>>`)
+  // and no longer another spelling of `List`: the name stands.
+  expect(normalName('Iterable'), 'Iterable', 'an Iterable is its own trait');
+  expect(normalName('LinkedHashSet'), 'Set', "but dart:'s set aliases are Set");
   expect(normalName('dynamic'), 'Object', 'and dynamic is Object');
   expect(normalName('num'), 'double', 'and num is double');
   expect(normalName('Set'), 'Set', 'a Set is not a List');
@@ -46,8 +49,8 @@ void main() {
   expectTrue(!sameRust(_int, _double), 'int and double are not the same Rust');
   expectTrue(sameRust(_num, _double), 'but num and double are');
   expectTrue(
-    sameRust(_list(_double), IrType('Iterable', arguments: [_num])),
-    'Iterable<num> and List<double> spell one Rust type',
+    !sameRust(_list(_double), IrType('Iterable', arguments: [_num])),
+    'a List is not an Iterable: `Vec<f64>` against `Rc<dyn DartIterable<f64>>`',
   );
   expectTrue(
     sameRust(const IrType('List'), _list(_string)),
