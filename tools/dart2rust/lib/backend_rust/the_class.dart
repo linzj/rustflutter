@@ -351,6 +351,16 @@ augment class RustBackend {
             !i.arguments.any((a) => a.name == cls.name))
           '${i.name}${i.arguments.isEmpty ? '' : '<${i.arguments.map(type).join(', ')}>'}',
     }.toList();
+    // ..and whatever the super functions just written need `__Self` to be
+    // beyond this trait (`_superBoundTraits`): the defaults below hand
+    // `self` to them, and `Self` promises only what stands here. Skipped
+    // where the name is already above, whatever the two spell their
+    // arguments -- Rust takes one supertrait per trait.
+    String bare(String t) => t.split('<').first.split('::').last;
+    final already = {for (final s in supers) bare(s)};
+    for (final bound in _superBoundTraits) {
+      if (already.add(bare(bound))) supers.add(bound);
+    }
     // A trait object compares by identity (`DartEq`), as `dyn Object` does.
     _line(
       'impl${_generics(cls, static: true, clone: false)} DartEq for dyn ${cls.name}${cls.typeParameters.isEmpty ? '' : '<${cls.typeParameters.join(', ')}>'} {',

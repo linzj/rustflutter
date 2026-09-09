@@ -85,6 +85,21 @@ augment class RustBackend {
   /// of it still line up, which a missing method would not.
   final _superFailed = <String>{};
 
+  /// Traits a super function needs `__Self` to be *beyond* this class.
+  ///
+  /// A mixin's `super.paint()` dispatches to the previous mixin of the
+  /// application, which its `on` clause never named, so the free function
+  /// asks for it (`superBounds` above). The trait's matching default then
+  /// hands `self` to that function -- and `Self` there is only this trait,
+  /// which promises none of it. So whatever the functions ask for goes
+  /// above the trait as well: `RenderAnimatedOpacityMixin` needing
+  /// `RenderProxyBoxMixin`, 3 stubs at ws885.
+  ///
+  /// Every implementer already satisfies it, which is why the super call
+  /// resolved there in the first place -- the same fact the bound on the
+  /// free function rests on.
+  final _superBoundTraits = <String>{};
+
   void _emitSuperFns() {
     for (final method in cls.methods) {
       if (method.isStatic) continue;
@@ -272,15 +287,16 @@ augment class RustBackend {
       // its `on` clause never named (`SchedulerBinding`'s reaching
       // `GestureBinding`'s, 3 stubs on the start path at run448).
       final reached = _WalkSelf()..statement(method.body);
-      final superBounds = [
+      final beyond = [
         for (final MapEntry(key: base, value: arguments)
             in reached.superBases.entries)
           if (base != cls.name &&
               base != 'Object' &&
               _world.isTrait(base) &&
               !_world.isBelow(cls.name, base))
-            ' + $base${arguments.isEmpty ? _traitArgsOf(base) : '<${arguments.map(type).join(', ')}>'}',
-      ].join();
+            '$base${arguments.isEmpty ? _traitArgsOf(base) : '<${arguments.map(type).join(', ')}>'}',
+      ];
+      final superBounds = [for (final b in beyond) ' + $b'].join();
       final generics =
           '<__Self: ${cls.name}${_generics(cls)}$superBounds + ?Sized + \'static'
           '${cls.typeParameters.isEmpty ? '' : ', ${cls.typeParameters.map((p) => "$p: Clone${_nbp(cls, p)} + 'static").join(', ')}'}'
@@ -348,6 +364,10 @@ augment class RustBackend {
       _selfName = 'self';
       _indent--;
       _line('}');
+      // Recorded only now: a refusal above rolls the function back, and a
+      // bound for a function that was not written is a promise nothing asks
+      // for. See `_superBoundTraits`.
+      _superBoundTraits.addAll(beyond);
     }
   }
 

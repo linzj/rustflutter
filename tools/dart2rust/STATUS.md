@@ -425,6 +425,7 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 | ws882 | part 文件再切细:按成员边界切进两个 5k 文件,最大 part 1,841 行 | **生成的 Rust 与拆前逐字节相同**(md5 4429c8f1),故 152/49/64 不变——这一轮只跑了翻译,没跑 cargo 九轮 |
 | ws883 | `_expressionRaw` 1,717 行一个方法拆成十段 run,`the_class` 再切四份;最大 part 1,452 | **生成的 Rust 仍与拆前逐字节相同**(md5 4429c8f1) |
 | ws884 | 拒绝回滚的名单补全(9→22 字段)并加 `bin/statecheck.py` 守住 | stub **152**,拒绝 49,可达 64;**生成的 Rust 一字未动**——是陷阱不是活 bug |
+| ws885 | mixin 的 super 函数要 `__Self` 是什么,trait 头上就得先是什么 | stub **150**,拒绝 49,可达 64;渲染树与 run877 逐字节相同(197 帧 0 panic) |
 
 ## 下一步(2026-09-05 重铺)
 
@@ -652,6 +653,20 @@ ws601:  722 stub / 252 拒绝 / 63 crate 全可达(138 分区,延迟库合并后
 
 ## 已知欠账
 
+**(2026-09-09 新增,ws885 自己换出来的)**
+
+- **两个 trait 同名成员,在 trait 体里调不了**:ws885 把 super 函数要求的
+  额外 trait 放到 trait 头上之后,`RenderObjectWithLayoutCallbackMixin`
+  同时在 `RenderObject` 和 `RenderBox` 之下,`this_.constraints()` 就成了
+  E0034(`widgets_layout_builder.rs` 的
+  `render_abstract_layout_builder_mixin_super_layout_callback`,这一轮清掉
+  三个换来的一个)。挑限定名的机制**已经有**——`_accessorQualifier` 正是
+  「链上有两个声明才返回」的判定,`calls.dart` 里只在闭包句柄
+  (`_selfName == _countedSelf`)上用它。要补两处:把这个判定也用在
+  trait 体里的 `this`(`_fieldsAreAccessors`),并让 `_supertypesOf` 认得
+  ws885 新加的那些父 trait(`_superBoundTraits`),否则链上找不到第二个
+  声明,判定返回 null。是下一轮的活,不是这一轮的收尾。
+
 **(2026-09-09 新增,ws880 由分析器查出,三条都还没量)**
 
 - **`super.<async 方法>()` 没有 await**:`_superCall` 算出了 `isAsync`
@@ -686,7 +701,7 @@ ws601:  722 stub / 252 拒绝 / 63 crate 全可达(138 分区,延迟库合并后
 - **无 `==` 的值类做键**:Dart 按身份,值 struct 按结构;AOT 还会删未读字段
   (run558 记,不在路径上)。
 - **Goal 3 差 `size=`**:渲染树类型序列已 6/6,dump 时拿不到 layout 结果。
-- ~~**727 个 stub 的长尾**~~(2026-09-09:**152**):最大类是 "mismatched types"(约一半),其余是参数数、
+- ~~**727 个 stub 的长尾**~~(2026-09-09:**150**):最大类是 "mismatched types"(约一半),其余是参数数、
   注解、闭包形状等;随运行尺子推进逐站收。
 - **擦除泛型的静态类型失真**:擦除 trait 的方法返回 `Elem<C>` 时 Rust 给的是
   `Elem<Rc<dyn Constraints>>`,而 Dart 侧局部声明为 `Elem<BoxC>`——`let e: Rc<Elem<BoxC>>` 对不上
