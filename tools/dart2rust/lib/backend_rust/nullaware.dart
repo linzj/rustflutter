@@ -577,6 +577,9 @@ augment class RustBackend {
         '$owner.$name(...)',
       );
     }
+    if (owner == 'Object' && name == 'hashAllUnordered' && args.length == 1) {
+      return 'object_hash_all_unordered(${expr(args.single)})';
+    }
     if (owner == 'Object' && name == 'hashAll' && args.length == 1) {
       return 'object_hash_all(${expr(args.single)})';
     }

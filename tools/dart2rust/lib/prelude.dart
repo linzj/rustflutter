@@ -6658,12 +6658,44 @@ fn dart_hash_part<T: DartAny>(hash: &mut i64, part: &T) {
     *hash = (hash.wrapping_mul(31)).wrapping_add(h) & 0x3fff_ffff;
 }
 /// `Object.hashAll(xs)`: a hash of the elements' `hashCode`s in order.
-pub fn object_hash_all<T: DartAny>(items: Vec<T>) -> i64 {
+///
+/// Over *anything Dart iterates*, not a `Vec`: `Object.hashAll(xs)` takes
+/// an `Iterable<Object?>`, and `RenderObject.hashCode` hands it a `Set`
+/// (ws968).
+pub fn object_hash_all<T: DartAny, I: IntoIterator<Item = T>>(items: I) -> i64 {
     let mut hash: i64 = 0;
-    for item in &items {
-        dart_hash_part(&mut hash, item);
+    for item in items {
+        dart_hash_part(&mut hash, &item);
     }
     hash & 0x3fff_ffff
+}
+
+/// `Object.hashAllUnordered(xs)`: a hash of the elements' `hashCode`s that
+/// does *not* depend on the order they come in. Each element's hash is
+/// folded in commutatively -- summed and xored, as the SDK's own does --
+/// so two collections with the same elements in any order agree
+/// (`RenderObject.hashCode` over its children's, ws968).
+pub fn object_hash_all_unordered<T: DartAny, I: IntoIterator<Item = T>>(
+    items: I,
+) -> i64 {
+    let mut sum: i64 = 0;
+    let mut xor: i64 = 0;
+    let mut count: i64 = 0;
+    for item in items {
+        let item = &item;
+        if item.dart_any_ref().downcast_ref::<SentinelValue>().is_some() {
+            continue;
+        }
+        let h = item.dart_hash_any();
+        sum = sum.wrapping_add(h) & 0x3fff_ffff;
+        xor ^= h & 0x3fff_ffff;
+        count += 1;
+    }
+    let mut hash: i64 = 0;
+    for part in [sum, xor, count] {
+        hash = (hash.wrapping_mul(31)).wrapping_add(part) & 0x3fff_ffff;
+    }
+    hash
 }
 
 /// More of `dart:ui`'s hooks: the callback-handle registry, which nothing
