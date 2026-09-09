@@ -388,6 +388,20 @@ nullability 是 `nullable`,照字面读它,每一次往 `void` 槽里存都被�
 `_handle_back_gesture_invocation__body`),渲染树连采五次全是 707 行 /
 类型差异 0 / 0 panic。当初撤回的三次空树是尺子在抖,不是这个改动。
 
+**(2026-09-10,ws941 试过又撤回;可达 crate 掉了)** 把 `Sink` 加进
+`_preludeInterfaces`(外加一层「Dart 接口名 → prelude trait 名」的映射,因为
+`Sink<T>` 是句柄别名 `Rc<dyn DartSink<T>>`)。`DigestSink implements Sink<Digest>`
+确实拿到了 `impl DartSink<Digest> for DigestSink`,`hash_super_convert` 那个桩也没了,
+但 `crypto_below/src/sha256.rs` 长出**两个函数之外的错**——
+`_Sha256Sink: DartSink<Vec<i64>>` 不满足:转发体建不起来时 `_member` 跳过了那个 impl,
+而 `dart_cast` 的表**照样把这个 trait 列了出来**。函数之外的错停不掉,于是
+`unstubbable: 2`,`crypto_below` 连同下游一起掉出可达集:**可达 69 → 65**,
+桩数看着从 112 掉到 105 是假的(是 crate 没了)。
+
+要重做,先补上「`dart_cast` 只列**发出来了**的 impl」——`_stubbed` 已经在记
+哪些成员被拒了,protocol impl 那一侧读它就行。这条和「一个被拒的成员不能被
+后写的 protocol impl 调用」是同一条规矩,只是 `dart_cast` 还没照办。
+
 近期的(细节在活账/git):
 
 - **ws879**:泛型局部函数(`T? effectiveValue<T>(..)`,4 个拒绝)——声明按 bound 擦除、
@@ -472,7 +486,6 @@ nullability 是 `nullable`,照字面读它,每一次往 `void` 槽里存都被�
 | 轮 | 规则 / 读数 | 数 |
 |---|---|---|
 | run877 | the reading, after ws875-ws877 | — |
-| ws878 | `identityHashCode` on a handle is the address behind it | stub **152**,拒绝 49,可达 64 |
 | ws879 | 泛型局部函数:翻得出来,编不过,整轮撤回(见〈撤回与作废〉) | stub **152**,拒绝 49,可达 64(未动) |
 | ws880 | 编译器自身:装回分析器与单测,四份变异名表并作一处,删死码 387 行 | stub **152**,拒绝 49,可达 64;**生成的 Rust 与 `HEAD~1` 逐字节相同** |
 | ws881 | 两个 god class 各拆成一个目录的 part(`augment class`),搬运零改字 | stub **152**,拒绝 49,可达 64;**生成的 Rust 与拆前逐字节相同** |
@@ -511,6 +524,7 @@ nullability 是 `nullable`,照字面读它,每一次往 `void` 槽里存都被�
 | ws937 | **`late` 字段的格子里装的是 `Option`,而「赋值当表达式用」那一路没有包 `Some`**。语句那一路早就包了(`IrAssignField` 里那句注释写着「这是唯一发生这件事的地方」——在表达式那一路也需要它之前是真的)。Dart 里 `x = v` 的**值是 `v`**,存进去的才是 `Some(v)`,所以只包存的那一侧,`__set` 照旧是裸的:`_opacityAnimation = CurvedAnimation(parent: _opacityController = AnimationController(..), ..)` 是这个形状 | stub **122 → 119**(逐条比新增 **0**,少了 `material_data_table.rs` 的 `init_state`、`painting_text_painter.rs` 的 `_compute_caret_metrics`、`rendering_animated_size.rs` 的 `perform_layout`)、拒绝 33、可达 69、0 error;run937 连采五次:707 行 / 类型差异 0 / 0 panic |
 | ws938/939 | **同一条继承链上参数不一致时,方向应该是「都擦」而不是「都不擦」——但只在两边都担得起的时候**。`_InheritedProviderScopeElement<T> implements InheritedContext<T>`:下面被真实流点标了(`element = this` 落进 `_InheritedProviderScopeElement<T?>` 的槽),上面没标,原规则把两边一起丢掉,于是 provider 六个成员手里是 `X<T>`、声明写的是 `X<T?>`。先试「一律往上抬」(ws938):清掉那 6 个,却因为把 `Animatable.T` 也擦了而**新增 7 个**(`Tween.lerp`、滑块 demo 的 `paint`……),净 +1,**撤回**。加一道闸再来(ws939):**只在这个位置上每一个传自己参数进来的子类都已经标了的时候才抬**——`InheritedContext` 只有一个子类且已标,`Animatable` 有 `TweenSequence`/`_ChainedEvaluation` 没标,于是只抬前者。`DART2RUST_RAISE=0` 退回原来的丢弃 | stub **119 → 113**(逐条比新增 **0**,少的正是 provider 的 `build`/`mount`/`unmount`/`update` 那一族六个)、拒绝 33、可达 69、0 error;run939 连采五次:707 行 / 类型差异 0 / 0 panic |
 | ws940 | **被树摇空了的增强枚举,现在照样发出它的变体**。原来的规则是:增强枚举(每个变体带自己的字段)如果那些字段的值从常量里读不回来,就整个发成空枚举——理由写着「不然就会把它当普通枚举发、把成员丢掉」。可是空枚举**把成员和名字一起丢了**,而且是悄悄地:`enum KeyboardLockMode {}`,于是 `KeyboardLockMode::NumLock` 指着一个不存在的变体、`Set<KeyboardLockMode>` 连 `DartEq` 都没有。变体发出来之后,只有真去读那份状态的成员编不过,而编不过就是一个桩——看得见,一个一个数得清。`valueFields` 仍旧是空的,所以那份状态不发 getter | stub **113 → 112**、拒绝 **33 → 32**(`KeyboardLockMode.findLockByLogicalKey` 从「拒绝」变成一个桩,`handle_key_event` 和 `_should_accept_num_lock` 两个桩清掉)、可达 69、0 error;run940 连采五次:707 行 / 类型差异 0 / 0 panic |
+| ws943 | **`a ?? b` 两边是同一个类、但类型实参不同时,左边的拼法只有在右边真放得进去的时候才算数**。`children ?? buttonItems` 一边是 `List<Widget>`、一边是 `List<ContextMenuButtonItem>`,Dart 说整个是 `List<Object>`;而 `lub` 的判定只比 `classNode`,两边都是 `List` 就取了左边,于是右边逐元素被抬成一个它并不实现的 `Widget`。判定改成「类不同**或者**右边不是左边的子类型」(`typeEnvironment.isSubtypeOf`)。夹具 `ifnulllub` 先红(3 个编译错)后绿 | stub **112 → 110**(逐条比新增 **0**,少了两个 `adaptive_text_selection_toolbar.rs` 的 `build`)、拒绝 32、可达 69、0 error;run943 连采五次:707 行 / 类型差异 0 / 0 panic |
 | ws891 | 第五轮复审抓到:ws889 落地后 `regen.py` 的 `hints()` 会**永远误报**——它按 `'throws:' not in driver` 字面判定,而正确的修法恰恰是把那个参数删掉,所以那条提示从此指向唯一不该做的修法。换成 `DECIDED_IN`:只指出决定写在哪两个函数里,不对文件的现状下任何断言。顺手分开探针的两种失败(没调用 vs 调用了没 `?`) | `fails:` 在 frontend.dart 已 11 处、`throws:` 在 kernel driver 已 0 处——两条提示一条正确变哑、一条永久说谎,实测属实;两个诊断分支各跑一次验过 |
 
 ## 下一步(2026-09-05 重铺)

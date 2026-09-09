@@ -264,10 +264,26 @@ augment class KernelFrontend {
             leftType is InterfaceType &&
             rightType is InterfaceType &&
             leftType.classNode != rightType.classNode;
+        // ..and where the two arms are of *one class* whose arguments
+        // differ, the left's spelling wins only when the right can
+        // actually go into it. `children ?? buttonItems` is a
+        // `List<Widget>` and a `List<ContextMenuButtonItem>`; Dart calls
+        // the whole a `List<Object>`, and mapped into the left's spelling
+        // the elements were upcast to a `Widget` they do not implement
+        // (`AdaptiveTextSelectionToolbar.build`, in both toolbars, ws943).
+        final typeEnv = typeEnvironment;
+        final rightFits =
+            typeEnv == null ||
+            leftType is! InterfaceType ||
+            rightType is! InterfaceType ||
+            typeEnv.isSubtypeOf(
+              rightType.withDeclaredNullability(Nullability.nonNullable),
+              leftType.withDeclaredNullability(Nullability.nonNullable),
+            );
         final lub =
             leftType is InterfaceType &&
                 resultType is InterfaceType &&
-                leftType.classNode != resultType.classNode &&
+                (leftType.classNode != resultType.classNode || !rightFits) &&
                 (resultType.classNode.name != 'Object' || differing) &&
                 !scalarNames.contains(resultType.classNode.name)
             ? resultType
