@@ -438,6 +438,23 @@ Dart 的循环变量是同一个对象。加 `mut` 只是把「诚实地 panic �
 要做对,得让「记类型」和「发 `None::<T>`」是同一件事——也就是在这里就把字面量
 换成一个带类型的节点,而不是给旧节点贴个标签。
 
+**(2026-09-10,ws954 试过又撤回;+3 且一个没清)** 把 `_throughReceiver` 从
+「声明的类型**就是**拥有者的参数」放宽到「声明的类型**提到**拥有者的参数」,
+想让 `Completer<T>.future` 在一个被擦除的接收者上记成 `Future<dynamic>`。
+结果:`_TaskEntry` 那两个桩**一个没清**,另外**新增 3 个**
+(`Route.popped`、`TransitionRoute.completed`、`SemanticsNode.sendEvent`——
+都是在带擦除参数的类上返回 `Future<T>` 的 getter),109 → 112,撤回。
+
+前提就是错的:「发出来的 Rust 交回的是擦除拼法」这件事,取决于**接收者在这一处
+到底拼成什么**,而 `_erasedByReceiver` 是拿 `_erasedRead` 去问**声明类**的擦除,
+不是问这一处。要做对,得拿到**降下来的接收者**的 `rustType`——而那个东西在
+`_memberRustType` / `_throughReceiver` 这一层还没有,重新降一次会多出临时变量。
+
+所以 `_TaskEntry` 这一族(`scheduler_binding` 的两个桩)现在的账是:
+协变扫描已经看得见它了(ws953),`_TaskEntry` 也已经没有类型参数了,
+剩下的一步是**「调用的类型按接收者降下来之后的实例化算」**——这需要把降好的
+接收者传进类型计算里,是一次结构上的改动,不是一条规则。
+
 近期的(细节在活账/git):
 
 - **ws879**:泛型局部函数(`T? effectiveValue<T>(..)`,4 个拒绝)——声明按 bound 擦除、
