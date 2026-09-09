@@ -142,6 +142,7 @@ PROBE = '''class Probe {
 '''
 
 PROPAGATED = re.compile(r'checked\([^()]*\)\s*\?')
+CALLED = re.compile(r'\.checked\(')
 
 
 def propagates(scratch, config, drivers):
@@ -197,32 +198,42 @@ def propagates(scratch, config, drivers):
             first = (log.strip().splitlines() or [''])[0]
             blocked.append('%s: the driver failed on the probe -- %s'
                            % (driver, first))
-        elif not PROPAGATED.search(io.open(out, encoding='utf-8').read()):
-            blocked.append('%s: `doubled` calls `checked`, which throws, and '
-                           'the call comes out with no `?` (%s)'
-                           % (driver, out))
+        else:
+            text = io.open(out, encoding='utf-8').read()
+            if not CALLED.search(text):
+                # Refused, or lowered to something else: reporting "no `?` on
+                # the call" would send the reader looking for a `?` in a file
+                # that has no call in it. Asked as `.checked(`, because the
+                # declaration `pub fn checked(` is in every version of this
+                # output and matching it hides exactly this case.
+                blocked.append('%s: the probe translated, but `doubled` never '
+                               'calls `checked` -- refused, or lowered to '
+                               'something else (%s)' % (driver, out))
+            elif not PROPAGATED.search(text):
+                blocked.append('%s: `doubled` calls `checked`, which throws, '
+                               'and the call comes out with no `?` (%s)'
+                               % (driver, out))
     return blocked
 
 
-def hints():
-    """Where the missing propagation was, both times it has been looked for.
-
-    Printed under a failing probe to save the next reader a search, and
-    subordinate to it on purpose: these are substrings, and a substring cannot
-    tell a call site from a comment about one. The probe decides.
-    """
-    frontend = io.open(os.path.join(TOOL, 'lib', 'frontend.dart'),
-                       encoding='utf-8').read()
-    driver = io.open(os.path.join(HERE, 'dart2rust_kernel.dart'),
-                     encoding='utf-8').read()
-    found = []
-    if 'fails:' not in frontend:
-        found.append('lib/frontend.dart never passes `fails:`')
-    if 'throws:' not in driver:
-        found.append('bin/dart2rust_kernel.dart builds no `ThrowsAnalysis`; '
-                     'bin/dart2rust_package.dart, which can, passes 16 of the '
-                     '17 named arguments this one passes 2 of')
-    return found
+# Where propagation is decided, for the reader of a failing probe.
+#
+# This replaced a `hints()` that read the source and reported on it --
+# `'fails:' not in frontend.dart`, `'throws:' not in dart2rust_kernel.dart` --
+# printed under the probe and explicitly subordinate to it. Subordinate was not
+# enough. ws889 fixed the propagation by *deleting* the `throws` parameter,
+# because it was a switch wearing an analysis's name that no driver should ever
+# have passed; from that day the second hint was true forever and named the one
+# fix that must never be made. A fifth review caught it before it misled
+# anyone. So this points at where the decision lives and claims nothing about
+# what is there: the failure mode of naming a function is that the name goes
+# stale and a grep finds it, which is not the failure mode of asserting a fact
+# about a file.
+DECIDED_IN = (
+    'propagation is decided by `_fails` in lib/frontend_kernel.dart and '
+    '`_callFails` in lib/frontend.dart; the half they share is '
+    '`translatedLibrary` in lib/ir.dart'
+)
 
 
 def regenerate(stem, config, work, dest):
@@ -287,8 +298,7 @@ def main():
               'whatever the fixtures say:')
         for line in blocked:
             print('  ' + line)
-        for line in hints():
-            print('  where to look: ' + line)
+        print('  where to look: ' + DECIDED_IN)
         if not args.anyway:
             print('`propagates` in this file says what has to be true first. '
                   'To look at the output without it reaching testdata/src: '
