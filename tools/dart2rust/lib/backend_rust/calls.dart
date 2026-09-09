@@ -562,7 +562,8 @@ augment class RustBackend {
     // the caller's own signature was widened by the same fixpoint, so the two
     // always agree.
     // A callee failing with its own type inside a method failing with
-    // `Object` (see `_computeFailing`): the error is boxed on the way up.
+    // `Object`: the error is boxed on the way up. (One error type for
+    // them all now, so the two are the same type -- `_resultModel`.)
     // A translated callee returns `Result`: `?` inside a function, and
     // `.unwrap()` where there is none around (a static's initialiser).
     // An awaited call is not `?`ed here but at the `.await`.

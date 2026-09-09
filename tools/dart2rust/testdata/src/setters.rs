@@ -1,4 +1,3 @@
-use crate::dart_prelude::Object;
 use crate::dart_prelude::*;
 use crate::DartAny;
 use crate::Type;
@@ -14,121 +13,46 @@ pub struct Temperature {
 }
 
 impl Temperature {
-    pub fn new(_celsius: f64) -> Result<Self, std::rc::Rc<dyn Object>> {
-        dart_register::<Self>();
-        Ok({ Self { _celsius: _celsius } })
+    pub fn new(_celsius: f64) -> Self {
+        Self { _celsius: _celsius }
     }
 
-    /// Reads only. Must stay `&self`.
-    pub fn celsius(&self) -> Result<f64, std::rc::Rc<dyn Object>> {
-        Ok(self._celsius)
+    pub fn celsius(&self) -> f64 {
+        self._celsius
     }
 
-    /// Writes. Must become `set_celsius(&mut self, ..)`.
-    pub fn set_celsius(&mut self, value: f64) -> Result<(), std::rc::Rc<dyn Object>> {
+    pub fn set_celsius(&mut self, value: f64) -> () {
         self._celsius = value;
-        Ok(dart_null_object())
     }
 
-    /// A setter with real logic, not a plain field write -- which is why a setter
-    /// cannot be translated as an assignment.
-    pub fn set_fahrenheit(&mut self, value: f64) -> Result<(), std::rc::Rc<dyn Object>> {
+    pub fn set_fahrenheit(&mut self, value: f64) -> () {
         self._celsius = ((value - 32.0) / 1.8);
-        Ok(dart_null_object())
     }
 
-    pub fn fahrenheit(&self) -> Result<f64, std::rc::Rc<dyn Object>> {
-        Ok(((self._celsius * 1.8) + 32.0))
+    pub fn fahrenheit(&self) -> f64 {
+        ((self._celsius * 1.8) + 32.0)
     }
 
-    /// Assigns through this object's own setter. Mutating by contagion.
-    pub fn warm_by(&mut self, degrees: f64) -> Result<(), std::rc::Rc<dyn Object>> {
-        self.set_celsius((self.celsius() + degrees))?;
-        Ok(())
+    pub fn warm_by(&mut self, degrees: f64) -> () {
+        self.set_celsius((self.celsius() + degrees));
     }
 
-    /// A compound assignment through a setter: the "current value" comes from the
-    /// getter, since there may be no field of that name at all.
-    pub fn heat_up(&mut self) -> Result<(), std::rc::Rc<dyn Object>> {
-        self.set_fahrenheit((self.fahrenheit() + 18.0))?;
-        Ok(())
+    pub fn heat_up(&mut self) -> () {
+        self.set_fahrenheit((self.fahrenheit() + 18.0));
     }
 
-    /// Reads through both getters. Stays `&self`.
-    pub fn difference(&self) -> Result<f64, std::rc::Rc<dyn Object>> {
-        Ok((self.fahrenheit() - self.celsius()))
-    }
-}
-
-impl FromDynamic for Temperature {
-    fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
-        value.dart_cast_any::<Self>()
-    }
-    fn from_same(value: &Self) -> Option<Self> {
-        Some(value.clone())
-    }
-}
-
-impl NativeAnswer for Temperature {
-    fn from_answer(answer: std::rc::Rc<dyn Object>, symbol: &str) -> Self {
-        match answer.dart_cast_any::<Self>() {
-            Some(value) => value,
-            None => panic!(
-                "native `{}` answered {:?} where Temperature was declared",
-                symbol, answer
-            ),
-        }
-    }
-    fn absent() -> Self {
-        panic!("native answered nothing where Temperature was declared")
-    }
-}
-
-impl DartNullable for Temperature {
-    type Or = Option<Self>;
-    fn option(or: Option<Self>) -> Option<Self> {
-        or
-    }
-    fn from_option(option: Option<Self>) -> Option<Self> {
-        option
-    }
-}
-
-impl DartEq for Temperature {
-    fn dart_eq(&self, other: &Self) -> bool {
-        self == other
+    pub fn difference(&self) -> f64 {
+        (self.fahrenheit() - self.celsius())
     }
 }
 
 impl DartAny for Temperature {
-    fn dart_to_string(&self) -> String {
-        format!("Instance of '{}'", "Temperature")
-    }
-    fn dart_eq_any(&self, other: &dyn std::any::Any) -> bool {
-        match other.downcast_ref::<Self>() {
-            Some(o) => self.dart_eq(o),
-            None => false,
-        }
-    }
-    fn dart_hash_any(&self) -> i64 {
-        self.dart_hash_code()
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
     fn dart_runtime_type(&self) -> Type {
-        Type::of("Temperature")
-    }
-    fn dart_cast(&self, __t: std::any::TypeId) -> Option<std::boxed::Box<dyn std::any::Any>> {
-        if __t == std::any::TypeId::of::<Self>()
-            || __t == std::any::TypeId::of::<std::rc::Rc<Self>>()
-        {
-            return Some(std::boxed::Box::new(std::rc::Rc::new(self.clone())));
+        Type {
+            name: "Temperature",
         }
-        if __t == std::any::TypeId::of::<dyn Object>()
-            || __t == std::any::TypeId::of::<std::rc::Rc<dyn Object>>()
-        {
-            return Some(std::boxed::Box::new(
-                std::rc::Rc::new(self.clone()) as std::rc::Rc<dyn Object>
-            ));
-        }
-        None
     }
 }

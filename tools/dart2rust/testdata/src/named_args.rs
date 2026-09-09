@@ -1,4 +1,3 @@
-use crate::dart_prelude::Object;
 use crate::dart_prelude::*;
 use crate::DartAny;
 use crate::Type;
@@ -16,109 +15,32 @@ pub struct NamedArgs {
 }
 
 impl NamedArgs {
-    pub const fn new(a: f64, b: f64, c: f64) -> Result<Self, std::rc::Rc<dyn Object>> {
-        Ok({ Self { a: a, b: b, c: c } })
+    pub const fn new(a: f64, b: f64, c: f64) -> Self {
+        Self { a: a, b: b, c: c }
     }
 
-    pub fn weigh(
-        &self,
-        first: f64,
-        second: f64,
-        third: f64,
-    ) -> Result<f64, std::rc::Rc<dyn Object>> {
-        Ok((((self.a * first) + (self.b * second)) + (self.c * third)))
+    pub fn weigh(&self, first: f64, second: f64, third: f64) -> f64 {
+        (((self.a * first) + (self.b * second)) + (self.c * third))
     }
 
-    /// Named in an order that is not the declaration's.
-    ///
-    /// Correct: first=1, second=10, third=100.
-    /// Call-site order would give first=100, second=1, third=10 -- a different
-    /// number, which is the point.
-    pub fn out_of_order(&self) -> Result<f64, std::rc::Rc<dyn Object>> {
-        Ok(self.weigh(1.0, 10.0, 100.0))
+    pub fn out_of_order(&self) -> f64 {
+        self.weigh(1.0, 10.0, 100.0)
     }
 
-    /// `second` is omitted and must fall back to its declared default of 2.0,
-    /// not to zero and not to the next argument along.
-    pub fn with_omission(&self) -> Result<f64, std::rc::Rc<dyn Object>> {
-        Ok(self.weigh(1.0, 2.0, 1.0))
+    pub fn with_omission(&self) -> f64 {
+        self.weigh(1.0, 2.0, 1.0)
     }
 
-    /// All defaults: 1, 2, 4.
-    pub fn all_defaults(&self) -> Result<f64, std::rc::Rc<dyn Object>> {
-        Ok(self.weigh(1.0, 2.0, 4.0))
-    }
-}
-
-impl FromDynamic for NamedArgs {
-    fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
-        value.dart_cast_any::<Self>()
-    }
-    fn from_same(value: &Self) -> Option<Self> {
-        Some(value.clone())
-    }
-}
-
-impl NativeAnswer for NamedArgs {
-    fn from_answer(answer: std::rc::Rc<dyn Object>, symbol: &str) -> Self {
-        match answer.dart_cast_any::<Self>() {
-            Some(value) => value,
-            None => panic!(
-                "native `{}` answered {:?} where NamedArgs was declared",
-                symbol, answer
-            ),
-        }
-    }
-    fn absent() -> Self {
-        panic!("native answered nothing where NamedArgs was declared")
-    }
-}
-
-impl DartNullable for NamedArgs {
-    type Or = Option<Self>;
-    fn option(or: Option<Self>) -> Option<Self> {
-        or
-    }
-    fn from_option(option: Option<Self>) -> Option<Self> {
-        option
-    }
-}
-
-impl DartEq for NamedArgs {
-    fn dart_eq(&self, other: &Self) -> bool {
-        self == other
+    pub fn all_defaults(&self) -> f64 {
+        self.weigh(1.0, 2.0, 4.0)
     }
 }
 
 impl DartAny for NamedArgs {
-    fn dart_to_string(&self) -> String {
-        format!("Instance of '{}'", "NamedArgs")
-    }
-    fn dart_eq_any(&self, other: &dyn std::any::Any) -> bool {
-        match other.downcast_ref::<Self>() {
-            Some(o) => self.dart_eq(o),
-            None => false,
-        }
-    }
-    fn dart_hash_any(&self) -> i64 {
-        self.dart_hash_code()
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
     fn dart_runtime_type(&self) -> Type {
-        Type::of("NamedArgs")
-    }
-    fn dart_cast(&self, __t: std::any::TypeId) -> Option<std::boxed::Box<dyn std::any::Any>> {
-        if __t == std::any::TypeId::of::<Self>()
-            || __t == std::any::TypeId::of::<std::rc::Rc<Self>>()
-        {
-            return Some(std::boxed::Box::new(std::rc::Rc::new(self.clone())));
-        }
-        if __t == std::any::TypeId::of::<dyn Object>()
-            || __t == std::any::TypeId::of::<std::rc::Rc<dyn Object>>()
-        {
-            return Some(std::boxed::Box::new(
-                std::rc::Rc::new(self.clone()) as std::rc::Rc<dyn Object>
-            ));
-        }
-        None
+        Type { name: "NamedArgs" }
     }
 }

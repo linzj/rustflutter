@@ -114,6 +114,49 @@ def write_prelude():
                        capture_output=True)
 
 
+def can_propagate():
+    """Whether a driver here can emit the `?` the Result model needs.
+
+    A golden file was accepted by *counting* it, and nothing was reading it:
+    the fixtures regenerated, `rustfmt` was happy, the count of compiler errors
+    went down, and 6,300 lines went in. On 2026-09-09 that let through a
+    regeneration in which every method returned `Result` and no call
+    propagated -- `Ok((self.doubled() + 1.0))`, adding a `Result<f64>` to a
+    float. Fewer errors than the file it replaced, and further from correct.
+
+    It is not a fixture bug and not a backend bug. It is a *configuration* one,
+    and it is structural:
+
+      * `bin/dart2rust_kernel.dart` builds a `KernelFrontend` with 2 of its 17
+        named arguments; `bin/dart2rust_package.dart` passes 16, `throws:`
+        among them. `_fails` (`lib/frontend_kernel.dart`) opens with
+        `if (throws == null) return false`, so on this path no call is ever
+        marked as failing.
+      * `lib/frontend.dart` -- the analyzer front end, which is what
+        `dart2rust.dart` runs for 31 of the 32 files here -- never passes
+        `fails:` at all. Not once. It predates the Result model's propagation.
+
+    Meanwhile `_resultModel` is `true`, so every method returns `Result`. Output
+    from these drivers therefore cannot compile, whatever the fixture says, and
+    regenerating cannot be the first move: the driver has to be able to
+    propagate first, or the fresh golden re-embeds the same contradiction.
+
+    Checking the symptom instead was tried and is not enough -- a fixture with
+    no call between its own methods shows nothing while being just as wrong. So
+    the condition is what is asked about, in the one place it is decided.
+    """
+    frontend = io.open(os.path.join(TOOL, 'lib', 'frontend.dart'),
+                       encoding='utf-8').read()
+    driver = io.open(os.path.join(HERE, 'dart2rust_kernel.dart'),
+                     encoding='utf-8').read()
+    missing = []
+    if 'fails:' not in frontend:
+        missing.append('lib/frontend.dart never passes `fails:`')
+    if 'throws:' not in driver:
+        missing.append('bin/dart2rust_kernel.dart builds no `ThrowsAnalysis`')
+    return missing
+
+
 def regenerate(stem, config, work):
     fixture = os.path.join(FIXTURES, stem + '.dart')
     out = os.path.join(SRC, stem + '.rs')
@@ -142,7 +185,22 @@ def regenerate(stem, config, work):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('names', nargs='*', help='fixture names; default all')
+    parser.add_argument('--anyway', action='store_true',
+                        help='regenerate even though the drivers cannot emit '
+                             '`?` -- for looking at the output, not for '
+                             'committing it')
     args = parser.parse_args()
+
+    blocked = can_propagate()
+    if blocked and not args.anyway:
+        print('not regenerating: these golden files would be written by a '
+              'driver that cannot emit the `?` the Result model needs, so '
+              'they could not compile whatever the fixtures say.')
+        for line in blocked:
+            print('  ' + line)
+        print('`can_propagate` in this file says what has to be true first. '
+              'To look at the output without committing it: --anyway')
+        return 1
 
     scratch = os.path.join(TOOL, '.agree')
     os.makedirs(scratch, exist_ok=True)

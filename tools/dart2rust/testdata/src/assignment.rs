@@ -1,4 +1,3 @@
-use crate::dart_prelude::Object;
 use crate::dart_prelude::*;
 use crate::DartAny;
 use crate::Type;
@@ -14,114 +13,45 @@ pub struct Assignment {
 }
 
 impl Assignment {
-    pub const fn new(step: f64) -> Result<Self, std::rc::Rc<dyn Object>> {
-        Ok({ Self { step: step } })
+    pub const fn new(step: f64) -> Self {
+        Self { step: step }
     }
 
-    /// Plain reassignment. `total` is reassigned, `factor` never is.
-    pub fn accumulate(&self) -> Result<f64, std::rc::Rc<dyn Object>> {
+    pub fn accumulate(&self) -> f64 {
         let mut total: f64 = 0.0;
         let factor: f64 = 2.0;
         total = (total + (self.step * factor));
         total = (total + self.step);
-        Ok(total)
+        total
     }
 
-    /// Compound assignment, which Kernel has already expanded to `x = x + y`.
-    pub fn compound(&self) -> Result<f64, std::rc::Rc<dyn Object>> {
+    pub fn compound(&self) -> f64 {
         let mut total: f64 = 10.0;
         total = (total + self.step);
         total = (total - 1.0);
         total = (total * 2.0);
-        Ok(total)
+        total
     }
 
-    /// Assigned in one branch only -- still needs `mut`.
-    pub fn branch(&self, big: bool) -> Result<f64, std::rc::Rc<dyn Object>> {
+    pub fn branch(&self, big: bool) -> f64 {
         let mut value: f64 = 1.0;
         if big {
             value = 100.0;
         }
-        Ok(value)
+        value
     }
 
-    /// A parameter reassigned in the body. Rust spells that `mut start: f32` in
-    /// the signature, which is the parameter's own declaration.
-    pub fn shadow(&self, mut start: f64) -> Result<f64, std::rc::Rc<dyn Object>> {
+    pub fn shadow(&self, mut start: f64) -> f64 {
         start = (start + 1.0);
-        Ok(start)
-    }
-}
-
-impl FromDynamic for Assignment {
-    fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
-        value.dart_cast_any::<Self>()
-    }
-    fn from_same(value: &Self) -> Option<Self> {
-        Some(value.clone())
-    }
-}
-
-impl NativeAnswer for Assignment {
-    fn from_answer(answer: std::rc::Rc<dyn Object>, symbol: &str) -> Self {
-        match answer.dart_cast_any::<Self>() {
-            Some(value) => value,
-            None => panic!(
-                "native `{}` answered {:?} where Assignment was declared",
-                symbol, answer
-            ),
-        }
-    }
-    fn absent() -> Self {
-        panic!("native answered nothing where Assignment was declared")
-    }
-}
-
-impl DartNullable for Assignment {
-    type Or = Option<Self>;
-    fn option(or: Option<Self>) -> Option<Self> {
-        or
-    }
-    fn from_option(option: Option<Self>) -> Option<Self> {
-        option
-    }
-}
-
-impl DartEq for Assignment {
-    fn dart_eq(&self, other: &Self) -> bool {
-        self == other
+        start
     }
 }
 
 impl DartAny for Assignment {
-    fn dart_to_string(&self) -> String {
-        format!("Instance of '{}'", "Assignment")
-    }
-    fn dart_eq_any(&self, other: &dyn std::any::Any) -> bool {
-        match other.downcast_ref::<Self>() {
-            Some(o) => self.dart_eq(o),
-            None => false,
-        }
-    }
-    fn dart_hash_any(&self) -> i64 {
-        self.dart_hash_code()
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
     fn dart_runtime_type(&self) -> Type {
-        Type::of("Assignment")
-    }
-    fn dart_cast(&self, __t: std::any::TypeId) -> Option<std::boxed::Box<dyn std::any::Any>> {
-        if __t == std::any::TypeId::of::<Self>()
-            || __t == std::any::TypeId::of::<std::rc::Rc<Self>>()
-        {
-            return Some(std::boxed::Box::new(std::rc::Rc::new(self.clone())));
-        }
-        if __t == std::any::TypeId::of::<dyn Object>()
-            || __t == std::any::TypeId::of::<std::rc::Rc<dyn Object>>()
-        {
-            return Some(std::boxed::Box::new(
-                std::rc::Rc::new(self.clone()) as std::rc::Rc<dyn Object>
-            ));
-        }
-        None
+        Type { name: "Assignment" }
     }
 }

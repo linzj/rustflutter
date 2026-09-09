@@ -79,33 +79,14 @@ impl DartEq for Spacing {
 }
 
 impl DartAny for Spacing {
-    fn dart_to_string(&self) -> String {
-        format!("Instance of '{}'", "Spacing")
-    }
-    fn dart_eq_any(&self, other: &dyn std::any::Any) -> bool {
-        match other.downcast_ref::<Self>() {
-            Some(o) => self.dart_eq(o),
-            None => false,
-        }
-    }
-    fn dart_hash_any(&self) -> i64 {
-        self.dart_hash_code()
-    }
     fn dart_runtime_type(&self) -> Type {
-        Type::of("Spacing")
+        Type { name: "Spacing" }
     }
     fn dart_cast(&self, __t: std::any::TypeId) -> Option<std::boxed::Box<dyn std::any::Any>> {
         if __t == std::any::TypeId::of::<Self>()
             || __t == std::any::TypeId::of::<std::rc::Rc<Self>>()
         {
             return Some(std::boxed::Box::new(std::rc::Rc::new(self.clone())));
-        }
-        if __t == std::any::TypeId::of::<dyn Object>()
-            || __t == std::any::TypeId::of::<std::rc::Rc<dyn Object>>()
-        {
-            return Some(std::boxed::Box::new(
-                std::rc::Rc::new(self.clone()) as std::rc::Rc<dyn Object>
-            ));
         }
         None
     }
@@ -169,33 +150,14 @@ impl DartEq for InsetBase {
 }
 
 impl DartAny for InsetBase {
-    fn dart_to_string(&self) -> String {
-        format!("Instance of '{}'", "InsetBase")
-    }
-    fn dart_eq_any(&self, other: &dyn std::any::Any) -> bool {
-        match other.downcast_ref::<Self>() {
-            Some(o) => self.dart_eq(o),
-            None => false,
-        }
-    }
-    fn dart_hash_any(&self) -> i64 {
-        self.dart_hash_code()
-    }
     fn dart_runtime_type(&self) -> Type {
-        Type::of("InsetBase")
+        Type { name: "InsetBase" }
     }
     fn dart_cast(&self, __t: std::any::TypeId) -> Option<std::boxed::Box<dyn std::any::Any>> {
         if __t == std::any::TypeId::of::<Self>()
             || __t == std::any::TypeId::of::<std::rc::Rc<Self>>()
         {
             return Some(std::boxed::Box::new(std::rc::Rc::new(self.clone())));
-        }
-        if __t == std::any::TypeId::of::<dyn Object>()
-            || __t == std::any::TypeId::of::<std::rc::Rc<dyn Object>>()
-        {
-            return Some(std::boxed::Box::new(
-                std::rc::Rc::new(self.clone()) as std::rc::Rc<dyn Object>
-            ));
         }
         None
     }
@@ -214,10 +176,7 @@ pub struct Inset {
 
 impl Inset {
     pub const fn new(h: f64, v: f64) -> Result<Self, std::rc::Rc<dyn Object>> {
-        Ok({
-            let mut __new = Self { _h: h, _v: v };
-            __new
-        })
+        Ok({ Self { _h: h, _v: v } })
     }
 
     pub const SMALL: Inset = (Inset { _h: 5.0, _v: 7.0 });
@@ -269,33 +228,14 @@ impl DartEq for Inset {
 }
 
 impl DartAny for Inset {
-    fn dart_to_string(&self) -> String {
-        format!("Instance of '{}'", "Inset")
-    }
-    fn dart_eq_any(&self, other: &dyn std::any::Any) -> bool {
-        match other.downcast_ref::<Self>() {
-            Some(o) => self.dart_eq(o),
-            None => false,
-        }
-    }
-    fn dart_hash_any(&self) -> i64 {
-        self.dart_hash_code()
-    }
     fn dart_runtime_type(&self) -> Type {
-        Type::of("Inset")
+        Type { name: "Inset" }
     }
     fn dart_cast(&self, __t: std::any::TypeId) -> Option<std::boxed::Box<dyn std::any::Any>> {
         if __t == std::any::TypeId::of::<Self>()
             || __t == std::any::TypeId::of::<std::rc::Rc<Self>>()
         {
             return Some(std::boxed::Box::new(std::rc::Rc::new(self.clone())));
-        }
-        if __t == std::any::TypeId::of::<dyn Object>()
-            || __t == std::any::TypeId::of::<std::rc::Rc<dyn Object>>()
-        {
-            return Some(std::boxed::Box::new(
-                std::rc::Rc::new(self.clone()) as std::rc::Rc<dyn Object>
-            ));
         }
         None
     }
@@ -377,33 +317,14 @@ impl DartEq for Span {
 }
 
 impl DartAny for Span {
-    fn dart_to_string(&self) -> String {
-        format!("Instance of '{}'", "Span")
-    }
-    fn dart_eq_any(&self, other: &dyn std::any::Any) -> bool {
-        match other.downcast_ref::<Self>() {
-            Some(o) => self.dart_eq(o),
-            None => false,
-        }
-    }
-    fn dart_hash_any(&self) -> i64 {
-        self.dart_hash_code()
-    }
     fn dart_runtime_type(&self) -> Type {
-        Type::of("Span")
+        Type { name: "Span" }
     }
     fn dart_cast(&self, __t: std::any::TypeId) -> Option<std::boxed::Box<dyn std::any::Any>> {
         if __t == std::any::TypeId::of::<Self>()
             || __t == std::any::TypeId::of::<std::rc::Rc<Self>>()
         {
             return Some(std::boxed::Box::new(std::rc::Rc::new(self.clone())));
-        }
-        if __t == std::any::TypeId::of::<dyn Object>()
-            || __t == std::any::TypeId::of::<std::rc::Rc<dyn Object>>()
-        {
-            return Some(std::boxed::Box::new(
-                std::rc::Rc::new(self.clone()) as std::rc::Rc<dyn Object>
-            ));
         }
         None
     }

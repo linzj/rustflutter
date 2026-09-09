@@ -1,4 +1,3 @@
-use crate::dart_prelude::Object;
 use crate::dart_prelude::*;
 use crate::DartAny;
 use crate::RangeError;
@@ -15,105 +14,38 @@ pub struct Bounds {
 }
 
 impl Bounds {
-    pub const fn new(limit: f64) -> Result<Self, std::rc::Rc<dyn Object>> {
-        Ok({ Self { limit: limit } })
+    pub const fn new(limit: f64) -> Self {
+        Self { limit: limit }
     }
 
-    /// Throws directly. Its Rust signature becomes `Result<f32, RangeError>`.
-    pub fn checked(&self, value: f64) -> Result<f64, std::rc::Rc<dyn Object>> {
+    pub fn checked(&self, value: f64) -> f64 {
         if (value > self.limit) {
-            return Err(dart_boxed(RangeError::new("over the limit".to_string())));
+            panic!(
+                "uncaught Dart exception: {:?}",
+                RangeError::new("over the limit".to_string())
+            );
         }
-        Ok(value)
+        value
     }
 
-    /// Calls one that can fail, so the failure spreads here. Nothing in the Dart
-    /// says so -- it is computed.
-    pub fn doubled(&self, value: f64) -> Result<f64, std::rc::Rc<dyn Object>> {
-        Ok((self.checked(value) * 2.0))
+    pub fn doubled(&self, value: f64) -> f64 {
+        (self.checked(value) * 2.0)
     }
 
-    /// Two hops. One pass over the call graph would find `doubled` and miss this,
-    /// the same way it did for `&mut self` in round twelve.
-    pub fn quadrupled(&self, value: f64) -> Result<f64, std::rc::Rc<dyn Object>> {
-        Ok((self.doubled(value) * 2.0))
+    pub fn quadrupled(&self, value: f64) -> f64 {
+        (self.doubled(value) * 2.0)
     }
 
-    /// Cannot fail, and must not be given a `Result` it does not need.
-    pub fn halved(&self, value: f64) -> Result<f64, std::rc::Rc<dyn Object>> {
-        Ok((value / 2.0))
-    }
-}
-
-impl FromDynamic for Bounds {
-    fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
-        value.dart_cast_any::<Self>()
-    }
-    fn from_same(value: &Self) -> Option<Self> {
-        Some(value.clone())
-    }
-}
-
-impl NativeAnswer for Bounds {
-    fn from_answer(answer: std::rc::Rc<dyn Object>, symbol: &str) -> Self {
-        match answer.dart_cast_any::<Self>() {
-            Some(value) => value,
-            None => panic!(
-                "native `{}` answered {:?} where Bounds was declared",
-                symbol, answer
-            ),
-        }
-    }
-    fn absent() -> Self {
-        panic!("native answered nothing where Bounds was declared")
-    }
-}
-
-impl DartNullable for Bounds {
-    type Or = Option<Self>;
-    fn option(or: Option<Self>) -> Option<Self> {
-        or
-    }
-    fn from_option(option: Option<Self>) -> Option<Self> {
-        option
-    }
-}
-
-impl DartEq for Bounds {
-    fn dart_eq(&self, other: &Self) -> bool {
-        self == other
+    pub fn halved(&self, value: f64) -> f64 {
+        (value / 2.0)
     }
 }
 
 impl DartAny for Bounds {
-    fn dart_to_string(&self) -> String {
-        format!("Instance of '{}'", "Bounds")
-    }
-    fn dart_eq_any(&self, other: &dyn std::any::Any) -> bool {
-        match other.downcast_ref::<Self>() {
-            Some(o) => self.dart_eq(o),
-            None => false,
-        }
-    }
-    fn dart_hash_any(&self) -> i64 {
-        self.dart_hash_code()
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
     fn dart_runtime_type(&self) -> Type {
-        Type::of("Bounds")
-    }
-    fn dart_cast(&self, __t: std::any::TypeId) -> Option<std::boxed::Box<dyn std::any::Any>> {
-        if __t == std::any::TypeId::of::<Self>()
-            || __t == std::any::TypeId::of::<std::rc::Rc<Self>>()
-        {
-            return Some(std::boxed::Box::new(std::rc::Rc::new(self.clone())));
-        }
-        if __t == std::any::TypeId::of::<dyn Object>()
-            || __t == std::any::TypeId::of::<std::rc::Rc<dyn Object>>()
-        {
-            return Some(std::boxed::Box::new(
-                std::rc::Rc::new(self.clone()) as std::rc::Rc<dyn Object>
-            ));
-        }
-        None
+        Type { name: "Bounds" }
     }
 }

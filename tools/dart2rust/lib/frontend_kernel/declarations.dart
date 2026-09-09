@@ -1272,7 +1272,8 @@ augment class KernelFrontend {
     DartType paramType(Variable p, DartType declared) =>
         _declaredParamTypes[p] ?? declared;
     // An unnamed factory has no name in Kernel; an empty identifier stopped
-    // all 37 members of vector_math's classes through `_computeFailing`.
+    // all 37 members of vector_math's classes through the per-class
+    // failure fixed point the uniform Result model replaced (ws886~1).
     // `new`, as the backend spells the call.
     final name = node.kind == ProcedureKind.Factory && node.name.text.isEmpty
         ? 'new'

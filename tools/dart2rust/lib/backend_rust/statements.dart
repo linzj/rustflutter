@@ -191,8 +191,7 @@ augment class RustBackend {
         // has already happened by the time the value gets here.
         final flows = _returnsEarly(body);
         final carried = flows ? 'Option<${_rustReturns ?? '()'}>' : '()';
-        final failure =
-            _errorIn(body) ?? _failure ?? 'std::convert::Infallible';
+        final failure = _failure ?? 'std::convert::Infallible';
         // In an `async fn` the body goes in an `async` block, not a closure:
         // a closure is its own function and an `.await` inside it is
         // "outside async" -- 13 `E0728`s, every one a `try` around an
@@ -230,9 +229,9 @@ augment class RustBackend {
         } else {
           _line('Ok(()) => {}');
         }
-        // The failure keeps going. `_failing` already put `Result` on this
-        // method's signature, because a `finally` catches nothing and so the
-        // walk that spreads failure never stopped at it.
+        // The failure keeps going: this method's signature already says
+        // `Result`, as every method's does, and a `finally` catches
+        // nothing that would stop it.
         // A method that cannot fail wrapped its body in `Infallible`, and
         // the arm is impossible: matching the empty enum says so, where a
         // `return Err(..)` did not type in a `()` method (E0308).
@@ -268,7 +267,7 @@ augment class RustBackend {
         // not take the `?` of a callee inside it (`TextSpan.build` around
         // `builder.addText`, stubbed, run683). The arm below asks the
         // error whether it is the caught type and hands the rest back on.
-        final failure = _errorIn(body) ?? _failure ?? 'std::rc::Rc<dyn Object>';
+        final failure = _failure ?? 'std::rc::Rc<dyn Object>';
         // The closure catches `?`, and it would catch a `return` too: written
         // plainly, `return x` in the body returns from the *closure* and the
         // method carries on, which compiles and is wrong. So when the body

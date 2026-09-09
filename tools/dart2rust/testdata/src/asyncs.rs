@@ -1,4 +1,3 @@
-use crate::dart_prelude::Object;
 use crate::dart_prelude::*;
 use crate::DartAny;
 use crate::Type;
@@ -14,135 +13,34 @@ pub struct Asyncs {
 }
 
 impl Asyncs {
-    pub const fn new(factor: f64) -> Result<Self, std::rc::Rc<dyn Object>> {
-        Ok({ Self { factor: factor } })
+    pub const fn new(factor: f64) -> Self {
+        Self { factor: factor }
     }
 
-    pub fn scaled(&self, x: f64) -> DartFuture<f64> {
-        let __self = self.clone();
-        DartFuture::spawn_named(
-            "Asyncs.scaled",
-            std::boxed::Box::pin(async move { Self::scaled__body(&__self, x).await }),
-        )
+    pub async fn scaled(&self, x: f64) -> f64 {
+        (x * self.factor)
     }
 
-    pub async fn scaled__body(&self, x: f64) -> Result<f64, std::rc::Rc<dyn Object>> {
-        Ok((x * self.factor))
+    pub async fn twice(&self, x: f64) -> f64 {
+        let once: f64 = self.scaled(x).await;
+        self.scaled(once).await
     }
 
-    /// Awaits twice, so the two calls cannot be folded into one.
-    pub fn twice(&self, x: f64) -> DartFuture<f64> {
-        let __self = self.clone();
-        DartFuture::spawn_named(
-            "Asyncs.twice",
-            std::boxed::Box::pin(async move { Self::twice__body(&__self, x).await }),
-        )
+    pub async fn plus(&self, x: f64, y: f64) -> f64 {
+        let got: f64 = self.scaled(x).await;
+        (got + y)
     }
 
-    pub async fn twice__body(&self, x: f64) -> Result<f64, std::rc::Rc<dyn Object>> {
-        let once: f64 = self.scaled(x).await?;
-        Ok(self.scaled(once).await?)
-    }
-
-    /// An `await` in the middle of a body, not in the return.
-    pub fn plus(&self, x: f64, y: f64) -> DartFuture<f64> {
-        let __self = self.clone();
-        DartFuture::spawn_named(
-            "Asyncs.plus",
-            std::boxed::Box::pin(async move { Self::plus__body(&__self, x, y).await }),
-        )
-    }
-
-    pub async fn plus__body(&self, x: f64, y: f64) -> Result<f64, std::rc::Rc<dyn Object>> {
-        let got: f64 = self.scaled(x).await?;
-        Ok((got + y))
-    }
-
-    /// Returns nothing: `Future<void>` becomes a Rust `async fn` with no return
-    /// type at all.
-    pub fn ignore(&self, x: f64) -> DartFuture<()> {
-        let __self = self.clone();
-        DartFuture::spawn_named(
-            "Asyncs.ignore",
-            std::boxed::Box::pin(async move { Self::ignore__body(&__self, x).await }),
-        )
-    }
-
-    pub async fn ignore__body(&self, x: f64) -> Result<(), std::rc::Rc<dyn Object>> {
-        self.scaled(x).await?;
-        Ok(())
-    }
-}
-
-impl FromDynamic for Asyncs {
-    fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
-        value.dart_cast_any::<Self>()
-    }
-    fn from_same(value: &Self) -> Option<Self> {
-        Some(value.clone())
-    }
-}
-
-impl NativeAnswer for Asyncs {
-    fn from_answer(answer: std::rc::Rc<dyn Object>, symbol: &str) -> Self {
-        match answer.dart_cast_any::<Self>() {
-            Some(value) => value,
-            None => panic!(
-                "native `{}` answered {:?} where Asyncs was declared",
-                symbol, answer
-            ),
-        }
-    }
-    fn absent() -> Self {
-        panic!("native answered nothing where Asyncs was declared")
-    }
-}
-
-impl DartNullable for Asyncs {
-    type Or = Option<Self>;
-    fn option(or: Option<Self>) -> Option<Self> {
-        or
-    }
-    fn from_option(option: Option<Self>) -> Option<Self> {
-        option
-    }
-}
-
-impl DartEq for Asyncs {
-    fn dart_eq(&self, other: &Self) -> bool {
-        self == other
+    pub async fn ignore(&self, x: f64) -> () {
+        self.scaled(x).await;
     }
 }
 
 impl DartAny for Asyncs {
-    fn dart_to_string(&self) -> String {
-        format!("Instance of '{}'", "Asyncs")
-    }
-    fn dart_eq_any(&self, other: &dyn std::any::Any) -> bool {
-        match other.downcast_ref::<Self>() {
-            Some(o) => self.dart_eq(o),
-            None => false,
-        }
-    }
-    fn dart_hash_any(&self) -> i64 {
-        self.dart_hash_code()
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
     fn dart_runtime_type(&self) -> Type {
-        Type::of("Asyncs")
-    }
-    fn dart_cast(&self, __t: std::any::TypeId) -> Option<std::boxed::Box<dyn std::any::Any>> {
-        if __t == std::any::TypeId::of::<Self>()
-            || __t == std::any::TypeId::of::<std::rc::Rc<Self>>()
-        {
-            return Some(std::boxed::Box::new(std::rc::Rc::new(self.clone())));
-        }
-        if __t == std::any::TypeId::of::<dyn Object>()
-            || __t == std::any::TypeId::of::<std::rc::Rc<dyn Object>>()
-        {
-            return Some(std::boxed::Box::new(
-                std::rc::Rc::new(self.clone()) as std::rc::Rc<dyn Object>
-            ));
-        }
-        None
+        Type { name: "Asyncs" }
     }
 }

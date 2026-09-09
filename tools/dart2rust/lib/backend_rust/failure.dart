@@ -4,20 +4,6 @@ part of '../backend_rust.dart';
 augment class RustBackend {
   // -- Failure in the return value --------------------------------------------
 
-  /// Methods of this class whose Rust signature returns `Result`.
-  ///
-  /// Seeded with the ones that throw, then closed over calls, the same shape as
-  /// `_mutating`. Measured before it was built: across `package:flutter` 717
-  /// members throw directly and 5906 -- 20% of all members -- return `Result`
-  /// once that has spread. Not "almost everything", which is what made the
-  /// decision affordable.
-  ///
-  /// It stops at the class boundary here. A call into another class would carry
-  /// the failure further, and 20% is the whole-program figure; what this
-  /// computes is the part visible in one file. The rest waits for the compiler
-  /// to see more than a file at a time, which is the same wall the stubs are at.
-  late final Map<String, String> _failing = _computeFailing();
-
   /// Whether a method that throws carries a `Result` in its signature.
   ///
   /// Off since 2026-09-04. The propagation was never modular: a `Result`
@@ -34,58 +20,20 @@ augment class RustBackend {
   /// Every function returns `Result<T, _error>` (STATUS, 决定 2026-09-04,
   /// 修正): a Dart exception is an object, and one type for them all is
   /// what lets `?` propagate through every call form alike.
+  ///
+  /// What this replaced, removed at ws886 and in git at ws886~1: a per-class
+  /// fixed point (`_computeFailing`) that seeded the methods which throw and
+  /// closed over the calls between them, plus `_errorIn` and `_traitDeclares`
+  /// reading its answer. It had been unreachable since the day the uniform
+  /// model landed -- guarded by `if (_resultModel || !_resultModel)`, which is
+  /// true whatever `_resultModel` is -- so it read as though it ran and did
+  /// not. Nothing said so until the analyzer was turned back on (ws886). It
+  /// was measured before it was built and the measurement is worth keeping:
+  /// across `package:flutter` 717 members throw directly and 5,906 -- 20% of
+  /// all members -- return `Result` once that has spread, which is what made
+  /// the uniform model affordable.
   static const _resultModel = true;
   static const _error = 'std::rc::Rc<dyn Object>';
-
-  Map<String, String> _computeFailing() {
-    // The uniform model needs no per-class fixed point: every method fails.
-    if (_resultModel || !_resultModel) return const {};
-    final failing = <String, String>{};
-    final calls = <String, Set<String>>{};
-    for (final method in cls.methods) {
-      final key = _rustName(method);
-      if (method.throws != null) failing[key] = method.throws!;
-      final found = _WalkSelf();
-      found.statement(method.body);
-      calls[key] = found.selfCalls;
-    }
-    var changed = true;
-    while (changed) {
-      changed = false;
-      for (final entry in calls.entries) {
-        if (failing.containsKey(entry.key)) continue;
-        for (final callee in entry.value) {
-          // `_WalkSelf` records the Dart name; the keys are Rust names.
-          // Compared raw, `setFromTranslationRotation` never matched
-          // `set_from_translation_rotation`, and neither contagion --
-          // this one nor `_computeMutating`'s -- ever crossed a camelCase
-          // call. The 16 E0596s that survived every receiver rule were this.
-          final error = failing[snake(callee)];
-          if (error != null) {
-            failing[entry.key] = error;
-            changed = true;
-            break;
-          }
-        }
-      }
-      // A method that throws its own type and calls one failing with
-      // another cannot carry both in one `Result`: it carries `Object`, the
-      // type every Dart throw already has (5 "couldn't convert the error").
-      for (final entry in calls.entries) {
-        final own = failing[entry.key];
-        if (own == null || own == 'Object') continue;
-        for (final callee in entry.value) {
-          final other = failing[snake(callee)];
-          if (other != null && other != own) {
-            failing[entry.key] = 'Object';
-            changed = true;
-            break;
-          }
-        }
-      }
-    }
-    return failing;
-  }
 
   /// Whether a statement returns from the method it is written in.
   ///
@@ -153,19 +101,6 @@ augment class RustBackend {
     IrLabeled() => false,
     _ => false,
   };
-
-  /// The error type a statement can produce, taken from the failing methods of
-  /// this class that it calls.
-  String? _errorIn(IrStmt body) {
-    final found = _WalkSelf();
-    found.statement(body);
-    for (final name in found.selfCalls) {
-      if (_traitDeclares(name)) continue;
-      final error = _failing[snake(name)];
-      if (error != null) return error;
-    }
-    return null;
-  }
 
   /// The Rust return type of the method currently being emitted, as written in
   /// its signature -- `Result<..>` and all. A `return` inside a try body has to

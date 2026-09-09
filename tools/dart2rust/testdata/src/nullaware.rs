@@ -1,4 +1,3 @@
-use crate::dart_prelude::Object;
 use crate::dart_prelude::*;
 use crate::DartAny;
 use crate::Type;
@@ -14,90 +13,26 @@ pub struct Leaf {
 }
 
 impl Leaf {
-    pub const fn new(size: f64) -> Result<Self, std::rc::Rc<dyn Object>> {
-        Ok({ Self { size: size } })
+    pub const fn new(size: f64) -> Self {
+        Self { size: size }
     }
 
-    pub fn doubled(&self) -> Result<f64, std::rc::Rc<dyn Object>> {
-        Ok((self.size * 2.0))
+    pub fn doubled(&self) -> f64 {
+        (self.size * 2.0)
     }
 
-    pub fn boom(&self) -> Result<f64, std::rc::Rc<dyn Object>> {
+    pub fn boom(&self) -> f64 {
         debug_assert!(false, "the body of ?. was evaluated");
-        Ok(0.0)
-    }
-}
-
-impl FromDynamic for Leaf {
-    fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
-        value.dart_cast_any::<Self>()
-    }
-    fn from_same(value: &Self) -> Option<Self> {
-        Some(value.clone())
-    }
-}
-
-impl NativeAnswer for Leaf {
-    fn from_answer(answer: std::rc::Rc<dyn Object>, symbol: &str) -> Self {
-        match answer.dart_cast_any::<Self>() {
-            Some(value) => value,
-            None => panic!(
-                "native `{}` answered {:?} where Leaf was declared",
-                symbol, answer
-            ),
-        }
-    }
-    fn absent() -> Self {
-        panic!("native answered nothing where Leaf was declared")
-    }
-}
-
-impl DartNullable for Leaf {
-    type Or = Option<Self>;
-    fn option(or: Option<Self>) -> Option<Self> {
-        or
-    }
-    fn from_option(option: Option<Self>) -> Option<Self> {
-        option
-    }
-}
-
-impl DartEq for Leaf {
-    fn dart_eq(&self, other: &Self) -> bool {
-        self == other
+        0.0
     }
 }
 
 impl DartAny for Leaf {
-    fn dart_to_string(&self) -> String {
-        format!("Instance of '{}'", "Leaf")
-    }
-    fn dart_eq_any(&self, other: &dyn std::any::Any) -> bool {
-        match other.downcast_ref::<Self>() {
-            Some(o) => self.dart_eq(o),
-            None => false,
-        }
-    }
-    fn dart_hash_any(&self) -> i64 {
-        self.dart_hash_code()
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
     fn dart_runtime_type(&self) -> Type {
-        Type::of("Leaf")
-    }
-    fn dart_cast(&self, __t: std::any::TypeId) -> Option<std::boxed::Box<dyn std::any::Any>> {
-        if __t == std::any::TypeId::of::<Self>()
-            || __t == std::any::TypeId::of::<std::rc::Rc<Self>>()
-        {
-            return Some(std::boxed::Box::new(std::rc::Rc::new(self.clone())));
-        }
-        if __t == std::any::TypeId::of::<dyn Object>()
-            || __t == std::any::TypeId::of::<std::rc::Rc<dyn Object>>()
-        {
-            return Some(std::boxed::Box::new(
-                std::rc::Rc::new(self.clone()) as std::rc::Rc<dyn Object>
-            ));
-        }
-        None
+        Type { name: "Leaf" }
     }
 }
 
@@ -112,125 +47,35 @@ pub struct Branch {
 }
 
 impl Branch {
-    pub const fn new(leaf: Option<Leaf>) -> Result<Self, std::rc::Rc<dyn Object>> {
-        Ok({ Self { leaf: leaf } })
+    pub fn new(leaf: Option<Leaf>) -> Self {
+        Self { leaf: leaf.clone() }
     }
 
-    /// A field read through `?.`.
-    pub fn leaf_size(&self) -> Result<Option<f64>, std::rc::Rc<dyn Object>> {
-        Ok(self
-            .leaf
-            .as_ref()
-            .map(|it| -> Result<_, std::rc::Rc<dyn Object>> { Ok(it.size.clone()) })
-            .transpose()?)
+    pub fn leaf_size(&self) -> Option<f64> {
+        self.leaf.as_ref().map(|it| it.size.clone())
     }
 
-    /// A method call through `?.`.
-    pub fn leaf_doubled(&self) -> Result<Option<f64>, std::rc::Rc<dyn Object>> {
-        Ok(self
-            .leaf
-            .as_ref()
-            .map(|it| -> Result<_, std::rc::Rc<dyn Object>> { Ok(it.doubled()) })
-            .transpose()?)
+    pub fn leaf_doubled(&self) -> Option<f64> {
+        self.leaf.as_ref().map(|it| it.doubled())
     }
 
-    /// The body must not run when the receiver is null.
-    pub fn leaf_boom(&self) -> Result<Option<f64>, std::rc::Rc<dyn Object>> {
-        Ok(self
-            .leaf
-            .as_ref()
-            .map(|it| -> Result<_, std::rc::Rc<dyn Object>> { Ok(it.boom()) })
-            .transpose()?)
+    pub fn leaf_boom(&self) -> Option<f64> {
+        self.leaf.as_ref().map(|it| it.boom())
     }
 
-    /// `?.` beside `??`, so the two lowerings are not confused with each other:
-    /// one has null in the then, the other has the temporary in the else.
-    pub fn size_or(&self, fallback: f64) -> Result<f64, std::rc::Rc<dyn Object>> {
-        Ok(
-            match {
-                let __scrutinee = self
-                    .leaf
-                    .as_ref()
-                    .map(|it| -> Result<_, std::rc::Rc<dyn Object>> { Ok(it.size.clone()) })
-                    .transpose()?;
-                __scrutinee
-            } {
-                Some(__value) => __value,
-                None => fallback,
-            },
-        )
-    }
-}
-
-impl FromDynamic for Branch {
-    fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
-        value.dart_cast_any::<Self>()
-    }
-    fn from_same(value: &Self) -> Option<Self> {
-        Some(value.clone())
-    }
-}
-
-impl NativeAnswer for Branch {
-    fn from_answer(answer: std::rc::Rc<dyn Object>, symbol: &str) -> Self {
-        match answer.dart_cast_any::<Self>() {
-            Some(value) => value,
-            None => panic!(
-                "native `{}` answered {:?} where Branch was declared",
-                symbol, answer
-            ),
+    pub fn size_or(&self, fallback: f64) -> f64 {
+        match self.leaf.as_ref().map(|it| it.size.clone()) {
+            Some(__value) => __value,
+            None => fallback,
         }
-    }
-    fn absent() -> Self {
-        panic!("native answered nothing where Branch was declared")
-    }
-}
-
-impl DartNullable for Branch {
-    type Or = Option<Self>;
-    fn option(or: Option<Self>) -> Option<Self> {
-        or
-    }
-    fn from_option(option: Option<Self>) -> Option<Self> {
-        option
-    }
-}
-
-impl DartEq for Branch {
-    fn dart_eq(&self, other: &Self) -> bool {
-        self == other
     }
 }
 
 impl DartAny for Branch {
-    fn dart_to_string(&self) -> String {
-        format!("Instance of '{}'", "Branch")
-    }
-    fn dart_eq_any(&self, other: &dyn std::any::Any) -> bool {
-        match other.downcast_ref::<Self>() {
-            Some(o) => self.dart_eq(o),
-            None => false,
-        }
-    }
-    fn dart_hash_any(&self) -> i64 {
-        self.dart_hash_code()
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
     fn dart_runtime_type(&self) -> Type {
-        Type::of("Branch")
-    }
-    fn dart_cast(&self, __t: std::any::TypeId) -> Option<std::boxed::Box<dyn std::any::Any>> {
-        if __t == std::any::TypeId::of::<Self>()
-            || __t == std::any::TypeId::of::<std::rc::Rc<Self>>()
-        {
-            return Some(std::boxed::Box::new(std::rc::Rc::new(self.clone())));
-        }
-        if __t == std::any::TypeId::of::<dyn Object>()
-            || __t == std::any::TypeId::of::<std::rc::Rc<dyn Object>>()
-        {
-            return Some(std::boxed::Box::new(
-                std::rc::Rc::new(self.clone()) as std::rc::Rc<dyn Object>
-            ));
-        }
-        None
+        Type { name: "Branch" }
     }
 }

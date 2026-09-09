@@ -1,4 +1,3 @@
-use crate::dart_prelude::Object;
 use crate::dart_prelude::*;
 use crate::DartAny;
 use crate::Type;
@@ -14,94 +13,23 @@ pub struct Shade {
 }
 
 impl Shade {
-    /// A body that overwrites what the field declaration said. If the body were
-    /// dropped this would be 1.0 for every argument.
-    pub fn new(v: f64) -> Result<Self, std::rc::Rc<dyn Object>> {
-        dart_register::<Self>();
-        Ok({
-            let mut __new = Self { opacity: 1.0 };
-            __new.opacity = (v * 2.0);
-            __new
-        })
+    pub fn new(v: f64) -> Self {
+        let mut __new = Self { opacity: 1.0 };
+        __new.opacity = (v * 2.0);
+        __new
     }
 
-    /// A factory is an associated function returning Self, which is what Dart's
-    /// is -- `Shade.faint()` and `Shade::faint()` are the same call.
-    pub fn faint() -> Result<Shade, std::rc::Rc<dyn Object>> {
-        Ok(Shade::new(0.05)?)
-    }
-}
-
-impl FromDynamic for Shade {
-    fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
-        value.dart_cast_any::<Self>()
-    }
-    fn from_same(value: &Self) -> Option<Self> {
-        Some(value.clone())
-    }
-}
-
-impl NativeAnswer for Shade {
-    fn from_answer(answer: std::rc::Rc<dyn Object>, symbol: &str) -> Self {
-        match answer.dart_cast_any::<Self>() {
-            Some(value) => value,
-            None => panic!(
-                "native `{}` answered {:?} where Shade was declared",
-                symbol, answer
-            ),
-        }
-    }
-    fn absent() -> Self {
-        panic!("native answered nothing where Shade was declared")
-    }
-}
-
-impl DartNullable for Shade {
-    type Or = Option<Self>;
-    fn option(or: Option<Self>) -> Option<Self> {
-        or
-    }
-    fn from_option(option: Option<Self>) -> Option<Self> {
-        option
-    }
-}
-
-impl DartEq for Shade {
-    fn dart_eq(&self, other: &Self) -> bool {
-        self == other
+    pub fn faint() -> Shade {
+        Shade::new(0.05)
     }
 }
 
 impl DartAny for Shade {
-    fn dart_to_string(&self) -> String {
-        format!("Instance of '{}'", "Shade")
-    }
-    fn dart_eq_any(&self, other: &dyn std::any::Any) -> bool {
-        match other.downcast_ref::<Self>() {
-            Some(o) => self.dart_eq(o),
-            None => false,
-        }
-    }
-    fn dart_hash_any(&self) -> i64 {
-        self.dart_hash_code()
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
     fn dart_runtime_type(&self) -> Type {
-        Type::of("Shade")
-    }
-    fn dart_cast(&self, __t: std::any::TypeId) -> Option<std::boxed::Box<dyn std::any::Any>> {
-        if __t == std::any::TypeId::of::<Self>()
-            || __t == std::any::TypeId::of::<std::rc::Rc<Self>>()
-        {
-            return Some(std::boxed::Box::new(std::rc::Rc::new(self.clone())));
-        }
-        if __t == std::any::TypeId::of::<dyn Object>()
-            || __t == std::any::TypeId::of::<std::rc::Rc<dyn Object>>()
-        {
-            return Some(std::boxed::Box::new(
-                std::rc::Rc::new(self.clone()) as std::rc::Rc<dyn Object>
-            ));
-        }
-        None
+        Type { name: "Shade" }
     }
 }
 
@@ -116,90 +44,20 @@ pub struct Slot {
 }
 
 impl Slot {
-    pub fn new(tint: Shade) -> Result<Self, std::rc::Rc<dyn Object>> {
-        dart_register::<Self>();
-        Ok({ Self { tint: tint } })
+    pub fn new(tint: Shade) -> Self {
+        Self { tint: tint.clone() }
     }
 
-    /// A write through a field of `this`: `self.tint.opacity = v` in Rust, which
-    /// needs `&mut self` and nothing else. Through a *parameter* it would need
-    /// `&mut` on the parameter and on every call site, including in other files,
-    /// so that one is still refused.
-    pub fn fade(&mut self, v: f64) -> Result<(), std::rc::Rc<dyn Object>> {
+    pub fn fade(&mut self, v: f64) -> () {
         self.tint.opacity = v;
-        Ok(())
-    }
-}
-
-impl FromDynamic for Slot {
-    fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
-        value.dart_cast_any::<Self>()
-    }
-    fn from_same(value: &Self) -> Option<Self> {
-        Some(value.clone())
-    }
-}
-
-impl NativeAnswer for Slot {
-    fn from_answer(answer: std::rc::Rc<dyn Object>, symbol: &str) -> Self {
-        match answer.dart_cast_any::<Self>() {
-            Some(value) => value,
-            None => panic!(
-                "native `{}` answered {:?} where Slot was declared",
-                symbol, answer
-            ),
-        }
-    }
-    fn absent() -> Self {
-        panic!("native answered nothing where Slot was declared")
-    }
-}
-
-impl DartNullable for Slot {
-    type Or = Option<Self>;
-    fn option(or: Option<Self>) -> Option<Self> {
-        or
-    }
-    fn from_option(option: Option<Self>) -> Option<Self> {
-        option
-    }
-}
-
-impl DartEq for Slot {
-    fn dart_eq(&self, other: &Self) -> bool {
-        self == other
     }
 }
 
 impl DartAny for Slot {
-    fn dart_to_string(&self) -> String {
-        format!("Instance of '{}'", "Slot")
-    }
-    fn dart_eq_any(&self, other: &dyn std::any::Any) -> bool {
-        match other.downcast_ref::<Self>() {
-            Some(o) => self.dart_eq(o),
-            None => false,
-        }
-    }
-    fn dart_hash_any(&self) -> i64 {
-        self.dart_hash_code()
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
     fn dart_runtime_type(&self) -> Type {
-        Type::of("Slot")
-    }
-    fn dart_cast(&self, __t: std::any::TypeId) -> Option<std::boxed::Box<dyn std::any::Any>> {
-        if __t == std::any::TypeId::of::<Self>()
-            || __t == std::any::TypeId::of::<std::rc::Rc<Self>>()
-        {
-            return Some(std::boxed::Box::new(std::rc::Rc::new(self.clone())));
-        }
-        if __t == std::any::TypeId::of::<dyn Object>()
-            || __t == std::any::TypeId::of::<std::rc::Rc<dyn Object>>()
-        {
-            return Some(std::boxed::Box::new(
-                std::rc::Rc::new(self.clone()) as std::rc::Rc<dyn Object>
-            ));
-        }
-        None
+        Type { name: "Slot" }
     }
 }

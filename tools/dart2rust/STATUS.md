@@ -427,6 +427,7 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 | ws884 | 拒绝回滚的名单补全(9→22 字段)并加 `bin/statecheck.py` 守住 | stub **152**,拒绝 49,可达 64;**生成的 Rust 一字未动**——是陷阱不是活 bug |
 | ws885 | mixin 的 super 函数要 `__Self` 是什么,trait 头上就得先是什么 | stub **150**,拒绝 49,可达 64;渲染树与 run877 逐字节相同(197 帧 0 panic) |
 | ws886 | 把分析器重新变成门:前端迁到 analyzer 14.3(47→0 错),`check.sh` 摘掉 `|| true` 并给警告数加上限,双前端预言机重新点着 | 33 个 fixture 两侧全能生成(此前分析器那侧一个都不能——driver 自己编译不过);**生成的 Rust 一字未动**(926 模块 md5 e69150fe,拒绝仍 49);check.sh 干净退出,87 checks OK |
+| ws887 | 复审抓到 ws886 过度宣称:重生成的黄金按错误数收下,实为退步——全部退回,并给「黄金怎么验收」装尺子(`regen.py` 先问 `can_propagate()`);顺手清掉恒真式死码 `_computeFailing`/`_errorIn`/`_traitDeclares` | **生成的 Rust 仍一字未动**(926 模块 md5 e69150fe);analyze 86 条不变;check.sh 干净退出 |
 
 ## 下一步(2026-09-05 重铺)
 
@@ -708,15 +709,39 @@ ws601:  722 stub / 252 拒绝 / 63 crate 全可达(138 分区,延迟库合并后
   `instantiate` 必返 `FunctionType`)。删掉不改变任何输出,但那是生产前端
   里 40 处编辑,自己占一轮。`bin/check.sh` 的 `analyze_ceiling` 钉住这个
   数:只能降,降了要在同一个提交里把它改小。
-- **第三把熄了的尺子:`testdata` 那个 cargo crate**。分析器前端一活,
-  `bin/regen.py` 就跟着活了,32 个 `testdata/src/*.rs` 全部重生成(+6021
-  /-975,冻了很久)。但这个 crate 两边都编不过——**冻着的那批 139 个错,
-  重生成的这批 79 个**,所以重生成是严格的改善,留下了。
-  根因是单一的、也不在生成的代码里:`src/lib.rs` 是 1,894 行手写的桩加
-  测试,还停在「方法不返回 `Result`」的年代,`Asserts::new(8.0).halved()`
-  于是成了在 `Result` 上找方法(196 个 E0599 + 105 个 E0308 大半是这一
-  条)。`dart_prelude.rs` 重生成后一字未变,是当前的。把那 1,894 行接上
-  `Result` 是独立一轮;79 是它的起点数。
+- **第三把熄了的尺子:`testdata` 那个 cargo crate**(ws886 记错了根因,
+  ws887 更正)。`src/lib.rs` 里 **146 个 `#[test]`** 是全项目**唯一**断言
+  「运行时的值和 Dart 一样」的一层,全黑。三个独立原因,ws886 只看见
+  第一个就写成了「根因」:
+  1. `src/lib.rs` 那 1,894 行手写桩加测试还停在「方法不返回 `Result`」
+     的年代,`Asserts::new(8.0).halved()` 于是成了在 `Result` 上找方法。
+     占 196 个 E0599 的大头——这是抽样看见的那个。
+  2. **两个 fixture driver 结构性地生成不出 `?`**,这才是先要修的。
+     `bin/dart2rust_kernel.dart` 给 `KernelFrontend` 传 17 个具名参数里的
+     2 个(包驱动传 16 个,含 `throws:`),而 `_fails`
+     (`lib/frontend_kernel.dart`)开头就是 `if (throws == null) return
+     false`;分析器前端更彻底,**全文 0 处 `fails:`**,它比 Result 模型
+     还老。`_resultModel` 却是 `true`,于是每个方法都返回 `Result` 而
+     一个 `?` 都不生成——`Ok((self.doubled() + 1.0))`,拿 `Result<f64>`
+     去加浮点。**这不是陈旧,是按构造就编不过。**
+  3. 那份重生成的黄金里还有两个形状:const 上下文里的运行时 downcast
+     (`constinstance`,18 个 E0015/E0658)、trait 方法里的裸 `Vec<Object>`
+     (`generic`,E0782)。**去 gallery 输出里搜过了,两种形状都是 0 次**
+     ——gallery 那边 erased 槽一律是 `std::rc::Rc<dyn Object>`。所以它们
+     多半也是同一个残缺配置的产物,不是独立的后端 bug;要定性得先修好
+     driver 再看。
+  ws886 按「139 错 vs 79 错,取较优者」收下了 6,300 行黄金,那不是验收
+  标准——139 量的是旧代码对新 prelude 的漂移,不是正确性,而 79 那批
+  在 `?` 的形状上是**退步**。已全部退回冻结版。
+  `bin/regen.py` 现在开头问 `can_propagate()`:两个 driver 但凡有一个
+  发不出 `?` 就整体拒绝重生成并说明要先改什么(`--anyway` 只用来看,
+  不用来提交)。**顺序是 driver → 黄金 → lib.rs 的 Result 改造**,反过来
+  只会把同一个矛盾重新焊进去。
+- **值级断言的覆盖已塌到 6 个**:146 个黄金 `#[test]` 全黑之后,唯一
+  「对 Dart 真值」的尺子只剩 `bin/fx.sh` 的 6 个 fixture,而且要手跑。
+  `fixtures.py` 对「两个 driver 以同样方式配错」结构性失明(它们一致地
+  错,所以比较不出来);渲染树 md5 只发现**变化**,发现不了**错误**。
+  排 BEHIND 那 16 个的时候顺手长出 fx 候选,并想办法把 fx 进 `check.sh`。
 
 - **RegExp 无引擎**(intl 的某些路径依赖;目前没踩到)。
 - **typed_data 共享 buffer 视图**:`_eightBytesAsList` 是拷贝不是视图,

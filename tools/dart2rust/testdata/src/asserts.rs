@@ -1,4 +1,3 @@
-use crate::dart_prelude::Object;
 use crate::dart_prelude::*;
 use crate::DartAny;
 use crate::Type;
@@ -14,105 +13,33 @@ pub struct Asserts {
 }
 
 impl Asserts {
-    /// The constructor's own check, from the initialiser list.
-    pub fn new(value: f64) -> Result<Self, std::rc::Rc<dyn Object>> {
-        dart_register::<Self>();
-        Ok({
-            debug_assert!((value >= 0.0), "value must not be negative");
-            Self { value: value }
-        })
+    pub fn new(value: f64) -> Self {
+        debug_assert!((value >= 0.0), "value must not be negative");
+        Self { value: value }
     }
 
-    /// A check in a body, with a message.
-    pub fn halved(&self) -> Result<f64, std::rc::Rc<dyn Object>> {
+    pub fn halved(&self) -> f64 {
         debug_assert!((self.value > 0.0), "halving zero is not useful");
-        Ok((self.value / 2.0))
+        (self.value / 2.0)
     }
 
-    /// A check whose message is an interpolation, which is not translated -- the
-    /// condition is the contract, the message is diagnostics.
-    pub fn doubled(&self) -> Result<f64, std::rc::Rc<dyn Object>> {
-        // assert message, not translated: 'value $value is too large to double'
+    pub fn doubled(&self) -> f64 {
+        // assert message, not translated: StringConcatenation("value ${this.{Asserts.value}} is too large to double")
         debug_assert!((self.value < 1000.0));
-        Ok((self.value * 2.0))
+        (self.value * 2.0)
     }
 
-    /// No message at all.
-    pub fn squared(&self) -> Result<f64, std::rc::Rc<dyn Object>> {
+    pub fn squared(&self) -> f64 {
         debug_assert!((self.value >= 0.0));
-        Ok((self.value * self.value))
-    }
-}
-
-impl FromDynamic for Asserts {
-    fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
-        value.dart_cast_any::<Self>()
-    }
-    fn from_same(value: &Self) -> Option<Self> {
-        Some(value.clone())
-    }
-}
-
-impl NativeAnswer for Asserts {
-    fn from_answer(answer: std::rc::Rc<dyn Object>, symbol: &str) -> Self {
-        match answer.dart_cast_any::<Self>() {
-            Some(value) => value,
-            None => panic!(
-                "native `{}` answered {:?} where Asserts was declared",
-                symbol, answer
-            ),
-        }
-    }
-    fn absent() -> Self {
-        panic!("native answered nothing where Asserts was declared")
-    }
-}
-
-impl DartNullable for Asserts {
-    type Or = Option<Self>;
-    fn option(or: Option<Self>) -> Option<Self> {
-        or
-    }
-    fn from_option(option: Option<Self>) -> Option<Self> {
-        option
-    }
-}
-
-impl DartEq for Asserts {
-    fn dart_eq(&self, other: &Self) -> bool {
-        self == other
+        (self.value * self.value)
     }
 }
 
 impl DartAny for Asserts {
-    fn dart_to_string(&self) -> String {
-        format!("Instance of '{}'", "Asserts")
-    }
-    fn dart_eq_any(&self, other: &dyn std::any::Any) -> bool {
-        match other.downcast_ref::<Self>() {
-            Some(o) => self.dart_eq(o),
-            None => false,
-        }
-    }
-    fn dart_hash_any(&self) -> i64 {
-        self.dart_hash_code()
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
     fn dart_runtime_type(&self) -> Type {
-        Type::of("Asserts")
-    }
-    fn dart_cast(&self, __t: std::any::TypeId) -> Option<std::boxed::Box<dyn std::any::Any>> {
-        if __t == std::any::TypeId::of::<Self>()
-            || __t == std::any::TypeId::of::<std::rc::Rc<Self>>()
-        {
-            return Some(std::boxed::Box::new(std::rc::Rc::new(self.clone())));
-        }
-        if __t == std::any::TypeId::of::<dyn Object>()
-            || __t == std::any::TypeId::of::<std::rc::Rc<dyn Object>>()
-        {
-            return Some(std::boxed::Box::new(
-                std::rc::Rc::new(self.clone()) as std::rc::Rc<dyn Object>
-            ));
-        }
-        None
+        Type { name: "Asserts" }
     }
 }

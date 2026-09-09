@@ -1,4 +1,3 @@
-use crate::dart_prelude::Object;
 use crate::dart_prelude::*;
 use crate::DartAny;
 use crate::Type;
@@ -15,94 +14,6 @@ pub enum Axis {
 impl Axis {
     pub fn index(&self) -> i64 {
         *self as i64
-    }
-    pub fn name(&self) -> String {
-        match self {
-            Axis::Horizontal => "horizontal".to_string(),
-            Axis::Vertical => "vertical".to_string(),
-        }
-    }
-}
-
-impl DartEnum for Axis {
-    fn name(&self) -> String {
-        Axis::name(self)
-    }
-    fn index(&self) -> i64 {
-        Axis::index(self)
-    }
-}
-
-impl FromDynamic for Axis {
-    fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
-        value.dart_cast_any::<Self>()
-    }
-    fn from_same(value: &Self) -> Option<Self> {
-        Some(value.clone())
-    }
-}
-
-impl NativeAnswer for Axis {
-    fn from_answer(answer: std::rc::Rc<dyn Object>, symbol: &str) -> Self {
-        match answer.dart_cast_any::<Self>() {
-            Some(value) => value,
-            None => panic!(
-                "native `{}` answered {:?} where Axis was declared",
-                symbol, answer
-            ),
-        }
-    }
-    fn absent() -> Self {
-        panic!("native answered nothing where Axis was declared")
-    }
-}
-
-impl DartNullable for Axis {
-    type Or = Option<Self>;
-    fn option(or: Option<Self>) -> Option<Self> {
-        or
-    }
-    fn from_option(option: Option<Self>) -> Option<Self> {
-        option
-    }
-}
-
-impl DartEq for Axis {
-    fn dart_eq(&self, other: &Self) -> bool {
-        self == other
-    }
-}
-
-impl DartAny for Axis {
-    fn dart_runtime_type(&self) -> Type {
-        Type::of("Axis")
-    }
-    fn dart_to_string(&self) -> String {
-        format!("Axis.{}", DartEnum::name(self))
-    }
-    fn dart_eq_any(&self, other: &dyn std::any::Any) -> bool {
-        match other.downcast_ref::<Self>() {
-            Some(o) => self.dart_eq(o),
-            None => false,
-        }
-    }
-    fn dart_hash_any(&self) -> i64 {
-        self.dart_hash_code()
-    }
-    fn dart_cast(&self, __t: std::any::TypeId) -> Option<std::boxed::Box<dyn std::any::Any>> {
-        if __t == std::any::TypeId::of::<Self>()
-            || __t == std::any::TypeId::of::<std::rc::Rc<Self>>()
-        {
-            return Some(std::boxed::Box::new(std::rc::Rc::new(self.clone())));
-        }
-        if __t == std::any::TypeId::of::<dyn Object>()
-            || __t == std::any::TypeId::of::<std::rc::Rc<dyn Object>>()
-        {
-            return Some(std::boxed::Box::new(
-                std::rc::Rc::new(self.clone()) as std::rc::Rc<dyn Object>
-            ));
-        }
-        None
     }
 }
 
@@ -122,103 +33,11 @@ impl MainAxisAlignment {
     pub fn index(&self) -> i64 {
         *self as i64
     }
-    pub fn name(&self) -> String {
-        match self {
-            MainAxisAlignment::Start => "start".to_string(),
-            MainAxisAlignment::End => "end".to_string(),
-            MainAxisAlignment::Center => "center".to_string(),
-            MainAxisAlignment::SpaceBetween => "spaceBetween".to_string(),
-            MainAxisAlignment::SpaceAround => "spaceAround".to_string(),
-        }
-    }
-}
-
-impl DartEnum for MainAxisAlignment {
-    fn name(&self) -> String {
-        MainAxisAlignment::name(self)
-    }
-    fn index(&self) -> i64 {
-        MainAxisAlignment::index(self)
-    }
-}
-
-impl FromDynamic for MainAxisAlignment {
-    fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
-        value.dart_cast_any::<Self>()
-    }
-    fn from_same(value: &Self) -> Option<Self> {
-        Some(value.clone())
-    }
-}
-
-impl NativeAnswer for MainAxisAlignment {
-    fn from_answer(answer: std::rc::Rc<dyn Object>, symbol: &str) -> Self {
-        match answer.dart_cast_any::<Self>() {
-            Some(value) => value,
-            None => panic!(
-                "native `{}` answered {:?} where MainAxisAlignment was declared",
-                symbol, answer
-            ),
-        }
-    }
-    fn absent() -> Self {
-        panic!("native answered nothing where MainAxisAlignment was declared")
-    }
-}
-
-impl DartNullable for MainAxisAlignment {
-    type Or = Option<Self>;
-    fn option(or: Option<Self>) -> Option<Self> {
-        or
-    }
-    fn from_option(option: Option<Self>) -> Option<Self> {
-        option
-    }
-}
-
-impl DartEq for MainAxisAlignment {
-    fn dart_eq(&self, other: &Self) -> bool {
-        self == other
-    }
-}
-
-impl DartAny for MainAxisAlignment {
-    fn dart_runtime_type(&self) -> Type {
-        Type::of("MainAxisAlignment")
-    }
-    fn dart_to_string(&self) -> String {
-        format!("MainAxisAlignment.{}", DartEnum::name(self))
-    }
-    fn dart_eq_any(&self, other: &dyn std::any::Any) -> bool {
-        match other.downcast_ref::<Self>() {
-            Some(o) => self.dart_eq(o),
-            None => false,
-        }
-    }
-    fn dart_hash_any(&self) -> i64 {
-        self.dart_hash_code()
-    }
-    fn dart_cast(&self, __t: std::any::TypeId) -> Option<std::boxed::Box<dyn std::any::Any>> {
-        if __t == std::any::TypeId::of::<Self>()
-            || __t == std::any::TypeId::of::<std::rc::Rc<Self>>()
-        {
-            return Some(std::boxed::Box::new(std::rc::Rc::new(self.clone())));
-        }
-        if __t == std::any::TypeId::of::<dyn Object>()
-            || __t == std::any::TypeId::of::<std::rc::Rc<dyn Object>>()
-        {
-            return Some(std::boxed::Box::new(
-                std::rc::Rc::new(self.clone()) as std::rc::Rc<dyn Object>
-            ));
-        }
-        None
-    }
 }
 
 // Generated by tools/dart2rust from upstream `Season`
 // (Dart enum -> Rust enum).
 
-/// Enhanced: it has a method, so translating it as a plain enum would lose one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Season {
     Spring,
@@ -229,99 +48,11 @@ impl Season {
     pub fn index(&self) -> i64 {
         *self as i64
     }
-    pub fn name(&self) -> String {
-        match self {
-            Season::Spring => "spring".to_string(),
-            Season::Summer => "summer".to_string(),
-        }
-    }
-}
-
-impl DartEnum for Season {
-    fn name(&self) -> String {
-        Season::name(self)
-    }
-    fn index(&self) -> i64 {
-        Season::index(self)
-    }
-}
-
-impl FromDynamic for Season {
-    fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
-        value.dart_cast_any::<Self>()
-    }
-    fn from_same(value: &Self) -> Option<Self> {
-        Some(value.clone())
-    }
-}
-
-impl NativeAnswer for Season {
-    fn from_answer(answer: std::rc::Rc<dyn Object>, symbol: &str) -> Self {
-        match answer.dart_cast_any::<Self>() {
-            Some(value) => value,
-            None => panic!(
-                "native `{}` answered {:?} where Season was declared",
-                symbol, answer
-            ),
-        }
-    }
-    fn absent() -> Self {
-        panic!("native answered nothing where Season was declared")
-    }
-}
-
-impl DartNullable for Season {
-    type Or = Option<Self>;
-    fn option(or: Option<Self>) -> Option<Self> {
-        or
-    }
-    fn from_option(option: Option<Self>) -> Option<Self> {
-        option
-    }
-}
-
-impl DartEq for Season {
-    fn dart_eq(&self, other: &Self) -> bool {
-        self == other
-    }
-}
-
-impl DartAny for Season {
-    fn dart_runtime_type(&self) -> Type {
-        Type::of("Season")
-    }
-    fn dart_to_string(&self) -> String {
-        format!("Season.{}", DartEnum::name(self))
-    }
-    fn dart_eq_any(&self, other: &dyn std::any::Any) -> bool {
-        match other.downcast_ref::<Self>() {
-            Some(o) => self.dart_eq(o),
-            None => false,
-        }
-    }
-    fn dart_hash_any(&self) -> i64 {
-        self.dart_hash_code()
-    }
-    fn dart_cast(&self, __t: std::any::TypeId) -> Option<std::boxed::Box<dyn std::any::Any>> {
-        if __t == std::any::TypeId::of::<Self>()
-            || __t == std::any::TypeId::of::<std::rc::Rc<Self>>()
-        {
-            return Some(std::boxed::Box::new(std::rc::Rc::new(self.clone())));
-        }
-        if __t == std::any::TypeId::of::<dyn Object>()
-            || __t == std::any::TypeId::of::<std::rc::Rc<dyn Object>>()
-        {
-            return Some(std::boxed::Box::new(
-                std::rc::Rc::new(self.clone()) as std::rc::Rc<dyn Object>
-            ));
-        }
-        None
-    }
 }
 
 impl Season {
-    pub fn is_warm(&self) -> Result<bool, std::rc::Rc<dyn Object>> {
-        Ok(((*self) == Season::Summer))
+    pub fn is_warm(&self) -> bool {
+        (*self == Season::Summer)
     }
 }
 
@@ -337,115 +68,38 @@ pub struct Layout {
 }
 
 impl Layout {
-    pub const fn new(
-        axis: Axis,
-        alignment: MainAxisAlignment,
-    ) -> Result<Self, std::rc::Rc<dyn Object>> {
-        Ok({
-            Self {
-                axis: axis,
-                alignment: alignment,
-            }
-        })
-    }
-
-    pub fn is_horizontal(&self) -> Result<bool, std::rc::Rc<dyn Object>> {
-        Ok((self.axis == Axis::Horizontal))
-    }
-
-    /// Reads a value of another enum, so the two do not get confused.
-    pub fn is_centred(&self) -> Result<bool, std::rc::Rc<dyn Object>> {
-        Ok((self.alignment == MainAxisAlignment::Center))
-    }
-
-    /// A multi-word value, where the renaming actually does something.
-    pub fn is_spaced(&self) -> Result<bool, std::rc::Rc<dyn Object>> {
-        Ok((self.alignment == MainAxisAlignment::SpaceBetween))
-    }
-}
-
-impl FromDynamic for Layout {
-    fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
-        value.dart_cast_any::<Self>()
-    }
-    fn from_same(value: &Self) -> Option<Self> {
-        Some(value.clone())
-    }
-}
-
-impl NativeAnswer for Layout {
-    fn from_answer(answer: std::rc::Rc<dyn Object>, symbol: &str) -> Self {
-        match answer.dart_cast_any::<Self>() {
-            Some(value) => value,
-            None => panic!(
-                "native `{}` answered {:?} where Layout was declared",
-                symbol, answer
-            ),
+    pub const fn new(axis: Axis, alignment: MainAxisAlignment) -> Self {
+        Self {
+            axis: axis,
+            alignment: alignment,
         }
     }
-    fn absent() -> Self {
-        panic!("native answered nothing where Layout was declared")
-    }
-}
 
-impl DartNullable for Layout {
-    type Or = Option<Self>;
-    fn option(or: Option<Self>) -> Option<Self> {
-        or
+    pub fn is_horizontal(&self) -> bool {
+        (self.axis == Axis::Horizontal)
     }
-    fn from_option(option: Option<Self>) -> Option<Self> {
-        option
-    }
-}
 
-impl DartEq for Layout {
-    fn dart_eq(&self, other: &Self) -> bool {
-        self == other
+    pub fn is_centred(&self) -> bool {
+        (self.alignment == MainAxisAlignment::Center)
+    }
+
+    pub fn is_spaced(&self) -> bool {
+        (self.alignment == MainAxisAlignment::SpaceBetween)
     }
 }
 
 impl DartAny for Layout {
-    fn dart_to_string(&self) -> String {
-        format!("Instance of '{}'", "Layout")
-    }
-    fn dart_eq_any(&self, other: &dyn std::any::Any) -> bool {
-        match other.downcast_ref::<Self>() {
-            Some(o) => self.dart_eq(o),
-            None => false,
-        }
-    }
-    fn dart_hash_any(&self) -> i64 {
-        self.dart_hash_code()
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
     fn dart_runtime_type(&self) -> Type {
-        Type::of("Layout")
-    }
-    fn dart_cast(&self, __t: std::any::TypeId) -> Option<std::boxed::Box<dyn std::any::Any>> {
-        if __t == std::any::TypeId::of::<Self>()
-            || __t == std::any::TypeId::of::<std::rc::Rc<Self>>()
-        {
-            return Some(std::boxed::Box::new(std::rc::Rc::new(self.clone())));
-        }
-        if __t == std::any::TypeId::of::<dyn Object>()
-            || __t == std::any::TypeId::of::<std::rc::Rc<dyn Object>>()
-        {
-            return Some(std::boxed::Box::new(
-                std::rc::Rc::new(self.clone()) as std::rc::Rc<dyn Object>
-            ));
-        }
-        None
+        Type { name: "Layout" }
     }
 }
 
 // Generated by tools/dart2rust from upstream `Tristate`
 // (Dart enum -> Rust enum).
 
-/// An **enhanced** enum whose values carry state of their own.
-///
-/// `none(0)` gives each variant a `value`, and that used to be refused: a Rust
-/// enum would need a payload per variant to say the same thing. It would not.
-/// The value is a constant *of* the variant, so the Rust is a `match` in a
-/// getter -- which is also what makes it free to read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Tristate {
     None,
@@ -457,96 +111,6 @@ pub enum Tristate {
 impl Tristate {
     pub fn index(&self) -> i64 {
         *self as i64
-    }
-    pub fn name(&self) -> String {
-        match self {
-            Tristate::None => "none".to_string(),
-            Tristate::IsTrue => "isTrue".to_string(),
-            Tristate::IsFalse => "isFalse".to_string(),
-            Tristate::Quoted => "quoted".to_string(),
-        }
-    }
-}
-
-impl DartEnum for Tristate {
-    fn name(&self) -> String {
-        Tristate::name(self)
-    }
-    fn index(&self) -> i64 {
-        Tristate::index(self)
-    }
-}
-
-impl FromDynamic for Tristate {
-    fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
-        value.dart_cast_any::<Self>()
-    }
-    fn from_same(value: &Self) -> Option<Self> {
-        Some(value.clone())
-    }
-}
-
-impl NativeAnswer for Tristate {
-    fn from_answer(answer: std::rc::Rc<dyn Object>, symbol: &str) -> Self {
-        match answer.dart_cast_any::<Self>() {
-            Some(value) => value,
-            None => panic!(
-                "native `{}` answered {:?} where Tristate was declared",
-                symbol, answer
-            ),
-        }
-    }
-    fn absent() -> Self {
-        panic!("native answered nothing where Tristate was declared")
-    }
-}
-
-impl DartNullable for Tristate {
-    type Or = Option<Self>;
-    fn option(or: Option<Self>) -> Option<Self> {
-        or
-    }
-    fn from_option(option: Option<Self>) -> Option<Self> {
-        option
-    }
-}
-
-impl DartEq for Tristate {
-    fn dart_eq(&self, other: &Self) -> bool {
-        self == other
-    }
-}
-
-impl DartAny for Tristate {
-    fn dart_runtime_type(&self) -> Type {
-        Type::of("Tristate")
-    }
-    fn dart_to_string(&self) -> String {
-        format!("Tristate.{}", DartEnum::name(self))
-    }
-    fn dart_eq_any(&self, other: &dyn std::any::Any) -> bool {
-        match other.downcast_ref::<Self>() {
-            Some(o) => self.dart_eq(o),
-            None => false,
-        }
-    }
-    fn dart_hash_any(&self) -> i64 {
-        self.dart_hash_code()
-    }
-    fn dart_cast(&self, __t: std::any::TypeId) -> Option<std::boxed::Box<dyn std::any::Any>> {
-        if __t == std::any::TypeId::of::<Self>()
-            || __t == std::any::TypeId::of::<std::rc::Rc<Self>>()
-        {
-            return Some(std::boxed::Box::new(std::rc::Rc::new(self.clone())));
-        }
-        if __t == std::any::TypeId::of::<dyn Object>()
-            || __t == std::any::TypeId::of::<std::rc::Rc<dyn Object>>()
-        {
-            return Some(std::boxed::Box::new(
-                std::rc::Rc::new(self.clone()) as std::rc::Rc<dyn Object>
-            ));
-        }
-        None
     }
 }
 
@@ -569,8 +133,8 @@ impl Tristate {
         }
     }
 
-    pub fn is_set(&self) -> Result<bool, std::rc::Rc<dyn Object>> {
-        Ok((self.value() > 0))
+    pub fn is_set(&self) -> bool {
+        (self.value() > 0)
     }
 }
 
@@ -583,99 +147,32 @@ impl Tristate {
 pub struct UsesTristate {}
 
 impl UsesTristate {
-    pub const fn new() -> Result<Self, std::rc::Rc<dyn Object>> {
-        Ok({ Self {} })
+    pub const fn new() -> Self {
+        Self {}
     }
 
-    pub fn weigh(&self, state: Tristate) -> Result<i64, std::rc::Rc<dyn Object>> {
-        Ok((state.value() * 10))
+    pub fn weigh(&self, state: Tristate) -> i64 {
+        (state.value() * 10)
     }
 
-    /// Names all three values. The Kernel front end recovers an enum's variants
-    /// from the *constants* that name them -- the dill keeps no fields for them
-    /// -- so a fixture that declares an enum and never uses it tests nothing on
-    /// that side, and the two front ends came out 18 lines apart until this
-    /// method existed.
-    pub fn pick(&self, n: i64) -> Result<Tristate, std::rc::Rc<dyn Object>> {
+    pub fn pick(&self, n: i64) -> Tristate {
         if (n > 0) {
-            return Ok(Tristate::IsTrue);
+            return Tristate::IsTrue;
         }
         if (n < 0) {
-            return Ok(Tristate::IsFalse);
+            return Tristate::IsFalse;
         }
-        Ok(Tristate::None)
-    }
-}
-
-impl FromDynamic for UsesTristate {
-    fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
-        value.dart_cast_any::<Self>()
-    }
-    fn from_same(value: &Self) -> Option<Self> {
-        Some(value.clone())
-    }
-}
-
-impl NativeAnswer for UsesTristate {
-    fn from_answer(answer: std::rc::Rc<dyn Object>, symbol: &str) -> Self {
-        match answer.dart_cast_any::<Self>() {
-            Some(value) => value,
-            None => panic!(
-                "native `{}` answered {:?} where UsesTristate was declared",
-                symbol, answer
-            ),
-        }
-    }
-    fn absent() -> Self {
-        panic!("native answered nothing where UsesTristate was declared")
-    }
-}
-
-impl DartNullable for UsesTristate {
-    type Or = Option<Self>;
-    fn option(or: Option<Self>) -> Option<Self> {
-        or
-    }
-    fn from_option(option: Option<Self>) -> Option<Self> {
-        option
-    }
-}
-
-impl DartEq for UsesTristate {
-    fn dart_eq(&self, other: &Self) -> bool {
-        self == other
+        Tristate::None
     }
 }
 
 impl DartAny for UsesTristate {
-    fn dart_to_string(&self) -> String {
-        format!("Instance of '{}'", "UsesTristate")
-    }
-    fn dart_eq_any(&self, other: &dyn std::any::Any) -> bool {
-        match other.downcast_ref::<Self>() {
-            Some(o) => self.dart_eq(o),
-            None => false,
-        }
-    }
-    fn dart_hash_any(&self) -> i64 {
-        self.dart_hash_code()
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
     fn dart_runtime_type(&self) -> Type {
-        Type::of("UsesTristate")
-    }
-    fn dart_cast(&self, __t: std::any::TypeId) -> Option<std::boxed::Box<dyn std::any::Any>> {
-        if __t == std::any::TypeId::of::<Self>()
-            || __t == std::any::TypeId::of::<std::rc::Rc<Self>>()
-        {
-            return Some(std::boxed::Box::new(std::rc::Rc::new(self.clone())));
+        Type {
+            name: "UsesTristate",
         }
-        if __t == std::any::TypeId::of::<dyn Object>()
-            || __t == std::any::TypeId::of::<std::rc::Rc<dyn Object>>()
-        {
-            return Some(std::boxed::Box::new(
-                std::rc::Rc::new(self.clone()) as std::rc::Rc<dyn Object>
-            ));
-        }
-        None
     }
 }

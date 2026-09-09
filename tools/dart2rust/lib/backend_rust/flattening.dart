@@ -148,29 +148,6 @@ augment class RustBackend {
       ? 'panic!("uncaught Dart exception: {:?}", ${expr(value)})'
       : 'return Err(${_boxedThrow(value)})';
 
-  /// Whether an abstract class this one is or descends from declares the
-  /// method: its signature is then the trait's, and cannot be widened to
-  /// a `Result` by this class alone.
-  bool _traitDeclares(String dartName) {
-    var found = false;
-    void collect(IrClass c, Set<String> seen) {
-      if (found || !seen.add(c.name)) return;
-      if (c.isAbstract &&
-          (c.methods.any((m) => m.name == dartName) ||
-              c.abstractMethods.any((m) => m.name == dartName))) {
-        found = true;
-        return;
-      }
-      for (final n in _supertypeNames(c)) {
-        final s = library[n];
-        if (s != null) collect(s, seen);
-      }
-    }
-
-    collect(cls, {});
-    return found;
-  }
-
   /// The error type a method's signature carries, if any: see `_thrown`.
   String? _failureOf(IrMethod method) => _resultModel ? _error : null;
 
