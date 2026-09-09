@@ -566,12 +566,25 @@ class IrIfNull extends IrExpr {
     this.right, {
     required this.nullableResult,
     required this.eager,
+    this.assignsLeft = false,
   });
 
   final IrExpr left;
   final IrExpr right;
   final bool nullableResult;
   final bool eager;
+
+  /// Whether this is `x ??= v` -- the right side stores into the place the
+  /// left side read.
+  ///
+  /// It matters to a *mutating* use of the result: `(f ??= <>{}).add(x)`
+  /// hands back the value, and a collection read out of a field is a copy,
+  /// so the `add` went into the copy. `Element.dependOnInheritedElement`
+  /// writes exactly that, so `_dependencies` was always empty,
+  /// `_ensureDeactivated` never unregistered anything, and a defunct
+  /// element kept being notified (`lifecycle=Defunct`, run906). Knowing the
+  /// place is the left's is what lets the backend mutate through it.
+  final bool assignsLeft;
 }
 
 /// `x == null`.

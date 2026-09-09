@@ -488,6 +488,17 @@ augment class RustBackend {
     // (`RenderTapRegionSurface`, run787).
     final held = _heldSlot(target);
     if (held != null) return held;
+    // `(f ??= <>{}).add(x)`: the value handed back is a copy of what the
+    // field holds, and mutating it changes nothing. The place is the left
+    // side's, once the right side has made sure something is there
+    // (`IrIfNull.assignsLeft`).
+    if (target is IrIfNull && target.assignsLeft) {
+      final place = _mutPlace(target.left);
+      if (place != null) {
+        return '{ if ${expr(target.left)}.is_none() { ${expr(target.right)}; } '
+            '$place.as_mut().unwrap() }';
+      }
+    }
     if (target is IrNullCheck) {
       final inner = _mutPlace(target.operand);
       if (inner != null) return '$inner.as_mut().unwrap()';

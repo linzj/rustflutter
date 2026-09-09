@@ -17,6 +17,25 @@ augment class KernelFrontend {
   /// recognised by the else branch being the temporary itself. 6764 of the
   /// lets are this, 45% of them. The rest still stop -- `a?.b` is 4838 more
   /// and is the next shape, not this one.
+  /// Whether `right` stores into the very place `left` read: the shape
+  /// Kernel gives `x ??= v` (`let #t = x in #t == null ? x = v : #t`).
+  static bool _storesInto(Expression left, Expression right) {
+    bool sameReceiver(Expression a, Expression b) =>
+        (a is ThisExpression && b is ThisExpression) ||
+        (a is VariableGet && b is VariableGet && a.variable == b.variable);
+    if (left is InstanceGet && right is InstanceSet) {
+      return left.name == right.name &&
+          sameReceiver(left.receiver, right.receiver);
+    }
+    if (left is StaticGet && right is StaticSet) {
+      return left.target == right.target;
+    }
+    if (left is VariableGet && right is VariableSet) {
+      return left.variable == right.variable;
+    }
+    return false;
+  }
+
   IrExpr _let(Let node) {
     final body = node.body;
     // A cascade: the binding is on the `Let` and the steps are a block whose
@@ -320,6 +339,9 @@ augment class KernelFrontend {
         final whole = IrIfNull(
           asked,
           rightSide,
+          // `x ??= v`: the right side stores into the place the left read
+          // (`IrIfNull.assignsLeft`).
+          assignsLeft: _storesInto(value, right),
           // Whether the whole thing is still nullable is the right side's
           // question: `a ?? b` is non-null exactly when `b` is.
           // The conditional carries its own static type, so no type context
