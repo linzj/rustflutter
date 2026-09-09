@@ -370,6 +370,18 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 
 ## 撤回与作废(不要再试)
 
+**(2026-09-10,ws966 试过又撤回;一次都没触发)** `null?.x` 就是 `null`——这条规则
+前端早有(`_isNull(value)`,ws777),按的是 **Kernel 节点**;`TextStyle` 那个
+`None.as_ref().map(|it| ..)`(`&_`,E0282)里的 `None` 是 TFA 把「永远是 null 的
+字段」折出来的,读到这儿已经不是 `_isNull` 认得的节点了。于是补了一条:**降下来**
+是个 null 字面量时,整条访问也是 null。只认**光秃秃**的字面量——降下来还绑了东西的,
+那些绑定装着接收者自己的副作用,而 Dart 是要先算它们再决定这次访问是 null 的。
+量出来 **stub 93 → 93,桩的集合一模一样**:一次都没触发。夹具 `nullchain`
+(`Styled.package` 没有任何一处赋过值)复现不出来——TFA 在这么小的程序里把那个读
+折成了**带类型的** null(`dart_null_as::<Option<String>>()`),所以根本没有 `&_`;
+gallery 那个是**没有类型**的 `None`,根子和 ws957 的 `Option<Null>` 是同一个。
+下次要动它,先弄清那个 `None` 是从哪条路出来的——不是这条。
+
 **(2026-09-10,ws962 试过又撤回;拒绝 -1、桩 +1,净零)** 把 `dart:io` 的三个
 异常(新写的 `HttpException`,以及 prelude 早就有结构体的 `SocketException`
 /`FileSystemException`)加进 `_preludeClasses`,让 `is` 能经由 `DartCoreAs`
