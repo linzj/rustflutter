@@ -512,15 +512,28 @@ augment class KernelFrontend {
   /// trait, answered by every class under it (see `_typeArgumentGetters`).
   final _typeLiteralParamsCache = <Class, Set<TypeParameter>>{};
 
-  Set<TypeParameter> _typeLiteralParams(Class c) =>
-      _typeLiteralParamsCache.putIfAbsent(c, () {
+  /// The parameters a class's own bodies read as a type literal, before
+  /// asking whether they are erased.
+  ///
+  /// Separate from [_typeLiteralParams] because `_erasedParameter` reads
+  /// *this* one: a class that reads its own `T` as a type has a say in
+  /// whether `T` survives, and the filtered set below would be circular.
+  final _typeLiteralUsesCache = <Class, Set<TypeParameter>>{};
+
+  Set<TypeParameter> _typeLiteralUses(Class c) =>
+      _typeLiteralUsesCache.putIfAbsent(c, () {
         if (c.typeParameters.isEmpty) return const {};
         final finder = _TypeLiteralFinder(c.typeParameters.toSet());
         for (final m in c.members) {
           m.accept(finder);
         }
+        return finder.found;
+      });
+
+  Set<TypeParameter> _typeLiteralParams(Class c) =>
+      _typeLiteralParamsCache.putIfAbsent(c, () {
         return {
-          for (final p in finder.found)
+          for (final p in _typeLiteralUses(c))
             if (_erasedParameter(p)) p,
         };
       });

@@ -411,6 +411,107 @@ augment class KernelFrontend {
     'dart:convert': {'jsonDecode': ('json_decode', null)},
   };
 
+  /// Whether a parameter that would be erased is kept, because the class
+  /// itself reads it as a *type* and nothing else can answer for it.
+  ///
+  /// `_typeArgumentGetters` gives an abstract or open class a getter every
+  /// implementer answers with the argument its ancestry put in; a concrete
+  /// class has no such answer, and only the `new` site knows. Erased there,
+  /// `n is T` is a test against the bound -- always true, which is how a
+  /// `ScrollMetricsNotification` reached a listener that only takes
+  /// `ScrollNotification` (`_NotificationElement<T>`, run903; the iserased
+  /// fixture).
+  ///
+  /// The parameter survives as a *marker*, not as a value type: the generic
+  /// and its turbofish are there so `is T` has something to ask, and every
+  /// value still travels at the bound (see the promotion in
+  /// `_expressionRaw`).
+  final _keptForTypeLiteralCache = <TypeParameter, bool>{};
+
+  /// Whether a parameter is bounded by a class this compiler spells.
+  ///
+  /// An *unbounded* one is written raw as often as not -- `_MapEntry` holds
+  /// a bare `MapEquality`, which is `MapEquality<dynamic, dynamic>` -- and
+  /// keeping it makes that field a different Rust type from the
+  /// `MapEquality<V>` the class hands itself around as, with no conversion
+  /// between them. It also cannot be tested for usefully: `x is T` with `T`
+  /// unbounded asks about a type the program never narrows.
+  ///
+  /// Read from the declaration, not from the instantiation census: the
+  /// census is filled *while* libraries are lowered, so asking it here gives
+  /// a different answer in the library lowered first than in the one lowered
+  /// last -- `WidgetStateMapper` came out generic in one module and plain in
+  /// another (`struct takes 0 generic arguments but 1 was supplied`).
+  bool _boundedByAClass(TypeParameter p) {
+    final bound = p.bound;
+    return bound is InterfaceType &&
+        bound.classNode.name != 'Object' &&
+        _translatedClass(bound.classNode);
+  }
+
+  bool _keptForTypeLiteral(TypeParameter p, [Set<TypeParameter>? seen]) {
+    final owner = p.declaration;
+    if (owner is! Class || owner.isAbstract || _isOpen(owner)) return false;
+    final cached = _keptForTypeLiteralCache[p];
+    if (cached != null) return cached;
+    // ..only where every instantiation the program names can spell the
+    // argument. `_MapEntry` holds a *raw* `MapEquality`, so keeping
+    // `MapEquality`'s `V` makes `MapEquality<V>` and the field's
+    // `MapEquality<Rc<dyn Object>>` two types with no conversion between
+    // them, and `MapEquality.equals` stops compiling. A top type at this
+    // position is that: the argument was thrown away before we got here.
+    if (!_boundedByAClass(p)) {
+      return _keptForTypeLiteralCache[p] = false;
+    }
+    if (_typeLiteralUses(owner).contains(p)) {
+      if (Platform.environment['DART2RUST_TRACE_KEPT'] != null) {
+        stderr.writeln('KEPT literal ${owner.name}.${p.name}');
+      }
+      return _keptForTypeLiteralCache[p] = true;
+    }
+    // ..or it fills a kept parameter of another class. `_MapEntry<V>` holds
+    // a `MapEquality<V>`, and `MapEquality` keeps its `V` for the test in
+    // its own body: erased here, the field is a `MapEquality<Rc<dyn
+    // Object>>` and `_MapEntry::new(self, ..)` from inside `MapEquality<V>`
+    // is a type mismatch. Keeping travels with the argument.
+    final visited = seen ?? <TypeParameter>{};
+    if (!visited.add(p)) return false;
+    final finder = _KeptFlowFinder(
+      p,
+      (other) => _keptForTypeLiteral(other, visited),
+    );
+    for (final field in owner.fields) {
+      field.type.accept(finder);
+    }
+    for (final procedure in owner.procedures) {
+      final fn = procedure.function;
+      for (final q in fn.positionalParameters) {
+        q.type.accept(finder);
+      }
+      for (final q in fn.namedParameters) {
+        q.type.accept(finder);
+      }
+      fn.returnType.accept(finder);
+      // ..and the bodies: a `createElement` hands the parameter to the
+      // element it builds, and nothing in the signature says so.
+      fn.body?.accept(finder);
+    }
+    for (final constructor in owner.constructors) {
+      constructor.function.body?.accept(finder);
+      for (final initializer in constructor.initializers) {
+        initializer.accept(finder);
+      }
+    }
+    // Only a settled answer is remembered: one reached through a cycle is
+    // "not yet", not "no".
+    if (finder.found && Platform.environment['DART2RUST_TRACE_KEPT'] != null) {
+      stderr.writeln('KEPT flow ${owner.name}.${p.name}');
+    }
+    if (seen == null || finder.found)
+      _keptForTypeLiteralCache[p] = finder.found;
+    return finder.found;
+  }
+
   bool _erasedParameter(TypeParameter p) {
     if (!erase) return false;
     // Erasure is a property of the declarations this compiler writes: a
@@ -424,6 +525,7 @@ augment class KernelFrontend {
     // Object>`) or a translated trait. `RestorableEnum<T extends Enum>`
     // erased to a `dart:core` class this compiler does not spell took 107
     // crates down (ws520).
+    if (_keptForTypeLiteral(p)) return false;
     if (covariantParameters.contains(p) && _erasableBound(p.bound)) {
       return true;
     }

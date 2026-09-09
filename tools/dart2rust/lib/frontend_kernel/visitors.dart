@@ -1322,6 +1322,52 @@ class _ReferenceCollector extends RecursiveVisitor {
   }
 }
 
+/// Whether a parameter is handed to a *kept* parameter of another class
+/// anywhere in its own class's declared types (`_keptForTypeLiteral`).
+class _KeptFlowFinder extends RecursiveVisitor {
+  _KeptFlowFinder(this.parameter, this.isKept);
+
+  final TypeParameter parameter;
+  final bool Function(TypeParameter) isKept;
+  bool found = false;
+
+  @override
+  void visitInterfaceType(InterfaceType node) {
+    _handedTo(node.classNode, node.typeArguments);
+    super.visitInterfaceType(node);
+  }
+
+  // ..and through a construction, where the class is named only by the
+  // target: `NotificationListener<T>.createElement()` builds a
+  // `_NotificationElement<T>`, and the element is the one that keeps its
+  // parameter. Erased on this side, every element was made at the bound and
+  // its `is T` said yes to everything (run904).
+  @override
+  void visitConstructorInvocation(ConstructorInvocation node) {
+    _handedTo(node.target.enclosingClass, node.arguments.types);
+    super.visitConstructorInvocation(node);
+  }
+
+  @override
+  void visitStaticInvocation(StaticInvocation node) {
+    final owner = node.target.enclosingClass;
+    if (owner != null) _handedTo(owner, node.arguments.types);
+    super.visitStaticInvocation(node);
+  }
+
+  void _handedTo(Class owner, List<DartType> arguments) {
+    final params = owner.typeParameters;
+    for (var i = 0; i < arguments.length && i < params.length; i++) {
+      final argument = arguments[i];
+      if (argument is TypeParameterType &&
+          argument.parameter == parameter &&
+          isKept(params[i])) {
+        found = true;
+      }
+    }
+  }
+}
+
 /// The class type parameters a body reads as type literals (`T` as a
 /// value; see `_typeLiteralParams`).
 class _TypeLiteralFinder extends RecursiveVisitor {
