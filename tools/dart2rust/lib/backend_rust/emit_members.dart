@@ -653,6 +653,19 @@ augment class RustBackend {
         'self',
         if (rhs != null) '${snake(rhs.name)}: ${type(rhs.type)}',
       ].join(', ');
+      // The inherent method holds the body, so its parameter says `mut`
+      // where the body writes to it, exactly as a method's does
+      // (`Priority operator +(int offset)` clamps `offset` before using
+      // it: "cannot assign to immutable argument", E0384, ws960). The
+      // forwarder above only hands the value on and keeps the plain
+      // spelling -- a `mut` it never uses is a denied `unused_mut`.
+      final assigned = _assignedIn(method.body);
+      final ownParams = [
+        'self',
+        if (rhs != null)
+          '${assigned.contains(rhs.name) ? 'mut ' : ''}'
+              '${snake(rhs.name)}: ${type(rhs.type)}',
+      ].join(', ');
       // The body lives in an inherent method the trait impl forwards to.
       // Inside `impl std::ops::Add for Matrix3`, the trait is in scope, and
       // `cascaded.add(arg)` in the body of `operator +` -- Dart's own
@@ -668,13 +681,13 @@ augment class RustBackend {
       _line('');
       _line('impl${_implGenerics(cls)} ${cls.name}${_generics(cls)} {');
       _indent++;
-      _line('pub fn $own($params) -> ${type(method.returnType)} {');
+      _line('pub fn $own($ownParams) -> ${type(method.returnType)} {');
       _indent++;
       _returns = method.returnType;
       _here = '${cls.name}.${method.name}';
       _asyncBody = method.isAsync;
       _methodTypeParams = method.typeParameters;
-      _reassigned = _assignedIn(method.body);
+      _reassigned = assigned;
       _mutRefParams = {
         for (final p in method.params)
           if (p.mutRef) p.name,
