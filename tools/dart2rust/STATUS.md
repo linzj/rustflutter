@@ -385,7 +385,6 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 
 | 轮 | 规则 / 读数 | 数 |
 |---|---|---|
-| ws826 | an enum the tree shaker emptied is not a refusal | stub **202**,拒绝 71,可达 64 |
 | ws828 | N catch clauses are one catch that dispatches on the type | stub **202**,拒绝 70,可达 64 |
 | ws830 | `jsonEncode`, by the value's own type | stub **203**,拒绝 69,可达 64 |
 | ws831 | the `toEncodable` shape | stub **202**,拒绝 69,可达 64 |
@@ -425,6 +424,7 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 | ws880 | 编译器自身:装回分析器与单测,四份变异名表并作一处,删死码 387 行 | stub **152**,拒绝 49,可达 64;**生成的 Rust 与 `HEAD~1` 逐字节相同** |
 | ws881 | 两个 god class 各拆成一个目录的 part(`augment class`),搬运零改字 | stub **152**,拒绝 49,可达 64;**生成的 Rust 与拆前逐字节相同** |
 | ws882 | part 文件再切细:按成员边界切进两个 5k 文件,最大 part 1,841 行 | **生成的 Rust 与拆前逐字节相同**(md5 4429c8f1),故 152/49/64 不变——这一轮只跑了翻译,没跑 cargo 九轮 |
+| ws883 | `_expressionRaw` 1,717 行一个方法拆成十段 run,`the_class` 再切四份;最大 part 1,452 | **生成的 Rust 仍与拆前逐字节相同**(md5 4429c8f1) |
 
 ## 下一步(2026-09-05 重铺)
 

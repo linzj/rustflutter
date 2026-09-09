@@ -101,9 +101,9 @@ of every class in the framework.
 
     lib/ir.dart            the IR. Knows nothing about Kernel or about Rust.
     lib/frontend_kernel.dart  Kernel -> IR. The front end in use. One class
-      frontend_kernel/       spread over 15 files; none over 1,750 lines.
+      frontend_kernel/       spread over 19 files; none over 1,460 lines.
     lib/frontend.dart      analyzer -> IR. Superseded, and does not compile.
-    lib/backend_rust.dart  IR -> Rust source. One class over 17 files.
+    lib/backend_rust.dart  IR -> Rust source. One class over 20 files.
     lib/coerce.dart        one rule for a value entering a slot, both ways
     lib/covariance.dart    where an override widens what a slot takes
     lib/throws.dart        which members can fail, over the whole program
@@ -165,18 +165,24 @@ was 12,242. Each is now spread over the `part` files under
 them back together. Not one character of the moved code changed, and the
 generated Rust is byte for byte what it was before the split.
 
-The first cut followed the section comments the files already had
-(`// -- Expressions --`). Those left two files over 5,000 lines, so the second
-cut went inside them, at member boundaries, and every part now carries a line
-saying what it holds. **No part is over 1,850 lines**, and the two that come
-closest are a single method (`_expressionRaw`, 1,717) and one section that has
-not been looked at yet (`the_class.dart`, 1,841).
+It took three cuts. The first followed the section comments the files already
+had (`// -- Expressions --`). That left two files over 5,000 lines, so the
+second went inside them at member boundaries. That left one file that was a
+*single method* -- `_expressionRaw`, 1,717 lines of `if (node is ..)` -- so the
+third cut that method into ten runs, each answering for a family of node kinds
+and returning null for the rest, chained by `??` in the order the one method
+had. **38 part files, median 641 lines, none over 1,460**, and each carries a
+line at the top saying what it holds.
 
-One thing the second cut turned up: `// -- Failure in the return value --`
-headed 2,841 lines of which only the first 295 were about failure -- the rest
-was the whole class emitter, grown in under a heading that stopped describing
-it. Those are `emit_struct.dart`, `emit_impl.dart` and `emit_members.dart`
-now.
+The third cut is the only one that changed code rather than moving it, and it
+is still checked the same way: extracting a method cannot change what is
+emitted, so the generated Rust is byte for byte what it was before any of the
+three cuts.
+
+One thing the cuts turned up: `// -- Failure in the return value --` headed
+2,841 lines of which only the first 295 were about failure -- the rest was the
+whole class emitter, grown in under a heading that had stopped describing it.
+Those are `emit_struct.dart`, `emit_impl.dart` and `emit_members.dart` now.
 
 **They are not separable objects, and the split does not pretend they are.**
 Measured 2026-09-09: the sections share 42 of `RustBackend`'s 69 fields and 35
