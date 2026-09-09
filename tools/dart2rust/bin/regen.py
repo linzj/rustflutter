@@ -22,6 +22,7 @@ of the wall clock.
 import argparse
 import io
 import os
+import re
 import subprocess
 import sys
 from concurrent import futures
@@ -90,7 +91,7 @@ def from_analyzer(fixture, out):
     return r.returncode == 0, (r.stdout or '') + (r.stderr or '')
 
 
-def write_prelude():
+def write_prelude(dest):
     """The fixture crate gets the same prelude the package crate does.
 
     It was copied by hand before -- `Isolate`, `Completer` and `RangeError`
@@ -104,7 +105,7 @@ def write_prelude():
     start = source.index(opening) + len(opening)
     end = source.index(closing, start)
     text = source[start:end].lstrip('\n')
-    out = os.path.join(SRC, 'dart_prelude.rs')
+    out = os.path.join(dest, 'dart_prelude.rs')
     if not os.path.exists(out) or io.open(out, encoding='utf-8').read() != text:
         io.open(out, 'w', encoding='utf-8', newline='\n').write(text)
         # The hook checks this crate with rustfmt. `prelude.dart` is written
@@ -114,8 +115,37 @@ def write_prelude():
                        capture_output=True)
 
 
-def can_propagate():
-    """Whether a driver here can emit the `?` the Result model needs.
+# The gate's own ruler. It is not in `testdata/fixtures/` on purpose: what a
+# gate measures must not be able to move the gate. A fixture is free to change
+# shape -- that is what fixtures are for -- and on the day one of them stopped
+# throwing, a check that read it would go on passing while proving nothing.
+#
+# `doubled` calls `checked`, `checked` throws, and neither line says so: that
+# a call fails is computed, never written. Under the Result model the call in
+# `doubled` must come out carrying `?`.
+PROBE = '''class Probe {
+  const Probe(this.limit);
+
+  final double limit;
+
+  double checked(double value) {
+    if (value > limit) {
+      throw RangeError('over the limit');
+    }
+    return value;
+  }
+
+  double doubled(double value) {
+    return checked(value) * 2.0;
+  }
+}
+'''
+
+PROPAGATED = re.compile(r'checked\([^()]*\)\s*\?')
+
+
+def propagates(scratch, config, drivers):
+    """Whether the drivers about to write golden files can emit `?`.
 
     A golden file was accepted by *counting* it, and nothing was reading it:
     the fixtures regenerated, `rustfmt` was happy, the count of compiler errors
@@ -125,41 +155,79 @@ def can_propagate():
     float. Fewer errors than the file it replaced, and further from correct.
 
     It is not a fixture bug and not a backend bug. It is a *configuration* one,
-    and it is structural:
+    and it is structural: `_resultModel` is `true`, so every method returns
+    `Result`, while `_fails` opens with `if (throws == null) return false` and
+    no driver here hands it a `ThrowsAnalysis`. Output from these drivers
+    therefore cannot compile, whatever the fixture says, and regenerating
+    cannot be the first move: the driver has to be able to propagate first, or
+    the fresh golden re-embeds the same contradiction.
 
-      * `bin/dart2rust_kernel.dart` builds a `KernelFrontend` with 2 of its 17
-        named arguments; `bin/dart2rust_package.dart` passes 16, `throws:`
-        among them. `_fails` (`lib/frontend_kernel.dart`) opens with
-        `if (throws == null) return false`, so on this path no call is ever
-        marked as failing.
-      * `lib/frontend.dart` -- the analyzer front end, which is what
-        `dart2rust.dart` runs for 31 of the 32 files here -- never passes
-        `fails:` at all. Not once. It predates the Result model's propagation.
+    Two weaker checks were tried before this one, and both were passed by
+    output that was wrong:
 
-    Meanwhile `_resultModel` is `true`, so every method returns `Result`. Output
-    from these drivers therefore cannot compile, whatever the fixture says, and
-    regenerating cannot be the first move: the driver has to be able to
-    propagate first, or the fresh golden re-embeds the same contradiction.
+    * Reading the *symptom* -- scanning the written files for a call with no
+      `?` -- saw 3 of the 32 and let 29 through, because a fixture with no call
+      between its own methods shows nothing while being just as wrong.
+    * Reading the *source* -- `'fails:' not in frontend.dart` -- is a
+      substring, and substrings do not know what a program does. A line of the
+      form ``// TODO: pass `fails:` here``, which is the first thing anyone
+      writes on the round that fixes this, opens it. Measured: it does.
 
-    Checking the symptom instead was tried and is not enough -- a fixture with
-    no call between its own methods shows nothing while being just as wrong. So
-    the condition is what is asked about, in the one place it is decided.
+    So the driver is asked by being run. Whatever the front ends are made of,
+    a translation of `PROBE` that carries no `?` cannot compile, and that is
+    the whole claim being made.
+    """
+    work = os.path.join(scratch, 'probe')
+    os.makedirs(work, exist_ok=True)
+    fixture = os.path.join(work, 'probe.dart')
+    io.open(fixture, 'w', encoding='utf-8', newline='\n').write(PROBE)
+
+    blocked = []
+    for driver in drivers:
+        out = os.path.join(work, driver + '.rs')
+        if driver == 'kernel':
+            dill = fixtures_tool.build_dill(fixture, work)
+            if dill is None:
+                blocked.append('kernel: the probe did not compile to a dill')
+                continue
+            ok, log = fixtures_tool.from_kernel(dill, fixture, out, config)
+        else:
+            ok, log = from_analyzer(fixture, out)
+        if not ok:
+            first = (log.strip().splitlines() or [''])[0]
+            blocked.append('%s: the driver failed on the probe -- %s'
+                           % (driver, first))
+        elif not PROPAGATED.search(io.open(out, encoding='utf-8').read()):
+            blocked.append('%s: `doubled` calls `checked`, which throws, and '
+                           'the call comes out with no `?` (%s)'
+                           % (driver, out))
+    return blocked
+
+
+def hints():
+    """Where the missing propagation was, both times it has been looked for.
+
+    Printed under a failing probe to save the next reader a search, and
+    subordinate to it on purpose: these are substrings, and a substring cannot
+    tell a call site from a comment about one. The probe decides.
     """
     frontend = io.open(os.path.join(TOOL, 'lib', 'frontend.dart'),
                        encoding='utf-8').read()
     driver = io.open(os.path.join(HERE, 'dart2rust_kernel.dart'),
                      encoding='utf-8').read()
-    missing = []
+    found = []
     if 'fails:' not in frontend:
-        missing.append('lib/frontend.dart never passes `fails:`')
+        found.append('lib/frontend.dart never passes `fails:`')
     if 'throws:' not in driver:
-        missing.append('bin/dart2rust_kernel.dart builds no `ThrowsAnalysis`')
-    return missing
+        found.append('bin/dart2rust_kernel.dart builds no `ThrowsAnalysis`; '
+                     'bin/dart2rust_package.dart, which can, passes 16 of the '
+                     '17 named arguments this one passes 2 of')
+    return found
 
 
-def regenerate(stem, config, work):
+def regenerate(stem, config, work, dest):
     fixture = os.path.join(FIXTURES, stem + '.dart')
-    out = os.path.join(SRC, stem + '.rs')
+    out = os.path.join(dest, stem + '.rs')
     header = NOTES.get(stem, '')
     if stem in FROM_KERNEL:
         holder = os.path.join(work, stem)
@@ -186,29 +254,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('names', nargs='*', help='fixture names; default all')
     parser.add_argument('--anyway', action='store_true',
-                        help='regenerate even though the drivers cannot emit '
-                             '`?` -- for looking at the output, not for '
-                             'committing it')
+                        help='regenerate a blocked run into .agree/anyway/ to '
+                             'look at it -- which is all this was ever for, '
+                             'and now all it can do')
     args = parser.parse_args()
 
-    blocked = can_propagate()
-    if blocked and not args.anyway:
-        print('not regenerating: these golden files would be written by a '
-              'driver that cannot emit the `?` the Result model needs, so '
-              'they could not compile whatever the fixtures say.')
-        for line in blocked:
-            print('  ' + line)
-        print('`can_propagate` in this file says what has to be true first. '
-              'To look at the output without committing it: --anyway')
-        return 1
-
-    scratch = os.path.join(TOOL, '.agree')
-    os.makedirs(scratch, exist_ok=True)
-    config = os.path.join(scratch, 'kernel_package_config.json')
-    if not os.path.exists(config):
-        dill_tool.write_config(config, TOOL)
-
-    write_prelude()
     stems = sorted(
         f[:-5] for f in os.listdir(FIXTURES)
         if f.endswith('.dart')
@@ -218,11 +268,48 @@ def main():
     if not stems:
         raise SystemExit('nothing to regenerate')
 
+    scratch = os.path.join(TOOL, '.agree')
+    os.makedirs(scratch, exist_ok=True)
+    config = os.path.join(scratch, 'kernel_package_config.json')
+    if not os.path.exists(config):
+        dill_tool.write_config(config, TOOL)
+
+    # Only the drivers this run would actually write with: the Kernel probe
+    # costs a dill build, and a `regen.py loops` does not use that side.
+    drivers = ([] if all(s in FROM_KERNEL for s in stems) else ['analyzer'])
+    drivers += (['kernel'] if any(s in FROM_KERNEL for s in stems) else [])
+
+    dest = SRC
+    blocked = propagates(scratch, config, drivers)
+    if blocked:
+        print('these golden files would be written by a driver that cannot '
+              'emit the `?` the Result model needs, so they could not compile '
+              'whatever the fixtures say:')
+        for line in blocked:
+            print('  ' + line)
+        for line in hints():
+            print('  where to look: ' + line)
+        if not args.anyway:
+            print('`propagates` in this file says what has to be true first. '
+                  'To look at the output without it reaching testdata/src: '
+                  '--anyway')
+            return 1
+        # `.agree/` is not in git, so output from a run that has just been
+        # told it is wrong cannot become a commit by being forgotten about.
+        # The flag said "not for committing it" from the day it was written;
+        # it wrote to `testdata/src` anyway, which is the one path a commit
+        # picks up.
+        dest = os.path.join(scratch, 'anyway')
+        os.makedirs(dest, exist_ok=True)
+        print('--anyway: writing to %s, not testdata/src.' % dest)
+
+    write_prelude(dest)
+
     failed = []
     workers = min(len(stems), 16)
     with futures.ThreadPoolExecutor(max_workers=workers) as pool:
         for stem, status in pool.map(
-                lambda s: regenerate(s, config, scratch), stems):
+                lambda s: regenerate(s, config, scratch, dest), stems):
             print('%-14s %s' % (stem, status))
             if status != 'ok' and status != 'ok (kernel)':
                 failed.append(stem)

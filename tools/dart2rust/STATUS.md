@@ -428,6 +428,7 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 | ws885 | mixin 的 super 函数要 `__Self` 是什么,trait 头上就得先是什么 | stub **150**,拒绝 49,可达 64;渲染树与 run877 逐字节相同(197 帧 0 panic) |
 | ws886 | 把分析器重新变成门:前端迁到 analyzer 14.3(47→0 错),`check.sh` 摘掉 `|| true` 并给警告数加上限,双前端预言机重新点着 | 33 个 fixture 两侧全能生成(此前分析器那侧一个都不能——driver 自己编译不过);**生成的 Rust 一字未动**(926 模块 md5 e69150fe,拒绝仍 49);check.sh 干净退出,87 checks OK |
 | ws887 | 复审抓到 ws886 过度宣称:重生成的黄金按错误数收下,实为退步——全部退回,并给「黄金怎么验收」装尺子(`regen.py` 先问 `can_propagate()`);顺手清掉恒真式死码 `_computeFailing`/`_errorIn`/`_traitDeclares` | **生成的 Rust 仍一字未动**(926 模块 md5 e69150fe);analyze 86 条不变;check.sh 干净退出 |
+| ws888 | 复审指出 ws887 的门是字面绊线:`'fails:' not in ...` 被一行 TODO 注释就能打开。换成行为探针——真跑这一轮要用的每个 driver,输出里那个必失败的调用不带 `?` 就拒绝;`--anyway` 从 `testdata/src` 改写进 gitignore 的 `.agree/anyway/` | 探针 21 秒,两个 driver 都当场重现出 `Ok((self.checked(value) * 2.0))`;补上 TODO 注释后旧门放行、新门照拒;`git status` 零改动;check.sh 干净退出,86 条 / 87 checks |
 
 ## 下一步(2026-09-05 重铺)
 
@@ -733,10 +734,19 @@ ws601:  722 stub / 252 拒绝 / 63 crate 全可达(138 分区,延迟库合并后
   ws886 按「139 错 vs 79 错,取较优者」收下了 6,300 行黄金,那不是验收
   标准——139 量的是旧代码对新 prelude 的漂移,不是正确性,而 79 那批
   在 `?` 的形状上是**退步**。已全部退回冻结版。
-  `bin/regen.py` 现在开头问 `can_propagate()`:两个 driver 但凡有一个
-  发不出 `?` 就整体拒绝重生成并说明要先改什么(`--anyway` 只用来看,
-  不用来提交)。**顺序是 driver → 黄金 → lib.rs 的 Result 改造**,反过来
-  只会把同一个矛盾重新焊进去。
+  `bin/regen.py` 现在开头跑一个探针:一段 `checked` 会 throw、`doubled`
+  调它的 Dart,过一遍这一轮真正要用的每个 driver,输出里那个调用不带
+  `?` 就整体拒绝重生成。**问的是行为,不是字面**——ws887 那版查
+  `'fails:' not in frontend.dart`,而两行 ``// TODO: pass `fails:` here``
+  就能把门打开(ws888 实测),偏偏那正是修这件事的那一轮第一个会写的
+  东西。探针 21 秒跑完,当场把 `Ok((self.checked(value) * 2.0))` 一字不差
+  地重现出来。`--anyway` 改成写进 `.agree/anyway/`(不在 git 里):它的
+  帮助文本从第一天就说「只用来看,不用来提交」,实现却写在
+  `testdata/src`——提交唯一会捡起来的那条路上。
+  **顺序是 driver → 黄金 → lib.rs 的 Result 改造**,反过来只会把同一个
+  矛盾重新焊进去。重生成那一轮的验收是 **crate 编过、146 个 test 跑绿**,
+  不是错误数降低:ws886 那次错误数正是降的(139→79),一个「只许降」的
+  棘轮会照样收下它。
 - **值级断言的覆盖已塌到 6 个**:146 个黄金 `#[test]` 全黑之后,唯一
   「对 Dart 真值」的尺子只剩 `bin/fx.sh` 的 6 个 fixture,而且要手跑。
   `fixtures.py` 对「两个 driver 以同样方式配错」结构性失明(它们一致地
