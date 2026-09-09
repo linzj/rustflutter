@@ -572,6 +572,14 @@ augment class RustBackend {
   /// or a `RefCell`.
   var _cellLocals = <String, bool>{};
 
+  /// The locals a chain step binds *by reference*: `xs.iter().map(|child|
+  /// ..)` hands the body a `&Rc<dyn X>`, one deref short of the handle,
+  /// and a receiver spelled from one needs `&**` where a value needs `&*`
+  /// -- the same thing a null-aware binding (`IrBound`) already gets.
+  /// Recorded here because only `_stepClosure` knows which parameters it
+  /// bound that way (`FocusNode.toDiagnosticsNode` on a `.map`'s child).
+  var _refLocals = <String>{};
+
   /// A copy of a field, for a closure to keep.
   ///
   /// `clone()` unless the type is `Copy`, where it would only be noise.

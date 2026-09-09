@@ -331,6 +331,14 @@ augment class RustBackend {
     final saved = _out.length;
     final savedIndent = _indent;
     _indent = 0;
+    // The parameters this step left as references, for the receiver
+    // spelling inside the body (`_refLocals`).
+    final savedRefs = _refLocals;
+    _refLocals = {
+      ..._refLocals,
+      for (final p in e.params)
+        if (!byValue(p)) snake(p.name),
+    };
     // A step of a std iterator chain (`all`, `map`, `filter`) returns a
     // plain value: a failing call inside unwraps, and the tail is bare.
     // Loud, and recorded: an exception in a `where` predicate panics.
@@ -372,6 +380,7 @@ augment class RustBackend {
     final body = _out.sublist(saved).map(_inlineSafe).join(' ');
     _out.removeRange(saved, _out.length);
     _indent = savedIndent;
+    _refLocals = savedRefs;
     // The fields the closure copies in, as `_closure` does for the boxed
     // kind. A chain step that read `this.trashEmailIds` named a local that
     // this line had not declared.

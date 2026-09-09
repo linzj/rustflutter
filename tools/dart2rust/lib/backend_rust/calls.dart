@@ -777,6 +777,14 @@ augment class RustBackend {
           ? '&*${expr(target)}'
           : target is IrBound
           ? (_isHandle(receiverClass) ? '&**${expr(target)}' : expr(target))
+          // ..and a chain step's parameter, which `iter()` hands over as a
+          // reference to the handle rather than the handle
+          // (`_refLocals`; `FocusNode.toDiagnosticsNode` on a `.map`'s
+          // child was `&*child`, one deref short).
+          : target is IrLocal &&
+                _refLocals.contains(snake(target.name)) &&
+                _isHandle(receiverClass)
+          ? '&**${expr(target)}'
           // ..or a handle by its recorded type, when the class went
           // unrecorded (`widget.toStringShort()` on an `Rc<dyn
           // StatefulWidget>` was `&handle`, ws523).
