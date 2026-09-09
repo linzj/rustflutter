@@ -743,6 +743,13 @@ Future<void> main(List<String> args) async {
     }
   }
 
+  stdout.writeln('  Iterable slots spelled: $iterableSlots');
+  final members = iterableMembers.entries.toList()
+    ..sort((a, b) => b.value.compareTo(a.value));
+  stdout.writeln(
+    '  Iterable members called (${members.length} names): '
+    '${members.map((e) => '${e.key}=${e.value}').join(' ')}',
+  );
   stdout.writeln('$prefix -> ${out.path}');
   stdout.writeln(
     '  $libraries libraries, $classes classes, '

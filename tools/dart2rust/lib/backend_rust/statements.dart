@@ -365,7 +365,7 @@ augment class RustBackend {
         // is the element, not a reference to it, and `&xs` handed out
         // `&f64` where `f64` was wanted (14 in the colour code). The list
         // itself is only borrowed, as before.
-        _line('for ${snake(name)} in ${expr(iterable)}.iter().cloned() {');
+        _line('for ${snake(name)} in ${_asList(iterable)}.iter().cloned() {');
         _indent++;
         stmt(body);
         _indent--;

@@ -75,8 +75,27 @@ pub trait DartIterator<T> {
 /// `xs.iterator` on the prelude's collections: Dart's `Iterator` over the
 /// elements, which a translated class that *is* an `Iterable` hands out
 /// as its own (`_History.iterator` is `_value.iterator`, ws499).
-pub trait DartIterable<T> {
+pub trait DartIterable<T>: DartAny {
     fn iterator(&self) -> std::rc::Rc<dyn DartIterator<T>>;
+
+    /// The elements, in order.
+    ///
+    /// The one thing a `dyn DartIterable<T>` has to be able to do besides
+    /// hand out an iterator: everything a translated body asks of an
+    /// `Iterable` -- `map`, `where`, `forEach`, `length`, `first` -- is
+    /// written over a list, and an `Iterable` slot is a trait object now
+    /// (`type()`), so the list is where those go. Written once here over
+    /// the iterator; an implementation that already holds one overrides it.
+    /// Named apart from `DartList::to_list`, which `Vec` also has: a `Vec`
+    /// implements both and `xs.to_list()` was ambiguous (12 `E0034`).
+    fn dart_to_list(&self) -> Vec<T> {
+        let iterator = self.iterator();
+        let mut out = Vec::new();
+        while iterator.move_next() {
+            out.push(iterator.current());
+        }
+        out
+    }
 }
 
 pub struct VecIterator<T> {
@@ -120,15 +139,49 @@ pub fn dart_iterator_map<A: 'static, B: 'static, F: Fn(A) -> B + 'static>(
     std::rc::Rc::new(MappedIterator { inner, map: std::rc::Rc::new(map) })
 }
 
-impl<T: Clone + 'static> DartIterable<T> for Vec<T> {
-    fn iterator(&self) -> std::rc::Rc<dyn DartIterator<T>> {
-        std::rc::Rc::new(VecIterator { items: self.clone(), at: std::cell::Cell::new(-1) })
+/// Printed as Dart prints any object: the trait needs no `Debug` of its
+/// own, and asking one of `T` was 10 unmet bounds on generic functions
+/// that only hand a list along (`map_equals`, `ObserverList.iterator`).
+/// A struct that derives `Debug` and holds an `Iterable` field still has
+/// one, which is what the supertrait was for.
+impl<T> std::fmt::Debug for dyn DartIterable<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Not the runtime type: reading it needs `T: 'static`, and a
+        // struct's derived `Debug` carries no such bound to give.
+        f.write_str("Instance of 'Iterable'")
     }
 }
 
-impl<T: Clone + 'static> DartIterable<T> for Set<T> {
+impl<T: Clone + DartAny + 'static> DartIterable<T> for Vec<T> {
+    fn iterator(&self) -> std::rc::Rc<dyn DartIterator<T>> {
+        std::rc::Rc::new(VecIterator { items: self.clone(), at: std::cell::Cell::new(-1) })
+    }
+    fn dart_to_list(&self) -> Vec<T> {
+        self.clone()
+    }
+}
+
+/// Dart's `Queue`, which is one of its `Iterable`s too.
+impl<T: Clone + DartAny + 'static> DartIterable<T>
+    for std::collections::VecDeque<T>
+{
+    fn iterator(&self) -> std::rc::Rc<dyn DartIterator<T>> {
+        std::rc::Rc::new(VecIterator {
+            items: self.iter().cloned().collect(),
+            at: std::cell::Cell::new(-1),
+        })
+    }
+    fn dart_to_list(&self) -> Vec<T> {
+        self.iter().cloned().collect()
+    }
+}
+
+impl<T: Clone + DartAny + 'static> DartIterable<T> for Set<T> {
     fn iterator(&self) -> std::rc::Rc<dyn DartIterator<T>> {
         std::rc::Rc::new(VecIterator { items: self.items.clone(), at: std::cell::Cell::new(-1) })
+    }
+    fn dart_to_list(&self) -> Vec<T> {
+        self.items.clone()
     }
 }
 
@@ -2879,6 +2932,19 @@ impl<T: ?Sized> DartEq for std::rc::Weak<T> {
     }
 }
 
+/// A `dyn DartIterable<T>` compared as an object is compared by identity,
+/// as a translated trait object is (the backend writes the same impl for
+/// every trait it declares). An `Iterable<T>` slot is one of these since
+/// ws908, and the generated bounds ask `DartEq` of whatever fills a slot.
+impl<T> DartEq for dyn DartIterable<T> {
+    fn dart_eq(&self, other: &Self) -> bool {
+        std::ptr::addr_eq(self as *const Self, other as *const Self)
+    }
+    fn dart_hash_code(&self) -> i64 {
+        (self as *const Self as *const u8 as usize as i64) & 0x3fff_ffff
+    }
+}
+
 impl DartEq for dyn Object {
     fn dart_eq(&self, other: &Self) -> bool {
         self == other
@@ -3342,6 +3408,21 @@ pub struct LinkedList<T> {
 impl<T> Clone for LinkedList<T> {
     fn clone(&self) -> Self {
         LinkedList { state: self.state.clone() }
+    }
+}
+
+/// A `LinkedList` is one of Dart's `Iterable`s, and an `Iterable` slot is a
+/// trait object here (`type()`). Without this, `List.from(_listeners!)` on
+/// `_ScrollNotificationObserverState` had no way to be a list at all.
+impl<T: Clone + 'static> DartIterable<T> for LinkedList<T> {
+    fn iterator(&self) -> std::rc::Rc<dyn DartIterator<T>> {
+        std::rc::Rc::new(VecIterator {
+            items: self.dart_to_list(),
+            at: std::cell::Cell::new(-1),
+        })
+    }
+    fn dart_to_list(&self) -> Vec<T> {
+        self.state.borrow().iter().cloned().collect()
     }
 }
 
@@ -5885,7 +5966,10 @@ impl<T: Clone> DartIter<T> {
 /// (the listgen fixture, run634).
 pub fn dart_iter<T: Clone + 'static, I: IntoIterator<Item = T>>(items: I) -> std::rc::Rc<dyn DartIterator<T>> {
     let items: Vec<T> = items.into_iter().collect();
-    <Vec<T> as DartIterable<T>>::iterator(&items)
+    // The iterator built here rather than asked of `Vec`'s `DartIterable`:
+    // that impl carries the object protocol's bounds (`DartAny + Debug`,
+    // ws908) and this is generic over any `T`.
+    std::rc::Rc::new(VecIterator { items, at: std::cell::Cell::new(-1) })
 }
 
 /// `dart:math`'s `Point<T>`.

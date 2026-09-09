@@ -27,8 +27,7 @@ augment class KernelFrontend {
       // A bare `return` in a `sync*` body hands the collected list back.
       if (value == null && _syncStarElement != null) {
         return IrReturn(
-          IrLocal(_syncStarOut)
-            ..rustType = IrType('List', arguments: [_type(_syncStarElement!)]),
+          _yielded(IrType('List', arguments: [_type(_syncStarElement!)])),
         );
       }
       // `=> x = v` in a setter or a void closure: the CFE puts the assignment
@@ -846,7 +845,7 @@ augment class KernelFrontend {
             IrListLiteral(const [], element)..rustType = listed,
           ),
           statement(body),
-          IrReturn(IrLocal(_syncStarOut)..rustType = listed),
+          IrReturn(_yielded(listed)),
         ]);
       }
       if (rebound.isEmpty) return statement(body);
@@ -865,6 +864,21 @@ augment class KernelFrontend {
 
   /// The list a `sync*` body collects into.
   static const _syncStarOut = '__yielded';
+
+  /// That list, handed back as the body's declared return: a `sync*`
+  /// function returns Dart's `Iterable<E>`, which is a `Rc<dyn
+  /// DartIterable<E>>` since ws908 (`_createChildIterable`, `Route
+  /// .createOverlayEntries`).
+  IrExpr _yielded(IrType listed) {
+    final out = IrLocal(_syncStarOut)..rustType = listed;
+    final declared = _returnsType;
+    if (declared == null) return out;
+    try {
+      return coerce(out, _type(declared));
+    } on Unsupported {
+      return out;
+    }
+  }
 
   /// Whether the body being lowered is an `async` one.
   bool _asyncBody = false;

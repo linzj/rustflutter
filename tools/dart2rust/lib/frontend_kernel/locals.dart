@@ -759,7 +759,7 @@ augment class KernelFrontend {
         // A clone: the iterator owns its items, and the list is a field
         // behind `&self` more often than not (`self._children`, E0507).
         IrStaticCall(null, 'dart_iter', [
-          IrCall(_listReceiver(init.receiver), 'clone', const []),
+          IrCall(_asListValue(_listReceiver(init.receiver)), 'clone', const []),
         ]),
       );
     }
@@ -1193,8 +1193,55 @@ augment class KernelFrontend {
     if (member != null && mutatingListNames.contains(member)) {
       return expression(e);
     }
-    final lowered = _receiver(e);
     final static = _staticType(e);
+    // `dart:core`'s own `Iterable<E>`, which is a `Rc<dyn DartIterable<E>>`
+    // here (`type()`): its members are written over a list, so the read is
+    // the list.
+    //
+    // The value as it stands, never through `_receiver`: that coerces to
+    // the *static* type, and a `where` chain -- a `Vec` the prelude hands
+    // back -- would be boxed into the handle only to be materialised
+    // again on the same line (`items.where(..).length`, the iterableread
+    // fixture).
+    if (static is InterfaceType &&
+        static.classNode.name == 'Iterable' &&
+        static.classNode.enclosingLibrary.importUri.scheme == 'dart' &&
+        static.typeArguments.length == 1) {
+      final value = expression(e);
+      final handle = value.rustType;
+      // The list Dart's members are written over. Materialised at the
+      // *handle's* own element -- `dart_to_list` on a `Rc<dyn
+      // DartIterable<E>>` gives a `Vec<E>` for that same `E` -- and then
+      // narrowed to the element Dart names, which is not always the same
+      // one: an erased `Iterable<ChildType>` read through a mixin's trait
+      // hands out `RenderObject` where Dart says `RenderBox`, and
+      // everything after this is written in Dart's terms
+      // (`_RenderChip.visitChildren`, whose `forEach` adapter was built
+      // for `RenderBox`; five of them at ws908).
+      final wanted = IrType(
+        'List',
+        arguments: [_typeNested(static.typeArguments.single)],
+      );
+      if (handle?.name == 'Iterable') {
+        final element = handle!.arguments.length == 1
+            ? handle.arguments.single
+            : wanted.arguments.single;
+        final listed = IrCall(value, 'dart_to_list', const [])
+          ..rustType = IrType('List', arguments: [element]);
+        return coerce(listed, wanted);
+      }
+      // ..and a value that is not one already goes in as `_receiver`
+      // sends it, into the list rather than the handle: a `dynamic`
+      // reaching an `Iterable` receiver is the prelude's checked
+      // conversion (`AssetManifest.listAssets`, ws908).
+      if (!coerceByType) return value;
+      try {
+        return coerce(value, wanted);
+      } on Unsupported {
+        return value;
+      }
+    }
+    final lowered = _receiver(e);
     if (static is! InterfaceType || !_translatedClass(static.classNode)) {
       return lowered;
     }
@@ -1230,6 +1277,20 @@ augment class KernelFrontend {
       return null;
     }
     return asIterable.typeArguments.single;
+  }
+
+  /// A value read as a list: an `Iterable<T>` is a `Rc<dyn DartIterable<T>>`
+  /// since ws908, and `dart_iter` -- like every Rust iterator -- starts at
+  /// one. Nothing when the value is a list already.
+  IrExpr _asListValue(IrExpr value) {
+    final handle = value.rustType;
+    if (handle == null ||
+        handle.name != 'Iterable' ||
+        handle.arguments.length != 1) {
+      return value;
+    }
+    return IrCall(value, 'dart_to_list', const [])
+      ..rustType = IrType('List', arguments: handle.arguments);
   }
 
   IrExpr _receiver(Expression e) {

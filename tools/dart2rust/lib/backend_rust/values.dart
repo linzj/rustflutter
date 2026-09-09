@@ -233,9 +233,14 @@ augment class RustBackend {
       return '.${step.$1}(${_stepClosure(step.$2, step: step.$1, bound: name, cloned: owned)})';
     }).join();
     final body =
-        '${expr(chain.source)}.iter()${owned ? '.cloned()' : ''}$steps$tail';
+        '${_asList(chain.source)}.iter()${owned ? '.cloned()' : ''}$steps$tail';
     return bound.isEmpty ? body : '{ ${bound.join(' ')} $body }';
   }
+
+  /// A value read as a list: an `Iterable<T>` is a `Rc<dyn DartIterable<T>>`
+  /// since ws908, and a Rust iterator starts at a list.
+  String _asList(IrExpr e) =>
+      e.rustType?.name == 'Iterable' ? '${expr(e)}.dart_to_list()' : expr(e);
 
   /// Whether an argument is the omitted one, written out.
   ///
@@ -361,6 +366,12 @@ augment class RustBackend {
     // tearcol fixture).
     if (step == 'for_each') {
       return '|$params| { $unwrapped${copies}let _ = { $body }; }';
+    }
+    // `expand(f)` is `flat_map`, which wants something Rust can iterate:
+    // an `Iterable<T>` closure body is the handle since ws908, and its
+    // list is what the chain goes on with.
+    if (step == 'flat_map' && e.returns.name == 'Iterable') {
+      return '|$params| { $unwrapped$copies{ $body }.dart_to_list() }';
     }
     return '|$params| { $unwrapped$copies$body }';
   }

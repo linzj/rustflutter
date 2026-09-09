@@ -1322,6 +1322,15 @@ class _ReferenceCollector extends RecursiveVisitor {
   }
 }
 
+/// Every member called or read on a value whose static type is `Iterable`,
+/// with how often; the driver prints it beside the module summary.
+///
+/// The surface a `dyn DartIterable<T>` would have to carry, measured
+/// rather than guessed (ws908): 25 names over 501 sites, and every one of
+/// them is written over a list -- so the trait carries the two things a
+/// list cannot give (`iterator`, `dart_to_list`) and a read materialises.
+final Map<String, int> iterableMembers = {};
+
 /// Whether a parameter is handed to a *kept* parameter of another class
 /// anywhere in its own class's declared types (`_keptForTypeLiteral`).
 class _KeptFlowFinder extends RecursiveVisitor {

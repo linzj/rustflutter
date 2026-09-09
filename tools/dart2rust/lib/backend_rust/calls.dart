@@ -498,6 +498,25 @@ augment class RustBackend {
     if (name == '!reversed' && args.isEmpty) {
       return '{ let mut __r = $receiver.clone(); __r.reverse(); __r }';
     }
+    // A collection into an `Iterable` slot: the trait handle
+    // (`DartIterable`, ws908).
+    if (name == '!as_iterable' && args.isEmpty) {
+      // The *value's* own element, not the slot's: the two are the same
+      // by the time this runs (the coercion shapes the list element by
+      // element first), and a callee's slot may spell a type parameter
+      // that is not a name here -- a named parameter's type is the
+      // declared one, uninstantiated (`RestorableEnumN<Orientation>(..,
+      // values: Orientation.values)`, 14 `cannot find type T`).
+      final element =
+          target?.rustType?.arguments.singleOrNull ??
+          resultType?.arguments.singleOrNull;
+      final spelled = element == null ? '_' : type(element);
+      // Cloned: the receiver is a borrow as often as a value -- a lent
+      // `&Vec<T>` parameter, a `&Set<T>` field read -- and the handle owns
+      // what it holds (`&Vec<Rc<dyn _SemanticsFragment>>: DartIterable`).
+      return '(std::rc::Rc::new(($receiver).clone()) as '
+          'std::rc::Rc<dyn DartIterable<$spelled>>)';
+    }
     if (name == '!cast' && args.isEmpty) return receiver;
     // `first` is an index on a list and a method on a translated class
     // with a getter of that name (`PriorityQueue.first`, E0608 at ws460).
@@ -542,6 +561,11 @@ augment class RustBackend {
       // ..by what the receiver's type spells: an `Iterable` -- a map's
       // `values`, a `reversed` -- is a `Vec` here too (ws497).
       final held = target?.rustType;
+      // ..and an `Iterable` is the handle, whose list is `dart_to_list`
+      // (named apart from `DartList::to_list`, which `Vec` also has).
+      if (held != null && held.name == 'Iterable') {
+        return '$receiver.dart_to_list()';
+      }
       final spelled = held == null ? null : type(held);
       return spelled == null || spelled.startsWith('Vec<')
           ? '$receiver.clone()'

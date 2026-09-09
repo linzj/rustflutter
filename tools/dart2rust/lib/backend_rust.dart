@@ -139,6 +139,11 @@ const operatorTraits = {
   '>>': ('Shr', 'shr'),
 };
 
+/// How many times an `Iterable<T>` slot was spelled (`DART2RUST_TRACE_KEPT`
+/// prints it): the count that decides whether making it a trait object is
+/// worth a boxing at every one.
+int iterableSlots = 0;
+
 String snake(String name) => _rustIdentifier(snakeRaw(name));
 
 /// `snake` before the keyword escape. For a name that is only ever a *part*
@@ -587,9 +592,28 @@ class RustBackend {
         owned: owned,
       );
     }
-    if ((t.name == 'List' || t.name == 'Iterable') && t.arguments.length == 1) {
+    if (t.name == 'List' && t.arguments.length == 1) {
       final vec = 'Vec<${type(t.arguments.single)}>';
       return t.nullable ? 'Option<$vec>' : vec;
+    }
+    // `Iterable<T>` is the trait, not the `Vec`.
+    //
+    // The two were one `Vec` until ws908, and the promise "an Iterable is a
+    // Vec" was never written anywhere it could be checked: a `Set` or a
+    // `LinkedList` in an `Iterable` slot is exactly as legal in Dart and
+    // was a type error here every time (`OverlayState.rearrange`,
+    // `_ScrollNotificationObserverState._notifyListeners`). `DartIterable`
+    // was already declared and already implemented by `Vec` and `Set`, and
+    // `dyn DartIterable` appeared 0 times in the whole crate.
+    //
+    // What a body asks of one -- 25 members over 501 sites, measured -- is
+    // written over a list, so a read materialises (`_listReceiver`) and the
+    // trait carries just the two things that cannot be: `iterator` and
+    // `to_list`.
+    if (t.name == 'Iterable' && t.arguments.length == 1) {
+      iterableSlots++;
+      final it = 'std::rc::Rc<dyn DartIterable<${type(t.arguments.single)}>>';
+      return t.nullable ? 'Option<$it>' : it;
     }
     // `Future<T>` as a *type*, which is not the same as an `async fn`: a Rust
     // `async fn` returning `T` is already a future and drops the wrapper, but

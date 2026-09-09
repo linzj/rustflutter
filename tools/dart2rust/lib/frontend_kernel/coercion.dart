@@ -152,6 +152,40 @@ augment class KernelFrontend {
 
   static String _normalName(String name) => normalName(name);
 
+  /// `t` with every `Iterable<E>` in it spelled `List<E>`: how the prelude
+  /// writes the type in its own Rust signature.
+  static IrType _overList(IrType t) {
+    if (t.isFunction) {
+      return IrType.function(
+        [for (final p in t.parameters!) _overList(p)],
+        _overList(t.returns!),
+        nullable: t.nullable,
+      );
+    }
+    final arguments = [for (final a in t.arguments) _overList(a)];
+    if (t.name != 'Iterable') {
+      var same = arguments.length == t.arguments.length;
+      for (var i = 0; same && i < arguments.length; i++) {
+        same = identical(arguments[i], t.arguments[i]);
+      }
+      if (same) return t;
+      return IrType(
+        t.name,
+        nullable: t.nullable,
+        projected: t.projected,
+        arguments: arguments,
+        module: t.module,
+      );
+    }
+    return IrType(
+      'List',
+      nullable: t.nullable,
+      projected: t.projected,
+      arguments: arguments,
+      module: t.module,
+    );
+  }
+
   /// `value`, adapted to `slot`: see `coerceInto`.
   @override
   bool isTypeParameter(String name) {
@@ -317,6 +351,26 @@ augment class KernelFrontend {
         param.nullability != Nullability.nullable &&
         !rawSlot) {
       final args = param.typeArguments;
+      // A literal lowered again for the slot's element type is still a
+      // `Vec`, and these branches return before any coercion runs -- so
+      // the handle an `Iterable` slot is in translated code is put on
+      // here, where the coercion would have put it (`_MergingListenable
+      // ([_leadingController, _trailingController])`, ws908).
+      final slotIterable =
+          param.classNode.name == 'Iterable' && args.length == 1;
+      IrExpr asSlot(IrExpr listed) {
+        if (prelude || !slotIterable) return listed;
+        try {
+          // A literal carries no recorded type of its own (`coerceInto`
+          // says so of one), and the coercion below reads it: the slot's
+          // element is what the literal was just lowered against.
+          listed.rustType ??= IrType('List', arguments: [_type(args[0])]);
+          return coerce(listed, _type(param));
+        } on Unsupported {
+          return listed;
+        }
+      }
+
       if (value is MapLiteral &&
           param.classNode.name == 'Map' &&
           args.length == 2 &&
@@ -328,7 +382,7 @@ augment class KernelFrontend {
               param.classNode.name == 'Iterable') &&
           args.length == 1 &&
           args[0] != value.typeArgument) {
-        return _listLiteral(value, args[0]);
+        return asSlot(_listLiteral(value, args[0]));
       }
       // ..and the AOT dill's spelling of one, `_GrowableList._literal3<
       // dynamic>(3, 1, 2)`: its elements lowered again against the slot's
@@ -340,14 +394,16 @@ augment class KernelFrontend {
           args.length == 1 &&
           args[0] != core) {
         final elements = (value as StaticInvocation).arguments.positional;
-        return IrListLiteral([
-          for (final e in elements)
-            _widened(
-              e,
-              args[0],
-              _withExpectedReturn(args[0], e, () => expression(e)),
-            ),
-        ], _type(args[0]));
+        return asSlot(
+          IrListLiteral([
+            for (final e in elements)
+              _widened(
+                e,
+                args[0],
+                _withExpectedReturn(args[0], e, () => expression(e)),
+              ),
+          ], _type(args[0])),
+        );
       }
     }
     // ..and a record literal into a record slot of other field types: its
@@ -374,6 +430,21 @@ augment class KernelFrontend {
         ifAbsent: () => 1,
       );
     }
+    // A prelude callee's `Iterable<E>` parameter is a `Vec<E>` in its own
+    // Rust signature -- `insert_all(&mut self, index: i64, items: Vec<T>)`
+    // for Dart's `insertAll(int, Iterable<E>)` -- so a value that is a
+    // `Rc<dyn DartIterable<E>>` here has to be made into the list it takes.
+    // Ahead of the `translated` gate below, which a prelude callee does not
+    // pass: the two spellings are not the same type since ws908, and no
+    // rule under that gate would ever be asked.
+    if (prelude &&
+        lowered.rustType?.name == 'Iterable' &&
+        param is InterfaceType &&
+        (param.classNode.name == 'Iterable' ||
+            param.classNode.name == 'List')) {
+      return IrCall(lowered, 'dart_to_list', const [])
+        ..rustType = IrType('List', arguments: lowered.rustType!.arguments);
+    }
     if (coerceByType &&
         translated &&
         param != null &&
@@ -395,6 +466,13 @@ augment class KernelFrontend {
       if (prelude && slot != null && slot.projected) {
         slot = IrType(slot.name, nullable: true, arguments: slot.arguments);
       }
+      // ..and a prelude callee's `Iterable<E>` slot is the `Vec<E>` its own
+      // Rust signature takes -- `extend`, `Set::add_all`, `insert_all`,
+      // `List.from` -- not the `Rc<dyn DartIterable<E>>` an `Iterable`
+      // slot is in translated code (ws908). Said here, where the slot is
+      // built, rather than at each of the 56 `addAll`s: the prelude
+      // declares no parameter of the trait object at all.
+      if (prelude && slot != null) slot = _overList(slot);
       // A translated callee's `T?` is spelled `<T as DartNullable>::Or`
       // (`_edgeType`); `_type` spells the plain `Option<T>` a *body* works
       // with. At an argument edge the callee's own spelling is the slot --

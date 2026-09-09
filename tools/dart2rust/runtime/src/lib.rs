@@ -446,7 +446,9 @@ fn dump_render_tree() -> Result<String, DartError> {
             Rc::new(move |child: Rc<dyn RenderObject>| walk(child, depth + 1, out_child.clone())),
         )
     }
-    for view in binding.render_views()? {
+    // `renderViews` is a Dart `Iterable`, which is a `Rc<dyn DartIterable>`
+    // here: its list is what a Rust `for` walks.
+    for view in binding.render_views()?.dart_to_list() {
         walk(view as Rc<dyn RenderObject>, 0, out.clone())?;
     }
     let text = out.borrow().clone();
@@ -456,7 +458,9 @@ fn dump_render_tree() -> Result<String, DartError> {
 fn dump_app() -> Result<String, DartError> {
     use generated::widgets_framework::Element;
     let binding = generated::widgets_binding::widgets_binding_instance()?;
-    let views = generated::rendering_binding::renderer_binding_instance()?.render_views()?;
+    let views = generated::rendering_binding::renderer_binding_instance()?
+        .render_views()?
+        .dart_to_list();
     eprintln!("dart2rust runtime: {} render view(s)", views.len());
     // The tree walked by hand -- `visitChildren` and each widget's runtime
     // type -- since `toStringDeep` overflowed the stack (run534).

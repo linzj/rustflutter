@@ -358,6 +358,10 @@ augment class RustBackend {
       if ((name == 'from' || name == 'of' || name == 'unmodifiable') &&
           (args.length == 1 || args.length == 2)) {
         final have = args[0].rustType;
+        // ..and an `Iterable` is the handle: its list is `dart_to_list`.
+        if (have != null && have.name == 'Iterable') {
+          return '${expr(args[0])}.dart_to_list()';
+        }
         return have != null && have.name != 'List' && !have.isFunction
             ? '${expr(args[0])}.to_list()'
             : '${expr(args[0])}.clone()';

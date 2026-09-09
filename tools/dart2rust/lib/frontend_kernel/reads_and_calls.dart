@@ -19,6 +19,14 @@ augment class KernelFrontend {
 
   IrExpr _instanceGetRaw(InstanceGet node) {
     final name = _fieldNameOf(node.interfaceTarget, node.name.text);
+    final staticGot = _staticType(node.receiver);
+    if (staticGot is InterfaceType && staticGot.classNode.name == 'Iterable') {
+      iterableMembers.update(
+        'get:${node.name.text}',
+        (n) => n + 1,
+        ifAbsent: () => 1,
+      );
+    }
     final listOwner = node.interfaceTarget.enclosingClass?.name;
     if (listOwner == 'List' || listOwner == 'Iterable') {
       final rust = listMethodNames[name];
@@ -503,6 +511,9 @@ augment class KernelFrontend {
         collectionReceiver &&
         declaringOwner != null &&
         declaringOwner.enclosingLibrary.importUri.scheme != 'dart';
+    if (staticOwner == 'Iterable') {
+      iterableMembers.update(node.name.text, (n) => n + 1, ifAbsent: () => 1);
+    }
     final owner = devirtualised ? staticOwner : declaringOwner?.name;
     // A `StreamView` subclass's inherited `listen` and friends act on the
     // `_stream` it carries (see `lowerClass`).
@@ -579,7 +590,9 @@ augment class KernelFrontend {
         args.isEmpty &&
         node.arguments.types.isNotEmpty) {
       return IrCall(
-        _receiver(node.receiver),
+        // The list it is read as: `cast_to` is written over one, and an
+        // `Iterable` receiver is a handle since ws908 (`_listReceiver`).
+        _listReceiver(node.receiver, name),
         'cast_to',
         const [],
         typeArguments: [for (final t in node.arguments.types) _type(t)],

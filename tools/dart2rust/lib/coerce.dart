@@ -68,10 +68,21 @@ String rustScalar(String name) =>
     }[name] ??
     name;
 
+/// The one Rust name two Dart names spell. `Iterable` is *not* here: it
+/// is `Rc<dyn DartIterable<T>>` since ws908, a different type from the
+/// `Vec<T>` a `List` is, and saying they were the same is what let a
+/// `Vec` reach an `Iterable` slot unconverted at every site `sameRust`
+/// guards (`Some(vec![])` into an `Option<Rc<dyn DartIterable<String>>>`,
+/// 13 of them in one round).
 String normalName(String name) => switch (name) {
-  'Iterable' => 'List',
   'dynamic' => 'Object',
   'num' => 'double',
+  // The `dart:` set classes are the prelude's one `Set`, as the map
+  // classes are its one `Map` (`mapNames`). Unnamed here, a
+  // `LinkedHashSet` reached every `Set` rule as a stranger and went into
+  // a `Vec` slot unconverted -- which is `OverlayState.rearrange`'s
+  // `_entries.insertAll(index, old)`, a stub since ws638.
+  'LinkedHashSet' || 'HashSet' || 'SplayTreeSet' || '_Set' => 'Set',
   _ => name,
 };
 
@@ -119,6 +130,47 @@ bool _sameNormal(IrType a, IrType b) {
   }
   return true;
 }
+
+/// Whether this compiler can place `t` as something other than one of the
+/// prelude's collections: a trait, an enum, a struct, a counted class, a
+/// type parameter, a function, a scalar, a map, a record, a future, a
+/// stream, an iterator, a top or bottom type.
+///
+/// Asked this way round because the collections have no closed list of
+/// names: an AOT dill types a list literal `_GrowableList`, a `Queue` is
+/// the prelude's `VecDeque`, a `LinkedHashSet` its `Set`. What is left
+/// after everything placeable is placed is a collection, and a name that
+/// slips through fails loudly at the one site that uses it rather than
+/// quietly going in unconverted.
+bool _placedElsewhere(IrType t, TypeWorld world) =>
+    t.isFunction ||
+    scalarNames.contains(t.name) ||
+    mapNames.contains(t.name) ||
+    const {
+      'dynamic',
+      'Object',
+      'Null',
+      'Never',
+      'void',
+      '()',
+      'raw',
+      '_',
+      'Record',
+      'Future',
+      'Stream',
+      'DartIterator',
+    }.contains(t.name) ||
+    world.isTypeParameter(t.name) ||
+    world.isTrait(t.name) ||
+    world.isEnum(t.name) ||
+    world.isStruct(t.name) ||
+    world.isCounted(t.name);
+
+/// Whether the value is the one line Dart's AOT compiler proved dead
+/// (`IrLiteral.unreachable`), reached through the block that leads to it.
+bool _diverges(IrExpr e) =>
+    identical(e, IrLiteral.unreachable) ||
+    (e is IrBlockValue && _diverges(e.value));
 
 IrType nonNull(IrType t) => t.isFunction
     ? IrType.function(t.parameters!, t.returns!)
@@ -615,9 +667,22 @@ IrExpr coerceInto(
     return _typedFunction(value, slot, world)..rustType = slot;
   }
   if (have.isFunction || slot.isFunction) return value;
+  // Two `Iterable` handles whose elements differ: materialised, mapped as
+  // the list it is, and handed back as a handle. The trait has no `map`
+  // and the handle no `into_iter`, so the element-by-element rule below
+  // cannot be asked directly.
+  if (have.name == 'Iterable' &&
+      slot.name == 'Iterable' &&
+      have.arguments.length == 1 &&
+      slot.arguments.length == 1 &&
+      !sameRust(have.arguments.single, slot.arguments.single)) {
+    final listed = IrCall(value, 'dart_to_list', const [])
+      ..rustType = IrType('List', arguments: have.arguments);
+    return coerceInto(listed, slot, world, inClosure: inClosure);
+  }
   // Collections, element by element.
-  if (collectionNames.contains(have.name) &&
-      collectionNames.contains(slot.name) &&
+  if (collectionNames.contains(normalName(have.name)) &&
+      collectionNames.contains(normalName(slot.name)) &&
       normalName(have.name) == normalName(slot.name) &&
       have.arguments.length == 1 &&
       slot.arguments.length == 1) {
@@ -699,20 +764,62 @@ IrExpr coerceInto(
   if (mapNames.contains(have.name) || mapNames.contains(slot.name)) {
     return value;
   }
-  // The prelude's collections are one `Vec`/`Set` whatever Dart calls
-  // them: `Iterable<T>` promoted to `List<T>` is the value itself, not a
-  // cast to a trait no one declares (`dyn List<..>`, `OverlayState.
-  // rearrange`, ws638).
-  // ..`List` and `Iterable` are the one `Vec`; a `Set` is its own struct
-  // and goes through the rules below (`insertAll(index, Set)`, ws640).
-  if (collectionNames.contains(have.name) &&
-      collectionNames.contains(slot.name) &&
-      (have.name == 'Set') == (slot.name == 'Set')) {
+  // Into an `Iterable<T>` slot: the list it would be read as, then the
+  // handle. `Iterable` is `Rc<dyn DartIterable<T>>` since ws908 -- the
+  // trait every collection here implements -- so a `Vec`, a `Set`, a
+  // `VecDeque` and a `LinkedList` all reach it the same way, which is
+  // what Dart says and what the one `Vec` spelling could never say.
+  //
+  // Which values those are is asked the honest way round: a name this
+  // compiler can place as something else -- a trait, an enum, a struct,
+  // a type parameter, a scalar, a map, a function, a top type -- is not
+  // one of the prelude's collections, and everything left is. Naming the
+  // collections instead misses the dill's own spellings, and there is no
+  // list of them to keep: `<String>[]` is a `_GrowableList` there, a
+  // `Queue` is a `VecDeque`, a `LinkedHashSet` is a `Set`.
+  if (slot.name == 'Iterable' &&
+      have.name != 'Iterable' &&
+      slot.arguments.length == 1 &&
+      // ..and a value that is really there: a body TFA removed produces
+      // the one diverging literal, and `Rc::new(unreachable!().clone())`
+      // has no type to infer (E0282, `CanonicalizedMap.keys` and three
+      // more).
+      !_diverges(value) &&
+      !_placedElsewhere(have, world)) {
+    final listed = coerceInto(
+      value,
+      IrType('List', arguments: slot.arguments),
+      world,
+      inClosure: inClosure,
+    );
+    if (Platform.environment['DART2RUST_TRACE_BOX'] != null) {
+      final frames = StackTrace.current.toString().split('\n');
+      stderr.writeln(
+        'TRACE_BOX have=${have.name} slot=${slot.name} :: '
+        '${frames.take(8).map((f) => f.trim()).join(' | ')}',
+      );
+    }
+    return IrCall(listed, '!as_iterable', const [])..rustType = slot;
+  }
+  // ..and out of one, the list it materialises into, shaped from there:
+  // the trait carries `iterator` and `to_list`, and every other member a
+  // body asks for is written over a list.
+  if (have.name == 'Iterable' && slot.name != 'Iterable') {
+    final listed = IrCall(value, 'dart_to_list', const [])
+      ..rustType = IrType('List', arguments: have.arguments);
+    if (slot.name == 'List' && sameRust(listed.rustType!, slot)) return listed;
+    return coerceInto(listed, slot, world, inClosure: inClosure);
+  }
+  // `List` and `Set` are the prelude's own structs; a `List` where a `List`
+  // goes is the value itself.
+  if (collectionNames.contains(normalName(have.name)) &&
+      collectionNames.contains(normalName(slot.name)) &&
+      (normalName(have.name) == 'Set') == (normalName(slot.name) == 'Set')) {
     return value;
   }
   // A `Set` where an `Iterable`/`List` goes: its elements, in order
   // (`_entries.insertAll(index, old)` with a `LinkedHashSet`, ws642).
-  if (have.name == 'Set' &&
+  if (normalName(have.name) == 'Set' &&
       (slot.name == 'List' || slot.name == 'Iterable') &&
       !isNullable(have) &&
       !isNullable(slot)) {

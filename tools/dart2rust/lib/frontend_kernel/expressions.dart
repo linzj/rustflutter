@@ -174,7 +174,45 @@ augment class KernelFrontend {
         }
       }
     }
+    // The prelude's own `Iterable<T>` is a `Vec<T>`. `where`, `map` and
+    // `followedBy` come out of a Rust iterator chain this backend
+    // collects; `keys` is the map's own list. Only a *translated* member
+    // hands back the handle an `Iterable<T>` slot is here (ws908), so the
+    // boundary says so once, rather than each of the places a produced
+    // list lands saying it again -- and `sameRust` stops calling the two
+    // one type in the same round.
+    final produced = lowered.rustType;
+    if (produced != null &&
+        produced.name == 'Iterable' &&
+        produced.arguments.length == 1 &&
+        _preludeProduced(node)) {
+      lowered.rustType = IrType(
+        'List',
+        nullable: produced.nullable,
+        arguments: produced.arguments,
+        module: produced.module,
+      );
+    }
     return lowered;
+  }
+
+  /// Whether `node` reads or calls a member this compiler does not
+  /// translate: the prelude's, whose Rust signature is the truth about
+  /// what comes back (`_widenedInto` says the same about what goes in).
+  bool _preludeProduced(Expression node) {
+    final Member? target = switch (node) {
+      InstanceInvocation(:final interfaceTarget) => interfaceTarget,
+      InstanceGet(:final interfaceTarget) => interfaceTarget,
+      SuperMethodInvocation(:final interfaceTarget) => interfaceTarget,
+      SuperPropertyGet(:final interfaceTarget) => interfaceTarget,
+      StaticInvocation(:final target) => target,
+      StaticGet(:final target) => target,
+      _ => null,
+    };
+    if (target == null) return false;
+    final owner = target.enclosingClass;
+    if (owner != null) return !_translatedClass(owner);
+    return !_translatedLibrary(target.enclosingLibrary);
   }
 
   /// The `Future<T>` an `async` member declared `FutureOr<T>` or

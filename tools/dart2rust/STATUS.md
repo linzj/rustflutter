@@ -326,6 +326,7 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
   ws905   134 /  38,可达 69;`is T` 不再恒真,运行尺子往前走到旧桩上
   ws906   133 /  38,可达 69;`List.from` 非列表要收集
   ws907   133 /  38,可达 69;`(f ??= C()).add(x)` 加进的是副本
+  ws908   133 /  38,可达 69;`Iterable` 成了 trait(`dyn DartIterable` 0 -> 660 处 / 126 个文件),`OverlayState.rearrange` 掉了
 
 分区与墙钟(ws898,同一台机器,打桩循环的尾巴):
   改前  merged_gallery_scc 1,026,045 行 / 223 模块,依赖图的尾巴
@@ -493,6 +494,7 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 | ws905 | `x is T` 在擦除过的类型参数上**恒真**(夹具 `iserased` 给的是错答案:`Sink<ScrollNote>().accepts(MetricsNote())` rust true / dart false)。`_typeArgumentGetters` 只给抽象/open 类开 `_typeArg<C><T>` getter——具体类没有子类能回答,只有 `new` 那一处知道。改成:被自己的体当类型读、且**界是一个具体翻译类**的参数不擦(界读自声明,不读实例化普查——普查是边降边填的,先降的库和后降的库会给出不同答案,`WidgetStateMapper` 就在一个模块里是泛型、另一个里不是);留住还要**顺着实参传播**——`NotificationListener<T>.createElement()` 造 `_NotificationElement<T>`,而那个签名里没有它,得走构造调用的类型实参 | stub **134**(集合与 ws903 完全相同,零进零出)、拒绝 38、可达 69、0 error;夹具 `iserased` 先红后绿;run905 渲染树 707 行 / 类型差异 0,`editable_text` 那个 panic 没了,现在停在 `_ScrollNotificationObserverState._notify_listeners`——134 个旧桩里的一个 |
 | ws906 | `List.from(xs)` 发的是 `xs.clone()`——只有 `xs` 已经是 `Vec` 时才对。`List<_ListenerEntry>.from(_listeners!)` 的 `_listeners` 是 `LinkedList`,于是一个 `LinkedList` 落进 `Vec` 槽。按实参的 Rust 类型分:是列表就克隆,不是就 `to_list()` 收集 | stub **134 → 133**、拒绝 38、可达 69、0 error;夹具 `listfromiterable` 先红后绿;run906 越过了 `_notify_listeners`,停在 `RenderObjectElement.renderObject` 的 `unwrap`——`_LayoutBuilderElement` 在 `didChangeDependencies` 里取渲染对象,而它还没挂上(microtask 醒来后才走到的一条新路) |
 | ws907 | `(field ??= C()).add(x)`:`??=` 交回的是它读到的**值**,而一个集合字段读出来是副本,`add` 加进副本就丢了。`Element.dependOnInheritedElement` 写的正是这一句,于是 `_dependencies` **永远是空的**,`_ensureDeactivated` 的循环一次都没跑。IR 上给 `IrIfNull` 记一位 `assignsLeft`(前端按 Kernel 给 `x ??= v` 的形状认:右边存进左边读的那个位置),后端的 `_mutPlace` 就能穿过去,先保证有东西再从 cell 上改 | stub **133**(集合不变)、拒绝 38、可达 69、0 error;夹具 `ifnullfieldadd` 由**错答案**(rust 0 / dart 2)转绿;探针确认修好后卸下时真的看到依赖了(1184 次带 1 条、424 次带 3 条),但 run907 仍停在同一处——摘不掉的是 `_dependents` 那一侧,还在查 |
+| ws908 | `Iterable` 早就是一个 trait(`DartIterable`),`Vec` 和 `Set` 都实现了它,而生成的 Rust 里 `dyn DartIterable` 出现 **0 次**:类型下降见到 Dart 的 `Iterable` 就无条件写成 `Vec<T>`,于是「静态类型写着 `Iterable`、手里是 `Set` 或 `LinkedList`」的位置每次都是类型错误。先量两个数再动手——`Iterable` 作为槽出现 **1662** 处(在类型下降处打点,不是文本 grep);一个体向 `Iterable` 要的成员是 **25 个名字 501 处**(`toList` 148、`forEach` 78、`where` 39、`first` 33)。既然要的东西都写在列表上,trait 就只带两件列表做不到的事:`iterator` 和 `dart_to_list`;`Iterable<T>` 落成 `Rc<dyn DartIterable<T>>`,`Vec`/`Set`/`VecDeque`/`LinkedList` 各一个 impl。边界只有两句话:**翻译过的代码说 `Iterable`,prelude 说 `List`**——prelude 成员产出的 `Iterable` 按 `List` 记账(`expression` 的收尾),prelude 形参的 `Iterable` 槽按 `List` 记账(`_overList`),其余全部交给 `coerceInto` 的一进一出两条规则。顺带删掉四条现在说的是假话的旧账:`normalName` 里 `Iterable => List`(把两个不同的 Rust 类型当成同一个,`sameRust` 每处都因此放行),后端 `_returned` 里那条返回时装箱的补丁(返回值本来就走 `_widened`),`_widenedInto` 里那条往翻译过的 `Iterable` 形参装箱的特例(通用 `coerce` 会做,而且它会先按元素类型转换),以及 `dart:` 的几个 Set 类不在 `normalName` 里 | stub **133**(集合一进一出:`OverlayState.rearrange` 掉了——`LinkedHashSet` 一直是以陌生人的身份走过每一条 `Set` 规则的,ws638 起挂到今天;新挂 `hash_sink._finalizeData`,`Uint8List` 的元素加宽被装箱抢在了前面)、拒绝 38、可达 69、0 error;`dyn DartIterable` **0 → 660 处 / 126 个文件**;夹具 `iterableread`、`iterableparam`、`listfromiterable` 三绿;run918 与 run907 **逐字节相同**(同一处 `widgets_framework.rs:5471` 的 `unwrap`,同样 18 帧、同样两行渲染树)——运行尺子没被这一轮动过 |
 | ws891 | 第五轮复审抓到:ws889 落地后 `regen.py` 的 `hints()` 会**永远误报**——它按 `'throws:' not in driver` 字面判定,而正确的修法恰恰是把那个参数删掉,所以那条提示从此指向唯一不该做的修法。换成 `DECIDED_IN`:只指出决定写在哪两个函数里,不对文件的现状下任何断言。顺手分开探针的两种失败(没调用 vs 调用了没 `?`) | `fails:` 在 frontend.dart 已 11 处、`throws:` 在 kernel driver 已 0 处——两条提示一条正确变哑、一条永久说谎,实测属实;两个诊断分支各跑一次验过 |
 
 ## 下一步(2026-09-05 重铺)
@@ -680,6 +682,25 @@ ws344 才照到它,一量 26199 个,削到 782。
 真出现了,后端那些 scope 就得**同时**有 `try/finally`,而不是二选一。
 
 ## 已知欠账
+
+**(2026-09-09 新增,ws908 自己换出来的)**
+
+- **每一次装进 `Iterable` 槽都克隆一份列表**:`!as_iterable` 发的是
+  `Rc::new((x).clone()) as Rc<dyn DartIterable<T>>`。那个 `.clone()` 是为
+  借来的值加的——`&Vec<T>` 的形参、`&Set<T>` 的字段读——句柄要拥有它手里
+  的东西,而后端在这一处分不出手里是值还是借用。生成代码里有 660 处
+  `dyn DartIterable`,其中多数的接收者本来就是一个刚做出来的临时值,这份
+  克隆是白花的。要去掉得让后端知道一个表达式是不是借用(`_borrowed`
+  这类判定现在没有),不是这一轮的活。**没量过它值多少**。
+
+- **`hash_sink._finalizeData`:窄元素列表的加宽排在装箱后面**。
+  `Uint8List` 是 `Vec<u8>`,`Uint8Buffer.addAll(Iterable<int>)` 的槽是
+  `Rc<dyn DartIterable<i64>>`,中间要一次 `!widen`(`v as i64`)。那条规则
+  在 `_widenedInto` 的**尾巴**上,而通用 `coerce` 在中间就装箱返回了,于是
+  `Vec<u8>` 直接去凑 `DartIterable<i64>`。ws907 时没有装箱,尾巴上的规则跑
+  得到,所以这是这一轮换进来的一个桩(换掉的是 `OverlayState.rearrange`)。
+  修法是把窄列表加宽挪到通用 `coerce` 之前,或者让 `coerceInto` 认得窄
+  元素的表示——**都要动 `_widenedInto` 的顺序,先量再改**。
 
 **(2026-09-09 新增,ws885 自己换出来的)**
 
