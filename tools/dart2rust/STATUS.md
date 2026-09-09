@@ -431,6 +431,7 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 | ws888 | 复审指出 ws887 的门是字面绊线:`'fails:' not in ...` 被一行 TODO 注释就能打开。换成行为探针——真跑这一轮要用的每个 driver,输出里那个必失败的调用不带 `?` 就拒绝;`--anyway` 从 `testdata/src` 改写进 gitignore 的 `.agree/anyway/` | 探针 21 秒,两个 driver 都当场重现出 `Ok((self.checked(value) * 2.0))`;补上 TODO 注释后旧门放行、新门照拒;`git status` 零改动;check.sh 干净退出,86 条 / 87 checks |
 | ws889 | 两个 fixture driver 现在都发得出 `?`:`_fails` 开头那句 `if (throws == null)` 删掉——它收着一个 `ThrowsAnalysis` 却一行答案都不读,是穿着分析外衣的开关;分析器前端补上 `_callFails`(10 个调用点),两侧共用 `ir.dart` 的 `translatedLibrary`。**顺带撞见这一轮最大的一件事**:删掉那个「什么都不决定」的分析,gallery 输出动了 32,653 行——真正起作用的是它把每个 body 都读了一遍;dill 改成显式 `BinaryBuilder(disableLazyReading: true)` | gallery 仍是 e69150fe(926 模块 / 49 拒绝),eager 读 60 秒 / 1.29 GB;预言机 exit 0,曾经新分叉的 7 个(cascade/failure/freefn/ifnull/mutation/nullcheck/trycatch)重新一致,BEHIND 仍是 16;analyze 86 -> 80,check.sh 上限同步下调 |
 | ws890 | 黄金重生成:32 个文件,driver 已被行为探针证明发得出 `?`,预言机绿着。**验收不是数字**——44 个错误一条不落地读完,归成 7 个根因,全部在生成的代码里,没有一条在 `lib.rs` | lib 139 -> 44 错;`lib.rs` 里另有 317 个是「调用现在返回 Result」的机械改造,还没做,146 个 `#[test]` 仍然全黑;预言机 exit 0,BEHIND 仍 16 |
+| ws890b | 试了 `lib.rs` 的机械改造并**放弃提交**:编译器自己的 span 驱动,317 -> 102 错、289 行改动,然后停手。理由不是难,是**验不了**——那 289 行的唯一检查就是 146 个 test 跑起来,而它们被生成代码里那 44 个错误挡着 | 抽查已见坏编辑(`.collect.unwrap()()`、给一个 `Map` 加 `.unwrap()`);全部回退,`git status` 干净 |
 
 ## 下一步(2026-09-05 重铺)
 
@@ -775,6 +776,17 @@ ws601:  722 stub / 252 拒绝 / 63 crate 全可达(138 分区,延迟库合并后
      而且返回 `&i64` 填进要 `i64` 的位置。
   7. **`match` 在表达式位置上默认臂是空的**(`branching`,1 条):
      `_ => {}` 给出 `()`,而那个 match 要 `Result<f64, _>`。
+- **顺序要改一格:driver -> 黄金 -> 编译器缺陷 -> `lib.rs`**(ws890b 学到的)。
+  ws887 写下的顺序是「driver -> 黄金 -> lib.rs 的 Result 改造」,少了一格。
+  `lib.rs` 那 317 个错是机械的,一个由编译器 span 驱动的脚本半小时能改到
+  102 个;问题是**改完没有任何东西能检查它**。那 289 行改动的唯一裁判是 146 个
+  `#[test]` 真的跑起来,而它们被生成代码里那 44 个错误挡着——crate 编不过,
+  测试就不跑。抽查已经看到坏编辑:`.collect.unwrap()()`、给一个 `Map`(不是
+  `Result`)加了 `.unwrap()`。**没法验的批量改动,提交进去就是「按计数验收」
+  换了身衣服**,所以整批回退了。
+  先修上面那 7 个根因,crate 编过,再做 `lib.rs`,那时每一处 `.unwrap()` 都有
+  146 个断言在后面盯着。脚本留在
+  `/tmp/.../scratchpad/unwrap_fix3.py` 和 `move_unwrap.py`,证明这段路是通的。
 - **fixture driver 的配置仍然不是生产配置**。`KernelFrontend` 的 17 个具名参数
   里,包驱动传 15 个,fixture driver 传 2 个。`?` 只是第一个症状(ws889 修了,
   而且是把那个假开关删掉),`erase` 是第二个(上面第 3 条)。剩下的还有
