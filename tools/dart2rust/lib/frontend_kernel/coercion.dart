@@ -186,6 +186,51 @@ augment class KernelFrontend {
     );
   }
 
+  /// Whether a typed list (`Uint8List`, a `Vec<u8>` here) is being handed
+  /// to a slot that takes Dart's `int` elements, and so needs the prelude's
+  /// element widening (`!widen`). Not when the slot is itself a narrow
+  /// list -- a typed list's own member, `bytes.setRange(a, b, other)` on
+  /// `Uint8List`s (`_narrowSlots`, run505).
+  bool _widensNarrowElements(
+    DartType? param,
+    Expression value,
+    IrType? slotIr,
+  ) {
+    if (slotIr != null &&
+        slotIr.name == 'List' &&
+        slotIr.arguments.length == 1 &&
+        const {
+          'u8',
+          'i8',
+          'i16',
+          'u16',
+          'i32',
+          'u32',
+          'u64',
+          'f32',
+          'f64',
+        }.contains(slotIr.arguments.single.name)) {
+      return false;
+    }
+    final given = value is VariableGet && _retyped.containsKey(value.variable)
+        ? _retyped[value.variable]
+        : _staticType(value);
+    // The *declared* type of a variable, not its promotion: `if (input is
+    // Uint8List) return input;` still holds a `Vec<i64>`.
+    final held = value is VariableGet ? value.variable.type : given;
+    return param is InterfaceType &&
+        _narrowElement(param) == null &&
+        (param.classNode.name == 'List' ||
+            param.classNode.name == 'Iterable') &&
+        param.typeArguments.isNotEmpty &&
+        param.typeArguments.first is InterfaceType &&
+        (param.typeArguments.first as InterfaceType).classNode.name == 'int' &&
+        held is InterfaceType &&
+        _narrowElement(held) != null &&
+        _narrowElement(held) != 'f32' &&
+        _narrowElement(held) != 'f64';
+  }
+
   /// `value`, adapted to `slot`: see `coerceInto`.
   @override
   bool isTypeParameter(String name) {
@@ -444,6 +489,19 @@ augment class KernelFrontend {
             param.classNode.name == 'List')) {
       return IrCall(lowered, 'dart_to_list', const [])
         ..rustType = IrType('List', arguments: lowered.rustType!.arguments);
+    }
+    // A typed list into an `Iterable<int>` slot widens its elements here,
+    // ahead of the coercion, rather than in this method's tail: the
+    // coercion boxes into the handle an `Iterable` slot is and returns,
+    // and a `Vec<u8>` behind a `DartIterable<i64>` is no impl at all
+    // (`_pendingData.addAll(Uint8List(n))`, `hash_sink._finalizeData`).
+    var narrowWidened = false;
+    if (param is InterfaceType &&
+        param.classNode.name == 'Iterable' &&
+        _widensNarrowElements(param, value, slotIr)) {
+      lowered = IrCall(lowered, '!widen', const [])
+        ..rustType = IrType('List', arguments: [const IrType('int')]);
+      narrowWidened = true;
     }
     if (coerceByType &&
         translated &&
@@ -779,17 +837,10 @@ augment class KernelFrontend {
           'f64',
         }.contains(slotIr.arguments.single.name);
     if (!slotNarrow &&
+        !narrowWidened &&
         param is InterfaceType &&
-        _narrowElement(param) == null &&
-        (param.classNode.name == 'List' ||
-            param.classNode.name == 'Iterable') &&
-        param.typeArguments.isNotEmpty &&
-        param.typeArguments.first is InterfaceType &&
-        (param.typeArguments.first as InterfaceType).classNode.name == 'int' &&
         held is InterfaceType &&
-        _narrowElement(held) != null &&
-        _narrowElement(held) != 'f32' &&
-        _narrowElement(held) != 'f64') {
+        _widensNarrowElements(param, value, slotIr)) {
       final widened = IrCall(lowered, '!widen', const []);
       return param.nullability == Nullability.nullable &&
               held.nullability != Nullability.nullable
