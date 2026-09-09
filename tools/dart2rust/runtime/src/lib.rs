@@ -198,6 +198,22 @@ fn schedule_frame() {
         // as it ends, with the wall clock, so a run that produces nothing
         // says whether it is drawing slowly or stuck inside one frame.
         let traced = std::env::var("DART2RUST_TRACE_FRAMES").as_deref() == Ok("1");
+        // `DART2RUST_TREE_EVERY=n`: the size of the render tree every n
+        // frames. The ruler reads that tree at the end of a wall-clock
+        // budget and gets 707 nodes or 2 depending on when it lands, and
+        // 45s/60s/90s budgets do not order the two -- so the tree is
+        // emptied and rebuilt on some cycle, and this says on which.
+        if let Ok(every) = std::env::var("DART2RUST_TREE_EVERY") {
+            if let Ok(every) = every.parse::<i64>() {
+                if every > 0 && number % every == 0 {
+                    let size = match dump_render_tree() {
+                        Ok(text) => text.lines().filter(|l| !l.is_empty()).count(),
+                        Err(_) => 0,
+                    };
+                    eprintln!("dart2rust tree: frame {} nodes {}", number, size);
+                }
+            }
+        }
         let started = std::time::Instant::now();
         if traced {
             eprintln!("dart2rust frame {} begin at {}us", number, micros);
