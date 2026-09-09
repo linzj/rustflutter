@@ -25,6 +25,9 @@ import 'member_names.dart';
 import 'dart:io' show Platform, stderr;
 
 import 'ir.dart';
+// Read, not emitted: the prelude is the only place that knows which of its
+// own types it wrote generic (`_genericPreludeTypes`).
+import 'prelude.dart';
 
 // The class is one class in every file below but `visitors.dart`.
 // Splitting it is the only thing this does: each part holds one of the

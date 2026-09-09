@@ -485,6 +485,8 @@ augment class KernelFrontend {
       // spelled.
       typeArguments: owner == 'Future'
           ? _recordedTypes(node.arguments.types)
+          : _uninferableTypes(declaration, node.arguments)
+          ? _nestedTypes(node.arguments.types)
           : _keptTypeArguments(declaration, node.arguments),
       module: owner == null ? _topLevelModule(target) : null,
     );
@@ -564,6 +566,74 @@ augment class KernelFrontend {
         for (var i = 0; i < parameters.length; i++)
           if (!_erasedParameter(parameters[i])) _typeNested(arguments.types[i]),
       ];
+    } on Unsupported {
+      return const [];
+    }
+  }
+
+  /// Whether nothing in the call can tell Rust what a prelude callee's type
+  /// parameters are: every parameter the call actually fills is spelled
+  /// without them, so inference has only the surrounding expression to go
+  /// on -- and where the result is iterated rather than stored, it has
+  /// nothing there either. `Iterable<int>.generate(n)` with the generator
+  /// omitted left the element `_` ("type annotations needed", ws955).
+  ///
+  /// Only a prelude callee: a translated one's arguments are
+  /// `_keptTypeArguments`, which drops the erased parameters, and an
+  /// erased one has no slot to spell.
+  bool _uninferableTypes(FunctionNode fn, Arguments arguments) {
+    final parameters = fn.typeParameters;
+    if (parameters.isEmpty || arguments.types.length != parameters.length) {
+      return false;
+    }
+    if (_calleeTranslated(fn, null)) return false;
+    // ..and not where the prelude spells the owner generic. A factory's
+    // type parameters are its *class's*, and where the prelude wrote the
+    // class generic they are already on the impl: `Completer<T>.sync()` is
+    // `Completer::sync()`, never `Completer::sync::<T>()` ("associated
+    // function takes 0 generic arguments", 6 at ws955, dart:ui's
+    // `_futurize` among them). Where the owner is a unit -- `pub struct
+    // Iterable;`, whose statics carry the element themselves -- the
+    // function is where they go.
+    final member = fn.parent;
+    final owner = member is Member ? member.enclosingClass?.name : null;
+    if (owner != null && _genericPreludeTypes.contains(owner)) return false;
+    // A parameter the call fills mentions one: inference has it.
+    for (var i = 0; i < arguments.positional.length; i++) {
+      if (i >= fn.positionalParameters.length) return false;
+      if (_mentionsParametersOf(fn.positionalParameters[i].type, parameters)) {
+        return false;
+      }
+    }
+    final filled = {for (final n in arguments.named) n.name};
+    for (final p in fn.namedParameters) {
+      if (filled.contains(p.parameterName) &&
+          _mentionsParametersOf(p.type, parameters)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /// The prelude's own types that carry type parameters, read from the
+  /// prelude source rather than listed here: only the prelude knows which
+  /// of its types it wrote generic, and a list would go stale the first
+  /// time one changed.
+  static final Set<String> _genericPreludeTypes = () {
+    final out = <String>{};
+    final declared = RegExp(r'^pub (?:struct|enum|type) ([A-Za-z_]\w*)<');
+    for (final line in rustPrelude.split('\n')) {
+      final m = declared.firstMatch(line);
+      if (m != null) out.add(m.group(1)!);
+    }
+    return out;
+  }();
+
+  /// `types` spelled as type arguments (`_typeNested`, for the reason
+  /// `_keptTypeArguments` gives), or none when one cannot be.
+  List<IrType> _nestedTypes(List<DartType> types) {
+    try {
+      return [for (final t in types) _typeNested(t)];
     } on Unsupported {
       return const [];
     }
