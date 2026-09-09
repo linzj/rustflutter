@@ -538,6 +538,37 @@ nullability 是 `nullable`,照字面读它,每一次往 `void` 槽里存都被�
 trait 泛型方法**已解**(擦除孪生 `m__erased`,ws482/ws494)。6 仍是 **0/168**,
 但 `runtime/` crate 从 09-06 起存在(无头引擎层)。
 
+**(2026-09-10 校注)** 现状:**ws940 112 stub / 32 拒绝 / 69 crate 全可达 / 0 error**,
+运行尺子 run940 **707 行、类型差异 0、0 panic,连采五次一模一样**——尺子从 ws934
+起不再抖(根因见〈已知欠账〉第一条),所以「读三次取多数」那套读法可以退休了,
+一次就算数;为了看住回归,每轮仍连采五次。
+
+**剩下的 112 个桩已经没有大簇了**,最大的一族是 3 个(`TickerFuture` 从 `Option`
+里 await),其余都是一两个。按性价比排,下一步值得做的:
+
+1. **`List<T>` → `Rc<RefCell<Vec<T>>>`**(work.md 第 3 条)。量过的复制次数说它
+   不是热点,所以立论只能靠**语义**——而语义的证据现在有了:`merge_sort` /
+   `_merge_sort` 两个桩是同一件事,Dart 把**同一个 list 当两个参数**传进去
+   (`_mergeSort(list, .., list, ..)`),`&mut` 借两次编不过。别名写得回去正是
+   这个改动要买的东西。半径 6553 处 `Vec<` 拼写,前置三条(48541 个 `__v.push(`
+   要留裸 `Vec`、`fn iterator(self: Rc<Self>)` 已验、`Rc<RefCell<..>>` 到
+   `Rc<dyn DartIterable<T>>` 是 unsizing)都清了。
+2. **prelude 接口的成员经由对象调用**:`binarySearch<T extends Comparable<Object>>`
+   的 `element.compareTo(v)` 落在裸 `T` 上没有方法。`_receiver` 只把类型参数窄化到
+   **翻译出来的**抽象界;prelude 有 trait 的那几个(`Comparable`、`DartIterator`)
+   同样可以经由 `dart_cast_to` 走一趟。半径很窄。
+3. **`Sink<T>` 进 `_preludeInterfaces`**:`DigestSink implements Sink<Digest>` 没有
+   `impl DartSink<Digest> for DigestSink`。表已经在那里(`Comparable`/`DartIterator`),
+   要多一层「Dart 接口名 → prelude trait 名」的映射,因为 `Sink<T>` 是**句柄别名**
+   (`Rc<dyn DartSink<T>>`),槽拼 `Sink`、impl 写 `DartSink`。
+4. **增强枚举的每变体状态**:ws940 之后 `KeyboardLockMode.findLockByLogicalKey`
+   是个桩,因为 `logicalKey` 是个 const 实例而不是字面量,`_EnumConstantFinder._literal`
+   只认 int/double/bool/String。要收下它,普查得把 `Constant` 交给前端去降,
+   而不是自己拼 Rust 字面量。
+
+拒绝还剩 32:约 13 个是 `dart:ffi`/win32 的内存模型,约 8 个是值类上的
+`identical`/`hashCode`(故意拒绝,等那些类变成 counted),其余一两个一堆。
+
 **(2026-09-09 校注)** 本节六条与〈当前队头〉自 09-05 起未动,现状以〈活账〉窗口
 末行为准:**ws878 152 stub / 49 拒绝 / 64 crate 全可达**,运行尺子 run877
 **708 行对 708 行、0 类型差异、0 panic、197 帧**。六条里 1(`todo!` 剩员)仍未再量;
