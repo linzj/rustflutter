@@ -331,6 +331,7 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
   ws910   132 /  38,可达 69;`Map` 的索引按版本而不是按条数判有效——**运行尺子回来了**:432 帧 0 panic、渲染树 707 行、与 ref 类型差异 0
   ws911   130 /  38,可达 69;界是 `Iterable` 的类型参数,槽跟着声明走;装箱不再无条件克隆(274 -> 42 处)
   ws912   129 /  **33**,可达 69;静态 setter 按被调用的名字找得到;`int.parse(s, radix: r)`;`super.where` 走到 `this` 的元素上
+  ws915   127 /  33,可达 69;`SynchronousFuture.then` 当场回调(帧数 432 → 290,原因未查)
   ws913   127 /  33,可达 69;`<num>[..]` 的 `int` 元素要转;prelude 的标量槽收 `dynamic` 要转
 
 分区与墙钟(ws898,同一台机器,打桩循环的尾巴):
@@ -519,6 +520,7 @@ nullability 是 `nullable`,照字面读它,每一次往 `void` 槽里存都被�
 | ws911 | 三件。一、**界是 `Iterable<E>` 的类型参数,声明按界拼、实参的槽却按实例化拼**:`_type` 把 `T extends Iterable<E>` 拼成界(现在是 `Rc<dyn DartIterable<E>>`),而 `_landingSlot` 把接收者的 `T := Set<E>` 代进去,说槽收 `Set`,于是 `coerceInto` 觉得两边同型、原样放行。让 `_landingSlot` 对这种参数交回 null,`_argument` 也按声明走(`_atBound`),读的一侧 `_listReceiver` 认得这种接收者(`_iterableSpelling`)。**只对 `Iterable` 界**——`_spelledAsBound` 还答 `String`/`int`/`double`/`bool`/`List`,那几种实例化和拼写同型,拿声明去换是把对的换错。二、**装箱不再无条件克隆**:`!as_iterable` 原先总补 `.clone()`,理由写的是「接收者常常是借用」,而对着生成的 Rust 数,`&Vec<`/`&Set<` 各 0 处,只有 26 个 `&mut Vec<` 形参是真借用;问一句「`expr` 发出来的东西已经是自己的了吗」(`_ownedWhenSpelled`:调用、字面量、构造、块值是,裸局部不是)。三、**给复制挂上计数器**(`DART2RUST_COUNT_COPIES`),这是第 3 条大改动的前置 | stub **132 → 130**(与 ws921 逐条比:新增 0,少了 `equality.rs` 的 `hash`/`equals`)、拒绝 38、可达 69、0 error;夹具 `iterablebound` 先红后绿;装箱里还带 `.clone()` 的 **274 → 42**(共 280 处装箱);run924 树 707 行、类型差异 0、0 panic |
 | ws912 | 三条拒绝,都是「明明翻译了却说没翻译」。一、**静态 setter 按两个名字擦肩而过**:调用点叫它 `set_systemContextMenuClient`(Dart 名前面加 `set_`),类里记的是 `systemContextMenuClient` 加一位 `isSetter`,`m.name == name || _methodName(m) == name` 两边都对不上,于是 `ServicesBinding.systemContextMenuClient` 这个**已经发出来的**函数被判成没翻译(3 处)。二、**`int.parse(s, radix: r)`**:原规则要求没有具名实参,`parseCompactDate` 传了 `radix: 10`。prelude 补两个函数(`from_str_radix` 自己认符号),前端认这一个具名参数,并把名字加进 `_preludeFunctions`——不加的话它转头又被判成「没翻译的顶层函数」(这一步在 ws926 里现场发生过)。三、**`super.where` 进 `dart:core` 的 `Iterable`**:基类不是翻译出来的类,后端只能拒绝;而 `Iterable.where` 本来就是「在 `this` 的元素上做」,所以前端把它降成 `this` 上的普通成员调用,接收者照常物化 | stub 130 → **129**、拒绝 38 → **33**、可达 69、0 error;与 ws921 逐条比新增 0,少了 `equality.rs` 的 `hash`/`equals` 和 `widgets_system_context_menu.rs` 的 `init_state` |
 | ws913 | 两条都是「槽的 Rust 类型和送进去的东西对不上,而中间那道转换没人叫」。一、**`<num>[..]` 里的 `int` 元素**:prelude 把 `num` 拼成 `f64`,而 `coerceInto` 里 `slot.name == 'num'` 是**原样放行**——那条是为算术写的(`num.+` 收 `num`,`i + 1` 还是 `i64`),对元素位置就是错的。`TextInput._setSelectionRects` 建的是 `<num>[bounds.left, .., rect.position, rect.direction.index]`,double 和 int 混着,`Vec<f64>` 只收一种。判定放在列表字面量的元素上(`listElement`),两个降列表字面量的地方(`_listLiteral` 和 CFE 的 `_GrowableList._literalN`)共用它。二、**`dynamic` 进 prelude 的标量槽**:`DateTime.fromMillisecondsSinceEpoch(arguments)` 的 `arguments` 是从 `Map<String, Object?>` 里读出来的句柄,而 prelude 收 `i64`;`translated` 那道闸从来不问,因为标量形参不提任何顶类型 | stub 129 → **127**、拒绝 33、可达 69、0 error;与 ws927 逐条比新增 0,少了 `set_selection_rects` 和 `_date_picker_route` |
+| ws915 | **`SynchronousFuture.then` 必须当场回调**,而这里它派了个任务。Flutter 自己在 `_RootRestorationScopeState._replaceRootBucket` 里写了断言:`assert(!_isWaitingForRootBucket); // Ensure that load finished synchronously.`——靠的就是 `rootBucket` 在桶已经有效时返回 `SynchronousFuture`,`then` 同步回调。派任务的话,那一帧 `build` 返回 `SizedBox.shrink()`,整棵子树就没了。prelude 的 `DartFuture` 加一位 `synchronous`(只有 `DartFuture::synchronous` 会置),`then` 见到它就当场跑 `on_value` 并交回另一个同步 future;`Future.value(x).then(f)` 不受影响——Dart 那个本来就是微任务。**认哪个类不看名字**:问它自己的 `then` 体里有没有把回调参数当函数调用(`_CallsParameter`)——`SynchronousFuture.then` 里是 `onValue(_value)`,`package:async` 的 `DelegatingFuture.then` 是转交给别的 future,不算。这个程序里 `_futureLike` 只匹配到 `SynchronousFuture` 一个类(`package:async` 不在可达集里),但判定是照体写的,再来一个也答得对 | stub **127**(不变)、拒绝 33、可达 69、0 error;`future_synchronous` 出现在 10 个文件里,包括 `services_restoration.rs`;**渲染树的抖动没治好**:5 次采样 2 满 3 空,和改之前分不出来。**帧数 432 → 290(降 33%),原因没查**——这是这条改动已知的代价,记在这里 |
 | ws891 | 第五轮复审抓到:ws889 落地后 `regen.py` 的 `hints()` 会**永远误报**——它按 `'throws:' not in driver` 字面判定,而正确的修法恰恰是把那个参数删掉,所以那条提示从此指向唯一不该做的修法。换成 `DECIDED_IN`:只指出决定写在哪两个函数里,不对文件的现状下任何断言。顺手分开探针的两种失败(没调用 vs 调用了没 `?`) | `fails:` 在 frontend.dart 已 11 处、`throws:` 在 kernel driver 已 0 处——两条提示一条正确变哑、一条永久说谎,实测属实;两个诊断分支各跑一次验过 |
 
 ## 下一步(2026-09-05 重铺)
@@ -771,11 +773,17 @@ ws344 才照到它,一量 26199 个,削到 782。
   的**,之后才退回等待态。宿主对 `flutter/restoration` 只答一次(null),
   好坏两次的消息数也一样。
 
-  所以线索很具体:**是什么让 `RootRestorationScope` 重新进入等待,而第二次
-  等待再也没回来**。Flutter 那边 `RestorationManager.rootBucket` 在
-  `_rootBucketIsValid` 之后返回的是 `SynchronousFuture`;这里 `SynchronousFuture`
-  走的是 prelude 的 `future_ready`。**下一步就查这个第二次的 `rootBucket`**,
-  别再在采样策略上想办法。
+  再查下去,`_replaceRootBucket` **一次都没被调用过**(好坏两边都是 0),
+  引擎那一趟也好好地回来了(探针:`begin` / `replied pending=true` /
+  `parsed ok`,好坏两边一模一样)。所以不是「重新进入等待」,是**新的一个
+  `_RootRestorationScopeState` 走了 `_rootBucketIsValid` 那条路**——那条路
+  Dart 返回的是 `SynchronousFuture`,`then` 当场回调,`didChangeDependencies`
+  结束时 `_rootBucketValid` 已经是 true;而这里 `then` 派了个任务,
+  于是那一帧 `build` 返回 `SizedBox.shrink()`,整棵子树没了。
+
+  **`SynchronousFuture` 的 `then` 现在是同步的了(ws915),但抖动没治好**:
+  5 次采样 2 满 3 空,和改之前的比例分不出来。所以那是**另一件对的事**
+  (见活账),不是这一件。这条线索还开着。
 
   (顺带:预算用尽时现在会一起报「还挂着哪些 future / 哪些 completer 没完成」,
   以前只报定时器;`DART2RUST_TREE_EVERY` 每 n 帧打一次树的大小。两个都是

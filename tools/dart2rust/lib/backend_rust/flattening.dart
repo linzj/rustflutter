@@ -228,6 +228,7 @@ augment class RustBackend {
     'dart_native',
     'dart_native_as',
     'future_ready',
+    'future_synchronous',
     'dart_cast_erased',
     'dart_is_kind',
     'dart_is_type',

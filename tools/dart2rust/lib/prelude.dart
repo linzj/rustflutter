@@ -6971,6 +6971,14 @@ struct FutureState<T> {
     wakers: Vec<std::task::Waker>,
     /// Where the future came from (`pending_labeled`), for a stuck run.
     label: &'static str,
+    /// Whether `then` calls back on the caller's own stack rather than
+    /// through a task. Dart's ordinary futures never do -- a `then`
+    /// callback is a microtask, and code counts on not being re-entered --
+    /// but `SynchronousFuture` exists to do exactly that, and Flutter
+    /// asserts on it (`_RootRestorationScopeState._replaceRootBucket`:
+    /// "Ensure that load finished synchronously"). Set only by
+    /// `DartFuture::synchronous`.
+    synchronous: bool,
 }
 
 thread_local! {
@@ -7032,7 +7040,7 @@ impl<T: 'static> DartFuture<T> {
     where
         T: 'static,
     {
-        let shared = std::rc::Rc::new(std::cell::RefCell::new(FutureState { result: None, wakers: Vec::new(), label }));
+        let shared = std::rc::Rc::new(std::cell::RefCell::new(FutureState { result: None, wakers: Vec::new(), label, synchronous: false }));
         let weak = std::rc::Rc::downgrade(&shared);
         FUTURES.with(|f| {
             f.borrow_mut().push((
@@ -7043,9 +7051,19 @@ impl<T: 'static> DartFuture<T> {
         DartFuture { shared }
     }
 
-    /// `Future.value(v)` / `Future.error(e)`: already done.
+    /// `Future.value(v)` / `Future.error(e)`: already done. Its `then` is
+    /// still a task, because Dart's is -- a `Future.value(x).then(f)` runs
+    /// `f` in a microtask, not on the caller's stack.
     pub fn ready(result: Result<T, DartError>) -> Self {
         let future = DartFuture::pending();
+        future.resolve(result);
+        future
+    }
+
+    /// A `SynchronousFuture`: done, and its `then` calls back here and now.
+    pub fn synchronous(result: Result<T, DartError>) -> Self {
+        let future = DartFuture::pending_labeled("SynchronousFuture");
+        future.shared.borrow_mut().synchronous = true;
         future.resolve(result);
         future
     }
@@ -7179,6 +7197,33 @@ impl<T: 'static> DartFuture<T> {
     where
         T: Clone + 'static,
     {
+        // A `SynchronousFuture` calls back on this stack: that is what the
+        // class is for, and Flutter asserts the load it starts finished
+        // before the line after it (`_RootRestorationScopeState
+        // ._replaceRootBucket`). Through a task instead, the widget below
+        // it renders `SizedBox.shrink()` until the task runs, which is the
+        // render tree collapsing to two nodes.
+        let ready = {
+            let state = self.shared.borrow();
+            if state.synchronous { state.result.clone() } else { None }
+        };
+        if let Some(result) = ready {
+            let produced: Result<FutureOr<R>, DartError> = match result {
+                Ok(value) => on_value(value).map(|x| x.into_future_or()),
+                Err(error) => match on_error {
+                    Some(handler) => dart_call_error_handler::<R>(handler, error),
+                    None => Err(error),
+                },
+            };
+            return match produced {
+                Ok(FutureOr::Value(Some(v))) => DartFuture::synchronous(Ok(v)),
+                Ok(FutureOr::Value(None)) => DartFuture::synchronous(Err(
+                    std::rc::Rc::new(StateError::new("a FutureOr held no value".to_string())) as DartError,
+                )),
+                Ok(FutureOr::Future(future)) => future,
+                Err(error) => DartFuture::synchronous(Err(error)),
+            };
+        }
         let me = self.clone();
         DartFuture::spawn_named("then", Box::pin(async move {
             let produced: Result<FutureOr<R>, DartError> = match me.await {
@@ -7230,6 +7275,12 @@ pub fn dart_is_kind(value: &dyn Object, kinds: &[&str]) -> bool {
 /// implements `Future` (`SynchronousFuture(value)`) is here.
 pub fn future_ready<T: 'static>(value: T) -> DartFuture<T> {
     DartFuture::ready(Ok(value))
+}
+
+/// `SynchronousFuture(v)`: done, and its `then` calls back on the caller's
+/// own stack (`DartFuture::synchronous`).
+pub fn future_synchronous<T: 'static>(value: T) -> DartFuture<T> {
+    DartFuture::synchronous(Ok(value))
 }
 
 /// `DartFuture::spawn`, as a function.

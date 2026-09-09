@@ -1322,6 +1322,31 @@ class _ReferenceCollector extends RecursiveVisitor {
   }
 }
 
+/// Whether a body calls a particular parameter as a function: what tells
+/// `SynchronousFuture.then` (which runs `onValue(_value)` itself) from a
+/// `then` that hands the callback to another future.
+class _CallsParameter extends RecursiveVisitor {
+  _CallsParameter(this.parameter);
+
+  final Variable parameter;
+  bool found = false;
+
+  @override
+  void visitLocalFunctionInvocation(LocalFunctionInvocation node) {
+    if (identical(node.variable, parameter)) found = true;
+    super.visitLocalFunctionInvocation(node);
+  }
+
+  @override
+  void visitFunctionInvocation(FunctionInvocation node) {
+    final receiver = node.receiver;
+    if (receiver is VariableGet && identical(receiver.variable, parameter)) {
+      found = true;
+    }
+    super.visitFunctionInvocation(node);
+  }
+}
+
 /// Every member called or read on a value whose static type is `Iterable`,
 /// with how often; the driver prints it beside the module summary.
 ///

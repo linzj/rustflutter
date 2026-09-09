@@ -429,6 +429,29 @@ augment class KernelFrontend {
     return uri.scheme != 'dart' || uri.toString() == 'dart:ui';
   }
 
+  /// Whether a future-like class's `then` calls the callback on its own
+  /// stack -- `SynchronousFuture.then` runs `onValue(_value)` right there,
+  /// which is the entire point of the class, and Flutter asserts on it
+  /// (`_RootRestorationScopeState._replaceRootBucket`: "Ensure that load
+  /// finished synchronously"). A class that hands the callback to another
+  /// future instead -- `package:async`'s `DelegatingFuture` -- does not,
+  /// and keeps the prelude's ordinary `future_ready`.
+  ///
+  /// Asked of the body rather than of the name: the callback parameter
+  /// being *called* inside `then` is the property, and it is the one the
+  /// prelude's `synchronous` flag stands for.
+  bool _callsBackHere(Class c) {
+    final then = c.procedures
+        .where((p) => p.name.text == 'then' && !p.isStatic)
+        .firstOrNull;
+    final body = then?.function.body;
+    final callback = then?.function.positionalParameters.firstOrNull;
+    if (body == null || callback == null) return false;
+    final finder = _CallsParameter(callback);
+    body.accept(finder);
+    return finder.found;
+  }
+
   /// Whether `c` implements `dart:async`'s `Future` directly: such a
   /// class is the prelude's future here (`_type`), and constructing it
   /// with its value is a future already done (`future_ready`).
@@ -451,15 +474,21 @@ augment class KernelFrontend {
           ? _type(node.arguments.types.single)
           : null;
       final value = expression(node.arguments.positional.single);
-      final ready = IrStaticCall(null, 'future_ready', [
-        held == null
-            ? value
-            : _widened(
-                node.arguments.positional.single,
-                node.arguments.types.single,
-                value,
-              ),
-      ]);
+      final ready = IrStaticCall(
+        null,
+        _callsBackHere(target.enclosingClass)
+            ? 'future_synchronous'
+            : 'future_ready',
+        [
+          held == null
+              ? value
+              : _widened(
+                  node.arguments.positional.single,
+                  node.arguments.types.single,
+                  value,
+                ),
+        ],
+      );
       if (held != null) ready.rustType = IrType('Future', arguments: [held]);
       return ready;
     }
