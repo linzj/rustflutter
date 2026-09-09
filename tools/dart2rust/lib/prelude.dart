@@ -7617,6 +7617,21 @@ pub fn run_main<F: std::future::Future<Output = Result<(), DartError>>>(main: F)
                     timers.len(),
                     timers.join(", ")
                 );
+                // ..and what it was waiting on, which the idle branch below
+                // already says: a run that spends its budget is the shape
+                // the ruler reads, and "which future never came back" is
+                // the first question asked of it every time.
+                {
+                    let waiting = pending_futures();
+                    let completers = pending_completers();
+                    eprintln!(
+                        "dart2rust: at the budget, {} future(s) pending: {}; {} completer(s) never completed: {}",
+                        waiting.len(),
+                        waiting.join(", "),
+                        completers.len(),
+                        completers.join(", ")
+                    );
+                }
                 report_natives_skipped();
                 return;
             }

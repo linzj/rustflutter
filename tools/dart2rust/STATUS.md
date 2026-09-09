@@ -756,8 +756,30 @@ ws344 才照到它,一量 26199 个,削到 782。
   副作用也量到了:**打这个探针本身会输**——每 20 帧走一次树的开销足够让
   它每次都建不起来。所以这个探针只能用来看形状,不能用来当尺子。
 
-  尺子现在的读法还是「连跑三次取满的那次」,但要真修好,该查的是
-  **那一次输掉的竞态是什么**,不是采样策略。
+  **再查一层,是「建起来了又退回去」,不是「没建起来」。**空的那次把元素树
+  也 dump 出来:23 个节点,最底下是
+
+  ```
+  RootRestorationScope (StatefulElement)
+    SizedBox (SingleChildRenderObjectElement)
+  ```
+
+  这是 Flutter 自己的形状——`_RootRestorationScopeState.build` 在
+  `_isWaitingForRootBucket` 时返回 `SizedBox.shrink()`。而**空的那次同样
+  造出了一堆 `MaterialPageRouteImpl` 的 completer**(在预算用尽时报的
+  「哪些 completer 没完成」里,好的坏的一模一样),说明首页**是建起来过
+  的**,之后才退回等待态。宿主对 `flutter/restoration` 只答一次(null),
+  好坏两次的消息数也一样。
+
+  所以线索很具体:**是什么让 `RootRestorationScope` 重新进入等待,而第二次
+  等待再也没回来**。Flutter 那边 `RestorationManager.rootBucket` 在
+  `_rootBucketIsValid` 之后返回的是 `SynchronousFuture`;这里 `SynchronousFuture`
+  走的是 prelude 的 `future_ready`。**下一步就查这个第二次的 `rootBucket`**,
+  别再在采样策略上想办法。
+
+  (顺带:预算用尽时现在会一起报「还挂着哪些 future / 哪些 completer 没完成」,
+  以前只报定时器;`DART2RUST_TREE_EVERY` 每 n 帧打一次树的大小。两个都是
+  这次查出来的工具。)
 
 - **`Rc<Self>` 做 `dyn` 接收者是合法的,验过了**(work.md 第 3 条动手前的
   那个「别假设」)。十行 Rust,`rustc --edition 2021` 直接过并跑出 `ab/3`:
