@@ -35,7 +35,15 @@ class Bounds {
     return doubled(value) * 2.0;
   }
 
-  /// Cannot fail, and must not be given a `Result` it does not need.
+  /// Cannot fail, and carries a `Result` all the same.
+  ///
+  /// It could not, once: this line read "must not be given a `Result` it does
+  /// not need" and was written when the analysis decided per member. The
+  /// uniform model (2026-09-04) gives every translated function one, because a
+  /// `Result` on a method is visible to callers on `this` and to nobody else,
+  /// and one type for them all is what lets `?` cross every call form alike.
+  /// What is still being tested here is that the *caller* propagates: `doubled`
+  /// and `quadrupled` carry a `?` and this one does not need one.
   double halved(double value) {
     return value / 2.0;
   }

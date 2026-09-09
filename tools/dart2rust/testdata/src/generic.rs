@@ -8,38 +8,221 @@ use crate::Type;
 // Translated, not ported: this is the compiler's output, not a
 // hand-written re-expression. See tools/dart2rust/README.md.
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(PartialEq)]
 pub struct Pair<
-    A: Clone + PartialEq + std::fmt::Debug + 'static,
-    B: Clone + PartialEq + std::fmt::Debug + 'static,
+    A: Clone
+        + DartNullable<Or: Clone + DartEq + FromDynamic + DartAny>
+        + DartEq
+        + FromDynamic
+        + DartAny
+        + 'static,
+    B: Clone
+        + DartNullable<Or: Clone + DartEq + FromDynamic + DartAny>
+        + DartEq
+        + FromDynamic
+        + DartAny
+        + 'static,
 > {
     pub first: A,
     pub second: B,
 }
 
 impl<
-        A: Clone + PartialEq + std::fmt::Debug + 'static,
-        B: Clone + PartialEq + std::fmt::Debug + 'static,
-    > Pair<A, B>
+        A: Clone
+            + DartNullable<Or: Clone + DartEq + FromDynamic + DartAny>
+            + DartEq
+            + FromDynamic
+            + DartAny
+            + 'static,
+        B: Clone
+            + DartNullable<Or: Clone + DartEq + FromDynamic + DartAny>
+            + DartEq
+            + FromDynamic
+            + DartAny
+            + 'static,
+    > Clone for Pair<A, B>
 {
-    pub fn new(first: A, second: B) -> Self {
-        Self {
-            first: first.clone(),
-            second: second.clone(),
+    fn clone(&self) -> Self {
+        Pair {
+            first: self.first.clone(),
+            second: self.second.clone(),
         }
     }
 }
 
 impl<
-        A: Clone + PartialEq + std::fmt::Debug + 'static,
-        B: Clone + PartialEq + std::fmt::Debug + 'static,
+        A: Clone
+            + DartNullable<Or: Clone + DartEq + FromDynamic + DartAny>
+            + DartEq
+            + FromDynamic
+            + DartAny
+            + 'static,
+        B: Clone
+            + DartNullable<Or: Clone + DartEq + FromDynamic + DartAny>
+            + DartEq
+            + FromDynamic
+            + DartAny
+            + 'static,
+    > std::fmt::Debug for Pair<A, B>
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Instance of 'Pair'")
+    }
+}
+impl<
+        A: Clone
+            + DartNullable<Or: Clone + DartEq + FromDynamic + DartAny>
+            + DartEq
+            + FromDynamic
+            + DartAny
+            + 'static,
+        B: Clone
+            + DartNullable<Or: Clone + DartEq + FromDynamic + DartAny>
+            + DartEq
+            + FromDynamic
+            + DartAny
+            + 'static,
+    > Pair<A, B>
+{
+    pub fn new(first: A, second: B) -> Result<Self, std::rc::Rc<dyn Object>> {
+        dart_register::<Self>();
+        Ok({
+            Self {
+                first: first,
+                second: second,
+            }
+        })
+    }
+}
+
+impl<
+        A: Clone
+            + DartNullable<Or: Clone + DartEq + FromDynamic + DartAny>
+            + DartEq
+            + FromDynamic
+            + DartAny
+            + 'static,
+        B: Clone
+            + DartNullable<Or: Clone + DartEq + FromDynamic + DartAny>
+            + DartEq
+            + FromDynamic
+            + DartAny
+            + 'static,
+    > FromDynamic for Pair<A, B>
+{
+    fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
+        value.dart_cast_any::<Self>()
+    }
+    fn from_same(value: &Self) -> Option<Self> {
+        Some(value.clone())
+    }
+}
+
+impl<
+        A: Clone
+            + DartNullable<Or: Clone + DartEq + FromDynamic + DartAny>
+            + DartEq
+            + FromDynamic
+            + DartAny
+            + 'static,
+        B: Clone
+            + DartNullable<Or: Clone + DartEq + FromDynamic + DartAny>
+            + DartEq
+            + FromDynamic
+            + DartAny
+            + 'static,
+    > NativeAnswer for Pair<A, B>
+{
+    fn from_answer(answer: std::rc::Rc<dyn Object>, symbol: &str) -> Self {
+        match answer.dart_cast_any::<Self>() {
+            Some(value) => value,
+            None => panic!(
+                "native `{}` answered {:?} where Pair was declared",
+                symbol, answer
+            ),
+        }
+    }
+    fn absent() -> Self {
+        panic!("native answered nothing where Pair was declared")
+    }
+}
+
+impl<
+        A: Clone
+            + DartNullable<Or: Clone + DartEq + FromDynamic + DartAny>
+            + DartEq
+            + FromDynamic
+            + DartAny
+            + 'static,
+        B: Clone
+            + DartNullable<Or: Clone + DartEq + FromDynamic + DartAny>
+            + DartEq
+            + FromDynamic
+            + DartAny
+            + 'static,
+    > DartNullable for Pair<A, B>
+{
+    type Or = Option<Self>;
+    fn option(or: Option<Self>) -> Option<Self> {
+        or
+    }
+    fn from_option(option: Option<Self>) -> Option<Self> {
+        option
+    }
+}
+
+impl<
+        A: Clone
+            + DartNullable<Or: Clone + DartEq + FromDynamic + DartAny>
+            + DartEq
+            + FromDynamic
+            + DartAny
+            + 'static,
+        B: Clone
+            + DartNullable<Or: Clone + DartEq + FromDynamic + DartAny>
+            + DartEq
+            + FromDynamic
+            + DartAny
+            + 'static,
+    > DartEq for Pair<A, B>
+{
+    fn dart_eq(&self, other: &Self) -> bool {
+        self.first.dart_eq(&other.first) && self.second.dart_eq(&other.second)
+    }
+}
+
+impl<
+        A: Clone
+            + DartNullable<Or: Clone + DartEq + FromDynamic + DartAny>
+            + DartEq
+            + FromDynamic
+            + DartAny
+            + 'static,
+        B: Clone
+            + DartNullable<Or: Clone + DartEq + FromDynamic + DartAny>
+            + DartEq
+            + FromDynamic
+            + DartAny
+            + 'static,
     > DartAny for Pair<A, B>
 {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
+    fn dart_to_string(&self) -> String {
+        format!("Instance of '{}'", "Pair")
+    }
+    fn dart_eq_any(&self, other: &dyn std::any::Any) -> bool {
+        match other.downcast_ref::<Self>() {
+            Some(o) => self.dart_eq(o),
+            None => false,
+        }
+    }
+    fn dart_hash_any(&self) -> i64 {
+        self.dart_hash_code()
     }
     fn dart_runtime_type(&self) -> Type {
-        Type { name: "Pair" }
+        dart_type_applied("Pair", &[dart_type_of::<A>(), dart_type_of::<B>()])
+    }
+    fn dart_cast(&self, __t: std::any::TypeId) -> Option<std::boxed::Box<dyn std::any::Any>> {
+        None
     }
 }
 
@@ -48,31 +231,184 @@ impl<
 // Translated, not ported: this is the compiler's output, not a
 // hand-written re-expression. See tools/dart2rust/README.md.
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Tagged<T: Clone + PartialEq + std::fmt::Debug + 'static> {
+/// A parameter no field mentions. Dart does not mind; Rust will not have an
+/// unused parameter at all, so it gets a `PhantomData`.
+#[derive(PartialEq)]
+pub struct Tagged<
+    T: Clone
+        + DartNullable<Or: Clone + DartEq + FromDynamic + DartAny>
+        + DartEq
+        + FromDynamic
+        + DartAny
+        + 'static,
+> {
     pub count: i64,
-    _phantom_t: std::marker::PhantomData<T>,
+    pub _phantom_t: std::marker::PhantomData<T>,
 }
 
-impl<T: Clone + PartialEq + std::fmt::Debug + 'static> Tagged<T> {
-    pub const fn new(count: i64) -> Self {
-        Self {
-            count: count,
+impl<
+        T: Clone
+            + DartNullable<Or: Clone + DartEq + FromDynamic + DartAny>
+            + DartEq
+            + FromDynamic
+            + DartAny
+            + 'static,
+    > Clone for Tagged<T>
+{
+    fn clone(&self) -> Self {
+        Tagged {
+            count: self.count.clone(),
             _phantom_t: std::marker::PhantomData,
         }
     }
+}
 
-    pub fn doubled(&self) -> i64 {
-        (self.count * 2)
+impl<
+        T: Clone
+            + DartNullable<Or: Clone + DartEq + FromDynamic + DartAny>
+            + DartEq
+            + FromDynamic
+            + DartAny
+            + 'static
+            + Copy,
+    > Copy for Tagged<T>
+{
+}
+
+impl<
+        T: Clone
+            + DartNullable<Or: Clone + DartEq + FromDynamic + DartAny>
+            + DartEq
+            + FromDynamic
+            + DartAny
+            + 'static,
+    > std::fmt::Debug for Tagged<T>
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Instance of 'Tagged'")
+    }
+}
+impl<
+        T: Clone
+            + DartNullable<Or: Clone + DartEq + FromDynamic + DartAny>
+            + DartEq
+            + FromDynamic
+            + DartAny
+            + 'static,
+    > Tagged<T>
+{
+    pub const fn new(count: i64) -> Result<Self, std::rc::Rc<dyn Object>> {
+        Ok({
+            Self {
+                count: count,
+                _phantom_t: std::marker::PhantomData,
+            }
+        })
+    }
+
+    pub fn doubled(&self) -> Result<i64, std::rc::Rc<dyn Object>> {
+        Ok((self.count * 2))
     }
 }
 
-impl<T: Clone + PartialEq + std::fmt::Debug + 'static> DartAny for Tagged<T> {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
+impl<
+        T: Clone
+            + DartNullable<Or: Clone + DartEq + FromDynamic + DartAny>
+            + DartEq
+            + FromDynamic
+            + DartAny
+            + 'static,
+    > FromDynamic for Tagged<T>
+{
+    fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
+        value.dart_cast_any::<Self>()
+    }
+    fn from_same(value: &Self) -> Option<Self> {
+        Some(value.clone())
+    }
+}
+
+impl<
+        T: Clone
+            + DartNullable<Or: Clone + DartEq + FromDynamic + DartAny>
+            + DartEq
+            + FromDynamic
+            + DartAny
+            + 'static,
+    > NativeAnswer for Tagged<T>
+{
+    fn from_answer(answer: std::rc::Rc<dyn Object>, symbol: &str) -> Self {
+        match answer.dart_cast_any::<Self>() {
+            Some(value) => value,
+            None => panic!(
+                "native `{}` answered {:?} where Tagged was declared",
+                symbol, answer
+            ),
+        }
+    }
+    fn absent() -> Self {
+        panic!("native answered nothing where Tagged was declared")
+    }
+}
+
+impl<
+        T: Clone
+            + DartNullable<Or: Clone + DartEq + FromDynamic + DartAny>
+            + DartEq
+            + FromDynamic
+            + DartAny
+            + 'static,
+    > DartNullable for Tagged<T>
+{
+    type Or = Option<Self>;
+    fn option(or: Option<Self>) -> Option<Self> {
+        or
+    }
+    fn from_option(option: Option<Self>) -> Option<Self> {
+        option
+    }
+}
+
+impl<
+        T: Clone
+            + DartNullable<Or: Clone + DartEq + FromDynamic + DartAny>
+            + DartEq
+            + FromDynamic
+            + DartAny
+            + 'static,
+    > DartEq for Tagged<T>
+{
+    fn dart_eq(&self, other: &Self) -> bool {
+        self.count.dart_eq(&other.count)
+    }
+}
+
+impl<
+        T: Clone
+            + DartNullable<Or: Clone + DartEq + FromDynamic + DartAny>
+            + DartEq
+            + FromDynamic
+            + DartAny
+            + 'static,
+    > DartAny for Tagged<T>
+{
+    fn dart_to_string(&self) -> String {
+        format!("Instance of '{}'", "Tagged")
+    }
+    fn dart_eq_any(&self, other: &dyn std::any::Any) -> bool {
+        match other.downcast_ref::<Self>() {
+            Some(o) => self.dart_eq(o),
+            None => false,
+        }
+    }
+    fn dart_hash_any(&self) -> i64 {
+        self.dart_hash_code()
     }
     fn dart_runtime_type(&self) -> Type {
-        Type { name: "Tagged" }
+        dart_type_applied("Tagged", &[dart_type_of::<T>()])
+    }
+    fn dart_cast(&self, __t: std::any::TypeId) -> Option<std::boxed::Box<dyn std::any::Any>> {
+        None
     }
 }
 
@@ -85,49 +421,159 @@ impl<T: Clone + PartialEq + std::fmt::Debug + 'static> DartAny for Tagged<T> {
 pub struct Boxes {}
 
 impl Boxes {
-    pub const fn new() -> Self {
-        Self {}
+    pub const fn new() -> Result<Self, std::rc::Rc<dyn Object>> {
+        Ok({ Self {} })
     }
 
-    pub fn first_of<T: Clone + PartialEq + std::fmt::Debug + 'static>(&self, mut a: T, b: T) -> T {
-        a.clone()
+    /// A method with its own parameter, which is separate from the class's.
+    pub fn first_of<
+        T: Clone
+            + DartNullable<Or: Clone + DartEq + FromDynamic + DartAny>
+            + DartEq
+            + FromDynamic
+            + DartAny
+            + 'static,
+    >(
+        &self,
+        a: T,
+        b: T,
+    ) -> Result<T, std::rc::Rc<dyn Object>> {
+        Ok(a)
     }
 
-    pub fn made(&self) -> Pair<i64, f64> {
-        Pair::<i64, f64>::new(3, 4.5)
+    pub fn made(&self) -> Result<Pair<i64, f64>, std::rc::Rc<dyn Object>> {
+        Ok(Pair::<i64, f64>::new(3, 4.5)?)
+    }
+}
+
+impl FromDynamic for Boxes {
+    fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
+        value.dart_cast_any::<Self>()
+    }
+    fn from_same(value: &Self) -> Option<Self> {
+        Some(value.clone())
+    }
+}
+
+impl NativeAnswer for Boxes {
+    fn from_answer(answer: std::rc::Rc<dyn Object>, symbol: &str) -> Self {
+        match answer.dart_cast_any::<Self>() {
+            Some(value) => value,
+            None => panic!(
+                "native `{}` answered {:?} where Boxes was declared",
+                symbol, answer
+            ),
+        }
+    }
+    fn absent() -> Self {
+        panic!("native answered nothing where Boxes was declared")
+    }
+}
+
+impl DartNullable for Boxes {
+    type Or = Option<Self>;
+    fn option(or: Option<Self>) -> Option<Self> {
+        or
+    }
+    fn from_option(option: Option<Self>) -> Option<Self> {
+        option
+    }
+}
+
+impl DartEq for Boxes {
+    fn dart_eq(&self, other: &Self) -> bool {
+        self == other
     }
 }
 
 impl DartAny for Boxes {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
+    fn dart_to_string(&self) -> String {
+        format!("Instance of '{}'", "Boxes")
+    }
+    fn dart_eq_any(&self, other: &dyn std::any::Any) -> bool {
+        match other.downcast_ref::<Self>() {
+            Some(o) => self.dart_eq(o),
+            None => false,
+        }
+    }
+    fn dart_hash_any(&self) -> i64 {
+        self.dart_hash_code()
     }
     fn dart_runtime_type(&self) -> Type {
-        Type { name: "Boxes" }
+        Type::of("Boxes")
+    }
+    fn dart_cast(&self, __t: std::any::TypeId) -> Option<std::boxed::Box<dyn std::any::Any>> {
+        if __t == std::any::TypeId::of::<Self>()
+            || __t == std::any::TypeId::of::<std::rc::Rc<Self>>()
+        {
+            return Some(std::boxed::Box::new(std::rc::Rc::new(self.clone())));
+        }
+        if __t == std::any::TypeId::of::<dyn Object>()
+            || __t == std::any::TypeId::of::<std::rc::Rc<dyn Object>>()
+        {
+            return Some(std::boxed::Box::new(
+                std::rc::Rc::new(self.clone()) as std::rc::Rc<dyn Object>
+            ));
+        }
+        None
     }
 }
 
 // Generated by tools/dart2rust from upstream `Store`
 // (abstract -> trait).
 
+/// A **generic method on an abstract class**, which is a trait here.
+///
+/// A trait with a generic method is not dyn-compatible, and every abstract
+/// class in this compiler's output is reached through `dyn` -- so these were
+/// refused outright, 302 of them. Rust leaves a `where Self: Sized` method out
+/// of the vtable, which keeps the trait usable as `dyn` *and* keeps the method
+/// on every concrete implementor. What is given up is calling it through a
+/// trait object, which is a refusal where the call is rather than a member
+/// deleted where it is declared.
+
+impl DartEq for dyn Store {
+    fn dart_eq(&self, other: &Self) -> bool {
+        std::ptr::addr_eq(self as *const Self, other as *const Self)
+    }
+    fn dart_hash_code(&self) -> i64 {
+        (self as *const Self as *const u8 as usize as i64) & 0x3fff_ffff
+    }
+}
+
 pub trait Store: DartAny + std::fmt::Debug {
-    fn count_of<T: Clone + PartialEq + std::fmt::Debug + 'static>(
+    fn dart_self_store(&self) -> std::rc::Rc<dyn Store>;
+
+    /// Generic, so it carries the bound.
+    ///
+    /// It counts rather than returning an element, and not for tidiness:
+    /// `return items[0];` does not compile, because indexing a `Vec<T>` moves
+    /// out of it and `T` is not `Copy`. A hole of its own -- a Dart list read is
+    /// a copy of a reference and a Rust one is a move -- and not this fixture's
+    /// subject.
+    fn count_of<
+        T: Clone
+            + DartNullable<Or: Clone + DartEq + FromDynamic + DartAny>
+            + DartEq
+            + FromDynamic
+            + DartAny
+            + 'static,
+    >(
         &self,
         items: Vec<T>,
         ignored: T,
-    ) -> i64
+    ) -> Result<i64, std::rc::Rc<dyn Object>>
     where
         Self: Sized;
 
-    fn size(&self) -> i64;
-}
-impl Object for dyn Store {
-    fn as_any(&self) -> &dyn std::any::Any {
-        DartAny::as_any(self)
-    }
-    fn runtime_type(&self) -> Type {
-        DartAny::dart_runtime_type(self)
-    }
+    fn count_of__erased(
+        &self,
+        items: Vec<Object>,
+        ignored: Object,
+    ) -> Result<i64, std::rc::Rc<dyn Object>>;
+
+    /// Not generic, so it stays in the vtable and `dyn Store` can call it.
+    fn size(&self) -> Result<i64, std::rc::Rc<dyn Object>>;
 }
 impl PartialEq for dyn Store {
     fn eq(&self, other: &Self) -> bool {
@@ -152,45 +598,140 @@ pub struct Shelf {
 }
 
 impl Shelf {
-    pub const fn new(width: i64) -> Self {
-        Self { width: width }
+    pub const fn new(width: i64) -> Result<Self, std::rc::Rc<dyn Object>> {
+        Ok({ Self { width: width } })
     }
 
-    pub fn count_of<T: Clone + PartialEq + std::fmt::Debug + 'static>(
+    pub fn count_of<
+        T: Clone
+            + DartNullable<Or: Clone + DartEq + FromDynamic + DartAny>
+            + DartEq
+            + FromDynamic
+            + DartAny
+            + 'static,
+    >(
         &self,
         mut items: Vec<T>,
         ignored: T,
-    ) -> i64 {
-        ((items.len() as i64) + self.width)
+    ) -> Result<i64, std::rc::Rc<dyn Object>> {
+        Ok(((items.len() as i64) + self.width))
     }
 
-    pub fn size(&self) -> i64 {
-        self.width
+    pub fn size(&self) -> Result<i64, std::rc::Rc<dyn Object>> {
+        Ok(self.width)
+    }
+}
+
+impl FromDynamic for Shelf {
+    fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
+        value.dart_cast_any::<Self>()
+    }
+    fn from_same(value: &Self) -> Option<Self> {
+        Some(value.clone())
+    }
+}
+
+impl NativeAnswer for Shelf {
+    fn from_answer(answer: std::rc::Rc<dyn Object>, symbol: &str) -> Self {
+        match answer.dart_cast_any::<Self>() {
+            Some(value) => value,
+            None => panic!(
+                "native `{}` answered {:?} where Shelf was declared",
+                symbol, answer
+            ),
+        }
+    }
+    fn absent() -> Self {
+        panic!("native answered nothing where Shelf was declared")
+    }
+}
+
+impl DartNullable for Shelf {
+    type Or = Option<Self>;
+    fn option(or: Option<Self>) -> Option<Self> {
+        or
+    }
+    fn from_option(option: Option<Self>) -> Option<Self> {
+        option
+    }
+}
+
+impl DartEq for Shelf {
+    fn dart_eq(&self, other: &Self) -> bool {
+        self == other
     }
 }
 
 impl DartAny for Shelf {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
+    fn dart_to_string(&self) -> String {
+        format!("Instance of '{}'", "Shelf")
+    }
+    fn dart_eq_any(&self, other: &dyn std::any::Any) -> bool {
+        match other.downcast_ref::<Self>() {
+            Some(o) => self.dart_eq(o),
+            None => false,
+        }
+    }
+    fn dart_hash_any(&self) -> i64 {
+        self.dart_hash_code()
     }
     fn dart_runtime_type(&self) -> Type {
-        Type { name: "Shelf" }
+        Type::of("Shelf")
+    }
+    fn dart_cast(&self, __t: std::any::TypeId) -> Option<std::boxed::Box<dyn std::any::Any>> {
+        if __t == std::any::TypeId::of::<Self>()
+            || __t == std::any::TypeId::of::<std::rc::Rc<Self>>()
+        {
+            return Some(std::boxed::Box::new(std::rc::Rc::new(self.clone())));
+        }
+        if __t == std::any::TypeId::of::<dyn Object>()
+            || __t == std::any::TypeId::of::<std::rc::Rc<dyn Object>>()
+        {
+            return Some(std::boxed::Box::new(
+                std::rc::Rc::new(self.clone()) as std::rc::Rc<dyn Object>
+            ));
+        }
+        if __t == std::any::TypeId::of::<dyn Store>()
+            || __t == std::any::TypeId::of::<std::rc::Rc<dyn Store>>()
+        {
+            return Some(std::boxed::Box::new(self.dart_self_store()));
+        }
+        None
     }
 }
 
 impl Store for Shelf {
-    fn count_of<T: Clone + PartialEq + std::fmt::Debug + 'static>(
+    fn dart_self_store(&self) -> std::rc::Rc<dyn Store> {
+        std::rc::Rc::new(self.clone())
+    }
+
+    fn count_of<
+        T: Clone
+            + DartNullable<Or: Clone + DartEq + FromDynamic + DartAny>
+            + DartEq
+            + FromDynamic
+            + DartAny
+            + 'static,
+    >(
         &self,
         items: Vec<T>,
         ignored: T,
-    ) -> i64
+    ) -> Result<i64, std::rc::Rc<dyn Object>>
     where
         Self: Sized,
     {
-        Shelf::count_of(self, items, ignored)
+        Shelf::count_of::<T>(self, items, ignored)
     }
 
-    fn size(&self) -> i64 {
+    fn count_of__erased(
+        &self,
+        items: Vec<Object>,
+        ignored: Object,
+    ) -> Result<i64, std::rc::Rc<dyn Object>> {
+        <Self as Store>::count_of::<std::rc::Rc<dyn Object>>(self, items, ignored)
+    }
+
+    fn size(&self) -> Result<i64, std::rc::Rc<dyn Object>> {
         Shelf::size(self)
     }
 }
@@ -204,20 +745,85 @@ impl Store for Shelf {
 pub struct Shelves {}
 
 impl Shelves {
-    pub const fn new() -> Self {
-        Self {}
+    pub const fn new() -> Result<Self, std::rc::Rc<dyn Object>> {
+        Ok({ Self {} })
     }
 
-    pub fn size_of(mut s: std::rc::Rc<dyn Store>) -> i64 {
-        s.size()
+    /// Through the trait object: only the non-generic half is reachable.
+    pub fn size_of(mut s: std::rc::Rc<dyn Store>) -> Result<i64, std::rc::Rc<dyn Object>> {
+        Ok(s.size()?)
+    }
+}
+
+impl FromDynamic for Shelves {
+    fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
+        value.dart_cast_any::<Self>()
+    }
+    fn from_same(value: &Self) -> Option<Self> {
+        Some(value.clone())
+    }
+}
+
+impl NativeAnswer for Shelves {
+    fn from_answer(answer: std::rc::Rc<dyn Object>, symbol: &str) -> Self {
+        match answer.dart_cast_any::<Self>() {
+            Some(value) => value,
+            None => panic!(
+                "native `{}` answered {:?} where Shelves was declared",
+                symbol, answer
+            ),
+        }
+    }
+    fn absent() -> Self {
+        panic!("native answered nothing where Shelves was declared")
+    }
+}
+
+impl DartNullable for Shelves {
+    type Or = Option<Self>;
+    fn option(or: Option<Self>) -> Option<Self> {
+        or
+    }
+    fn from_option(option: Option<Self>) -> Option<Self> {
+        option
+    }
+}
+
+impl DartEq for Shelves {
+    fn dart_eq(&self, other: &Self) -> bool {
+        self == other
     }
 }
 
 impl DartAny for Shelves {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
+    fn dart_to_string(&self) -> String {
+        format!("Instance of '{}'", "Shelves")
+    }
+    fn dart_eq_any(&self, other: &dyn std::any::Any) -> bool {
+        match other.downcast_ref::<Self>() {
+            Some(o) => self.dart_eq(o),
+            None => false,
+        }
+    }
+    fn dart_hash_any(&self) -> i64 {
+        self.dart_hash_code()
     }
     fn dart_runtime_type(&self) -> Type {
-        Type { name: "Shelves" }
+        Type::of("Shelves")
+    }
+    fn dart_cast(&self, __t: std::any::TypeId) -> Option<std::boxed::Box<dyn std::any::Any>> {
+        if __t == std::any::TypeId::of::<Self>()
+            || __t == std::any::TypeId::of::<std::rc::Rc<Self>>()
+        {
+            return Some(std::boxed::Box::new(std::rc::Rc::new(self.clone())));
+        }
+        if __t == std::any::TypeId::of::<dyn Object>()
+            || __t == std::any::TypeId::of::<std::rc::Rc<dyn Object>>()
+        {
+            return Some(std::boxed::Box::new(
+                std::rc::Rc::new(self.clone()) as std::rc::Rc<dyn Object>
+            ));
+        }
+        None
     }
 }

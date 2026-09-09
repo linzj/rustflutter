@@ -8,23 +8,31 @@ use crate::Type;
 
 /// The body of `Shape.area`, reachable from an
 /// override the way Dart's `super.area` is.
-pub fn shape_super_area<__Self: Shape + ?Sized + 'static>(this_: &__Self, scale: f64) -> f64 {
-    (100.0 * scale)
+pub fn shape_super_area<__Self: Shape + ?Sized + 'static>(
+    this_: &__Self,
+    scale: f64,
+) -> Result<f64, std::rc::Rc<dyn Object>> {
+    Ok((100.0 * scale))
+}
+
+impl DartEq for dyn Shape {
+    fn dart_eq(&self, other: &Self) -> bool {
+        std::ptr::addr_eq(self as *const Self, other as *const Self)
+    }
+    fn dart_hash_code(&self) -> i64 {
+        (self as *const Self as *const u8 as usize as i64) & 0x3fff_ffff
+    }
 }
 
 pub trait Shape: DartAny + std::fmt::Debug {
-    fn perimeter(&self) -> f64;
+    fn dart_self_shape(&self) -> std::rc::Rc<dyn Shape>;
 
-    fn area(&self, scale: f64) -> f64 {
+    fn perimeter(&self) -> Result<f64, std::rc::Rc<dyn Object>>;
+
+    /// The base's own answer. An override that calls `super.area()` must reach
+    /// *this* body.
+    fn area(&self, scale: f64) -> Result<f64, std::rc::Rc<dyn Object>> {
         shape_super_area(self, scale)
-    }
-}
-impl Object for dyn Shape {
-    fn as_any(&self) -> &dyn std::any::Any {
-        DartAny::as_any(self)
-    }
-    fn runtime_type(&self) -> Type {
-        DartAny::dart_runtime_type(self)
     }
 }
 impl PartialEq for dyn Shape {
@@ -48,34 +56,109 @@ impl std::hash::Hash for dyn Shape {
 pub struct Doubled {}
 
 impl Doubled {
-    pub const fn new() -> Self {
-        Self {}
+    pub const fn new() -> Result<Self, std::rc::Rc<dyn Object>> {
+        Ok({ Self {} })
     }
 
-    pub fn area(&self, scale: f64) -> f64 {
-        (shape_super_area(self, scale) + 1.0)
+    /// Adds to whatever the base said. If `super.area` came back here instead,
+    /// this would recurse forever rather than return 201.
+    pub fn area(&self, scale: f64) -> Result<f64, std::rc::Rc<dyn Object>> {
+        Ok((shape_super_area(self, scale)? + 1.0))
     }
 
-    pub fn perimeter(&self) -> f64 {
-        7.0
+    pub fn perimeter(&self) -> Result<f64, std::rc::Rc<dyn Object>> {
+        Ok(7.0)
+    }
+}
+
+impl FromDynamic for Doubled {
+    fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
+        value.dart_cast_any::<Self>()
+    }
+    fn from_same(value: &Self) -> Option<Self> {
+        Some(value.clone())
+    }
+}
+
+impl NativeAnswer for Doubled {
+    fn from_answer(answer: std::rc::Rc<dyn Object>, symbol: &str) -> Self {
+        match answer.dart_cast_any::<Self>() {
+            Some(value) => value,
+            None => panic!(
+                "native `{}` answered {:?} where Doubled was declared",
+                symbol, answer
+            ),
+        }
+    }
+    fn absent() -> Self {
+        panic!("native answered nothing where Doubled was declared")
+    }
+}
+
+impl DartNullable for Doubled {
+    type Or = Option<Self>;
+    fn option(or: Option<Self>) -> Option<Self> {
+        or
+    }
+    fn from_option(option: Option<Self>) -> Option<Self> {
+        option
+    }
+}
+
+impl DartEq for Doubled {
+    fn dart_eq(&self, other: &Self) -> bool {
+        self == other
     }
 }
 
 impl DartAny for Doubled {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
+    fn dart_to_string(&self) -> String {
+        format!("Instance of '{}'", "Doubled")
+    }
+    fn dart_eq_any(&self, other: &dyn std::any::Any) -> bool {
+        match other.downcast_ref::<Self>() {
+            Some(o) => self.dart_eq(o),
+            None => false,
+        }
+    }
+    fn dart_hash_any(&self) -> i64 {
+        self.dart_hash_code()
     }
     fn dart_runtime_type(&self) -> Type {
-        Type { name: "Doubled" }
+        Type::of("Doubled")
+    }
+    fn dart_cast(&self, __t: std::any::TypeId) -> Option<std::boxed::Box<dyn std::any::Any>> {
+        if __t == std::any::TypeId::of::<Self>()
+            || __t == std::any::TypeId::of::<std::rc::Rc<Self>>()
+        {
+            return Some(std::boxed::Box::new(std::rc::Rc::new(self.clone())));
+        }
+        if __t == std::any::TypeId::of::<dyn Object>()
+            || __t == std::any::TypeId::of::<std::rc::Rc<dyn Object>>()
+        {
+            return Some(std::boxed::Box::new(
+                std::rc::Rc::new(self.clone()) as std::rc::Rc<dyn Object>
+            ));
+        }
+        if __t == std::any::TypeId::of::<dyn Shape>()
+            || __t == std::any::TypeId::of::<std::rc::Rc<dyn Shape>>()
+        {
+            return Some(std::boxed::Box::new(self.dart_self_shape()));
+        }
+        None
     }
 }
 
 impl Shape for Doubled {
-    fn perimeter(&self) -> f64 {
+    fn dart_self_shape(&self) -> std::rc::Rc<dyn Shape> {
+        std::rc::Rc::new(self.clone())
+    }
+
+    fn perimeter(&self) -> Result<f64, std::rc::Rc<dyn Object>> {
         Doubled::perimeter(self)
     }
 
-    fn area(&self, scale: f64) -> f64 {
+    fn area(&self, scale: f64) -> Result<f64, std::rc::Rc<dyn Object>> {
         Doubled::area(self, scale)
     }
 }
@@ -89,26 +172,101 @@ impl Shape for Doubled {
 pub struct Untouched {}
 
 impl Untouched {
-    pub const fn new() -> Self {
-        Self {}
+    pub const fn new() -> Result<Self, std::rc::Rc<dyn Object>> {
+        Ok({ Self {} })
     }
 
-    pub fn perimeter(&self) -> f64 {
-        3.0
+    /// Does not override `area`, so it gets the trait's default -- which must be
+    /// the same body the base declared.
+    pub fn perimeter(&self) -> Result<f64, std::rc::Rc<dyn Object>> {
+        Ok(3.0)
+    }
+}
+
+impl FromDynamic for Untouched {
+    fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
+        value.dart_cast_any::<Self>()
+    }
+    fn from_same(value: &Self) -> Option<Self> {
+        Some(value.clone())
+    }
+}
+
+impl NativeAnswer for Untouched {
+    fn from_answer(answer: std::rc::Rc<dyn Object>, symbol: &str) -> Self {
+        match answer.dart_cast_any::<Self>() {
+            Some(value) => value,
+            None => panic!(
+                "native `{}` answered {:?} where Untouched was declared",
+                symbol, answer
+            ),
+        }
+    }
+    fn absent() -> Self {
+        panic!("native answered nothing where Untouched was declared")
+    }
+}
+
+impl DartNullable for Untouched {
+    type Or = Option<Self>;
+    fn option(or: Option<Self>) -> Option<Self> {
+        or
+    }
+    fn from_option(option: Option<Self>) -> Option<Self> {
+        option
+    }
+}
+
+impl DartEq for Untouched {
+    fn dart_eq(&self, other: &Self) -> bool {
+        self == other
     }
 }
 
 impl DartAny for Untouched {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
+    fn dart_to_string(&self) -> String {
+        format!("Instance of '{}'", "Untouched")
+    }
+    fn dart_eq_any(&self, other: &dyn std::any::Any) -> bool {
+        match other.downcast_ref::<Self>() {
+            Some(o) => self.dart_eq(o),
+            None => false,
+        }
+    }
+    fn dart_hash_any(&self) -> i64 {
+        self.dart_hash_code()
     }
     fn dart_runtime_type(&self) -> Type {
-        Type { name: "Untouched" }
+        Type::of("Untouched")
+    }
+    fn dart_cast(&self, __t: std::any::TypeId) -> Option<std::boxed::Box<dyn std::any::Any>> {
+        if __t == std::any::TypeId::of::<Self>()
+            || __t == std::any::TypeId::of::<std::rc::Rc<Self>>()
+        {
+            return Some(std::boxed::Box::new(std::rc::Rc::new(self.clone())));
+        }
+        if __t == std::any::TypeId::of::<dyn Object>()
+            || __t == std::any::TypeId::of::<std::rc::Rc<dyn Object>>()
+        {
+            return Some(std::boxed::Box::new(
+                std::rc::Rc::new(self.clone()) as std::rc::Rc<dyn Object>
+            ));
+        }
+        if __t == std::any::TypeId::of::<dyn Shape>()
+            || __t == std::any::TypeId::of::<std::rc::Rc<dyn Shape>>()
+        {
+            return Some(std::boxed::Box::new(self.dart_self_shape()));
+        }
+        None
     }
 }
 
 impl Shape for Untouched {
-    fn perimeter(&self) -> f64 {
+    fn dart_self_shape(&self) -> std::rc::Rc<dyn Shape> {
+        std::rc::Rc::new(self.clone())
+    }
+
+    fn perimeter(&self) -> Result<f64, std::rc::Rc<dyn Object>> {
         Untouched::perimeter(self)
     }
 }
@@ -116,33 +274,44 @@ impl Shape for Untouched {
 // Generated by tools/dart2rust from upstream `Untranslatable`
 // (abstract -> trait).
 
+/// A base whose method cannot be translated, so a subclass calling `super` on
+/// it must be stopped rather than pointed at a function nobody wrote.
+
 /// The body of `Untranslatable.describe`, reachable from an
 /// override the way Dart's `super.describe` is.
 pub fn untranslatable_super_describe<__Self: Untranslatable + ?Sized + 'static>(
     this_: &__Self,
-) -> String {
+) -> Result<String, std::rc::Rc<dyn Object>> {
     let mut out: String = "".to_string();
     let mut i: i64 = 0;
     while (i < 2) {
         out = format!("{}{}", out, "x".to_string());
         i = (i + 1);
     }
-    out.clone()
+    Ok(out)
+}
+
+impl DartEq for dyn Untranslatable {
+    fn dart_eq(&self, other: &Self) -> bool {
+        std::ptr::addr_eq(self as *const Self, other as *const Self)
+    }
+    fn dart_hash_code(&self) -> i64 {
+        (self as *const Self as *const u8 as usize as i64) & 0x3fff_ffff
+    }
 }
 
 pub trait Untranslatable: DartAny + std::fmt::Debug {
-    fn size(&self) -> f64;
+    fn dart_self_untranslatable(&self) -> std::rc::Rc<dyn Untranslatable>;
 
-    fn describe(&self) -> String {
+    fn size(&self) -> Result<f64, std::rc::Rc<dyn Object>>;
+
+    /// Uses a `for` loop, which is not translated yet, so this method is
+    /// refused. It was a cascade until round twenty-three made cascades work --
+    /// a fixture whose "untranslatable" construct becomes translatable stops
+    /// testing what it was for, and the two front ends disagreeing is what said
+    /// so.
+    fn describe(&self) -> Result<String, std::rc::Rc<dyn Object>> {
         untranslatable_super_describe(self)
-    }
-}
-impl Object for dyn Untranslatable {
-    fn as_any(&self) -> &dyn std::any::Any {
-        DartAny::as_any(self)
-    }
-    fn runtime_type(&self) -> Type {
-        DartAny::dart_runtime_type(self)
     }
 }
 impl PartialEq for dyn Untranslatable {
@@ -166,34 +335,109 @@ impl std::hash::Hash for dyn Untranslatable {
 pub struct UsesIt {}
 
 impl UsesIt {
-    pub const fn new() -> Self {
-        Self {}
+    pub const fn new() -> Result<Self, std::rc::Rc<dyn Object>> {
+        Ok({ Self {} })
     }
 
-    pub fn describe(&self) -> String {
-        untranslatable_super_describe(self)
+    /// Calls super on a method the base could not translate. The compiler must
+    /// refuse this, not emit `untranslatable_super_describe(self)`.
+    pub fn describe(&self) -> Result<String, std::rc::Rc<dyn Object>> {
+        Ok(untranslatable_super_describe(self)?)
     }
 
-    pub fn size(&self) -> f64 {
-        5.0
+    pub fn size(&self) -> Result<f64, std::rc::Rc<dyn Object>> {
+        Ok(5.0)
+    }
+}
+
+impl FromDynamic for UsesIt {
+    fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
+        value.dart_cast_any::<Self>()
+    }
+    fn from_same(value: &Self) -> Option<Self> {
+        Some(value.clone())
+    }
+}
+
+impl NativeAnswer for UsesIt {
+    fn from_answer(answer: std::rc::Rc<dyn Object>, symbol: &str) -> Self {
+        match answer.dart_cast_any::<Self>() {
+            Some(value) => value,
+            None => panic!(
+                "native `{}` answered {:?} where UsesIt was declared",
+                symbol, answer
+            ),
+        }
+    }
+    fn absent() -> Self {
+        panic!("native answered nothing where UsesIt was declared")
+    }
+}
+
+impl DartNullable for UsesIt {
+    type Or = Option<Self>;
+    fn option(or: Option<Self>) -> Option<Self> {
+        or
+    }
+    fn from_option(option: Option<Self>) -> Option<Self> {
+        option
+    }
+}
+
+impl DartEq for UsesIt {
+    fn dart_eq(&self, other: &Self) -> bool {
+        self == other
     }
 }
 
 impl DartAny for UsesIt {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
+    fn dart_to_string(&self) -> String {
+        format!("Instance of '{}'", "UsesIt")
+    }
+    fn dart_eq_any(&self, other: &dyn std::any::Any) -> bool {
+        match other.downcast_ref::<Self>() {
+            Some(o) => self.dart_eq(o),
+            None => false,
+        }
+    }
+    fn dart_hash_any(&self) -> i64 {
+        self.dart_hash_code()
     }
     fn dart_runtime_type(&self) -> Type {
-        Type { name: "UsesIt" }
+        Type::of("UsesIt")
+    }
+    fn dart_cast(&self, __t: std::any::TypeId) -> Option<std::boxed::Box<dyn std::any::Any>> {
+        if __t == std::any::TypeId::of::<Self>()
+            || __t == std::any::TypeId::of::<std::rc::Rc<Self>>()
+        {
+            return Some(std::boxed::Box::new(std::rc::Rc::new(self.clone())));
+        }
+        if __t == std::any::TypeId::of::<dyn Object>()
+            || __t == std::any::TypeId::of::<std::rc::Rc<dyn Object>>()
+        {
+            return Some(std::boxed::Box::new(
+                std::rc::Rc::new(self.clone()) as std::rc::Rc<dyn Object>
+            ));
+        }
+        if __t == std::any::TypeId::of::<dyn Untranslatable>()
+            || __t == std::any::TypeId::of::<std::rc::Rc<dyn Untranslatable>>()
+        {
+            return Some(std::boxed::Box::new(self.dart_self_untranslatable()));
+        }
+        None
     }
 }
 
 impl Untranslatable for UsesIt {
-    fn size(&self) -> f64 {
+    fn dart_self_untranslatable(&self) -> std::rc::Rc<dyn Untranslatable> {
+        std::rc::Rc::new(self.clone())
+    }
+
+    fn size(&self) -> Result<f64, std::rc::Rc<dyn Object>> {
         UsesIt::size(self)
     }
 
-    fn describe(&self) -> String {
+    fn describe(&self) -> Result<String, std::rc::Rc<dyn Object>> {
         UsesIt::describe(self)
     }
 }
@@ -203,26 +447,92 @@ impl Untranslatable for UsesIt {
 // Translated, not ported: this is the compiler's output, not a
 // hand-written re-expression. See tools/dart2rust/README.md.
 
+/// `Object` is the one base that is never in any file: every Dart class
+/// already extends it, and there is nothing to emit for it. `super.toString()`
+/// was refused for 198 members on that ground, which was the wrong ground --
+/// Dart's own `Object.toString` returns `Instance of 'Foo'`, and so does this.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct NamesItself {}
 
 impl NamesItself {
-    pub const fn new() -> Self {
-        Self {}
+    pub const fn new() -> Result<Self, std::rc::Rc<dyn Object>> {
+        Ok({ Self {} })
     }
 
-    pub fn describe(&self) -> String {
-        format!("Instance of '{}'", "NamesItself")
+    pub fn describe(&self) -> Result<String, std::rc::Rc<dyn Object>> {
+        Ok(format!("Instance of '{}'", "NamesItself"))
+    }
+}
+
+impl FromDynamic for NamesItself {
+    fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
+        value.dart_cast_any::<Self>()
+    }
+    fn from_same(value: &Self) -> Option<Self> {
+        Some(value.clone())
+    }
+}
+
+impl NativeAnswer for NamesItself {
+    fn from_answer(answer: std::rc::Rc<dyn Object>, symbol: &str) -> Self {
+        match answer.dart_cast_any::<Self>() {
+            Some(value) => value,
+            None => panic!(
+                "native `{}` answered {:?} where NamesItself was declared",
+                symbol, answer
+            ),
+        }
+    }
+    fn absent() -> Self {
+        panic!("native answered nothing where NamesItself was declared")
+    }
+}
+
+impl DartNullable for NamesItself {
+    type Or = Option<Self>;
+    fn option(or: Option<Self>) -> Option<Self> {
+        or
+    }
+    fn from_option(option: Option<Self>) -> Option<Self> {
+        option
+    }
+}
+
+impl DartEq for NamesItself {
+    fn dart_eq(&self, other: &Self) -> bool {
+        self == other
     }
 }
 
 impl DartAny for NamesItself {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
+    fn dart_to_string(&self) -> String {
+        format!("Instance of '{}'", "NamesItself")
+    }
+    fn dart_eq_any(&self, other: &dyn std::any::Any) -> bool {
+        match other.downcast_ref::<Self>() {
+            Some(o) => self.dart_eq(o),
+            None => false,
+        }
+    }
+    fn dart_hash_any(&self) -> i64 {
+        self.dart_hash_code()
     }
     fn dart_runtime_type(&self) -> Type {
-        Type {
-            name: "NamesItself",
+        Type::of("NamesItself")
+    }
+    fn dart_cast(&self, __t: std::any::TypeId) -> Option<std::boxed::Box<dyn std::any::Any>> {
+        if __t == std::any::TypeId::of::<Self>()
+            || __t == std::any::TypeId::of::<std::rc::Rc<Self>>()
+        {
+            return Some(std::boxed::Box::new(std::rc::Rc::new(self.clone())));
         }
+        if __t == std::any::TypeId::of::<dyn Object>()
+            || __t == std::any::TypeId::of::<std::rc::Rc<dyn Object>>()
+        {
+            return Some(std::boxed::Box::new(
+                std::rc::Rc::new(self.clone()) as std::rc::Rc<dyn Object>
+            ));
+        }
+        None
     }
 }

@@ -1,3 +1,4 @@
+use crate::dart_prelude::Object;
 use crate::dart_prelude::*;
 use crate::DartAny;
 use crate::Type;
@@ -7,27 +8,94 @@ use crate::Type;
 // Translated, not ported: this is the compiler's output, not a
 // hand-written re-expression. See tools/dart2rust/README.md.
 
+/// Something to be `late` about that is not `Copy`, so a read cannot just take
+/// the value out.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Engine {
     pub name: String,
 }
 
 impl Engine {
-    pub fn new(name: String) -> Self {
-        Self { name: name.clone() }
+    pub fn new(name: String) -> Result<Self, std::rc::Rc<dyn Object>> {
+        dart_register::<Self>();
+        Ok({ Self { name: name } })
     }
 
-    pub fn run(&self, x: f64) -> f64 {
-        (x * 2.0)
+    pub fn run(&self, x: f64) -> Result<f64, std::rc::Rc<dyn Object>> {
+        Ok((x * 2.0))
+    }
+}
+
+impl FromDynamic for Engine {
+    fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
+        value.dart_cast_any::<Self>()
+    }
+    fn from_same(value: &Self) -> Option<Self> {
+        Some(value.clone())
+    }
+}
+
+impl NativeAnswer for Engine {
+    fn from_answer(answer: std::rc::Rc<dyn Object>, symbol: &str) -> Self {
+        match answer.dart_cast_any::<Self>() {
+            Some(value) => value,
+            None => panic!(
+                "native `{}` answered {:?} where Engine was declared",
+                symbol, answer
+            ),
+        }
+    }
+    fn absent() -> Self {
+        panic!("native answered nothing where Engine was declared")
+    }
+}
+
+impl DartNullable for Engine {
+    type Or = Option<Self>;
+    fn option(or: Option<Self>) -> Option<Self> {
+        or
+    }
+    fn from_option(option: Option<Self>) -> Option<Self> {
+        option
+    }
+}
+
+impl DartEq for Engine {
+    fn dart_eq(&self, other: &Self) -> bool {
+        self == other
     }
 }
 
 impl DartAny for Engine {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
+    fn dart_to_string(&self) -> String {
+        format!("Instance of '{}'", "Engine")
+    }
+    fn dart_eq_any(&self, other: &dyn std::any::Any) -> bool {
+        match other.downcast_ref::<Self>() {
+            Some(o) => self.dart_eq(o),
+            None => false,
+        }
+    }
+    fn dart_hash_any(&self) -> i64 {
+        self.dart_hash_code()
     }
     fn dart_runtime_type(&self) -> Type {
-        Type { name: "Engine" }
+        Type::of("Engine")
+    }
+    fn dart_cast(&self, __t: std::any::TypeId) -> Option<std::boxed::Box<dyn std::any::Any>> {
+        if __t == std::any::TypeId::of::<Self>()
+            || __t == std::any::TypeId::of::<std::rc::Rc<Self>>()
+        {
+            return Some(std::boxed::Box::new(std::rc::Rc::new(self.clone())));
+        }
+        if __t == std::any::TypeId::of::<dyn Object>()
+            || __t == std::any::TypeId::of::<std::rc::Rc<dyn Object>>()
+        {
+            return Some(std::boxed::Box::new(
+                std::rc::Rc::new(self.clone()) as std::rc::Rc<dyn Object>
+            ));
+        }
+        None
     }
 }
 
@@ -38,46 +106,122 @@ impl DartAny for Engine {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Machine {
+    /// A `Copy` one: the read takes the value out whole, which is what a field
+    /// read does anyway.
     pub steps: Option<i64>,
+    /// A `late final`: assigned once, and never again. Still `Option<T>` -- what
+    /// `final` promises is one write, not an early one.
     pub engine: Option<Engine>,
 }
 
 impl Machine {
-    pub fn new() -> Self {
-        Self {
-            steps: None,
-            engine: None,
+    pub fn new() -> Result<Self, std::rc::Rc<dyn Object>> {
+        dart_register::<Self>();
+        Ok({
+            Self {
+                steps: None,
+                engine: None,
+            }
+        })
+    }
+
+    pub fn start(&mut self, e: Engine) -> Result<(), std::rc::Rc<dyn Object>> {
+        self.engine = Some(e);
+        self.steps = Some(0);
+        Ok(())
+    }
+
+    /// Reads both kinds in one body: the reference one through `as_ref`, the
+    /// value one by unwrapping the `Option` itself.
+    pub fn advance(&mut self, x: f64) -> Result<f64, std::rc::Rc<dyn Object>> {
+        self.steps = Some((self.steps.unwrap() + 1));
+        Ok(self.engine.clone().unwrap().run(x)?)
+    }
+
+    pub fn taken(&self) -> Result<i64, std::rc::Rc<dyn Object>> {
+        Ok(self.steps.unwrap())
+    }
+
+    /// A read that only borrows, which is the common case: a method call and a
+    /// field read on the thing that was `late`.
+    pub fn describe(&self) -> Result<String, std::rc::Rc<dyn Object>> {
+        Ok(format!(
+            "ran {} {} times",
+            self.engine.clone().unwrap().name.clone(),
+            self.steps.unwrap()
+        ))
+    }
+}
+
+impl FromDynamic for Machine {
+    fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
+        value.dart_cast_any::<Self>()
+    }
+    fn from_same(value: &Self) -> Option<Self> {
+        Some(value.clone())
+    }
+}
+
+impl NativeAnswer for Machine {
+    fn from_answer(answer: std::rc::Rc<dyn Object>, symbol: &str) -> Self {
+        match answer.dart_cast_any::<Self>() {
+            Some(value) => value,
+            None => panic!(
+                "native `{}` answered {:?} where Machine was declared",
+                symbol, answer
+            ),
         }
     }
-
-    pub fn start(&mut self, mut e: Engine) -> () {
-        self.engine = Some(e.clone());
-        self.steps = Some(0);
+    fn absent() -> Self {
+        panic!("native answered nothing where Machine was declared")
     }
+}
 
-    pub fn advance(&mut self, x: f64) -> f64 {
-        self.steps = Some((self.steps.unwrap() + 1));
-        self.engine.clone().unwrap().run(x)
+impl DartNullable for Machine {
+    type Or = Option<Self>;
+    fn option(or: Option<Self>) -> Option<Self> {
+        or
     }
-
-    pub fn taken(&self) -> i64 {
-        self.steps.unwrap()
+    fn from_option(option: Option<Self>) -> Option<Self> {
+        option
     }
+}
 
-    pub fn describe(&self) -> String {
-        format!(
-            "ran {} {} times",
-            self.engine.clone().unwrap().name,
-            self.steps.unwrap()
-        )
+impl DartEq for Machine {
+    fn dart_eq(&self, other: &Self) -> bool {
+        self == other
     }
 }
 
 impl DartAny for Machine {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
+    fn dart_to_string(&self) -> String {
+        format!("Instance of '{}'", "Machine")
+    }
+    fn dart_eq_any(&self, other: &dyn std::any::Any) -> bool {
+        match other.downcast_ref::<Self>() {
+            Some(o) => self.dart_eq(o),
+            None => false,
+        }
+    }
+    fn dart_hash_any(&self) -> i64 {
+        self.dart_hash_code()
     }
     fn dart_runtime_type(&self) -> Type {
-        Type { name: "Machine" }
+        Type::of("Machine")
+    }
+    fn dart_cast(&self, __t: std::any::TypeId) -> Option<std::boxed::Box<dyn std::any::Any>> {
+        if __t == std::any::TypeId::of::<Self>()
+            || __t == std::any::TypeId::of::<std::rc::Rc<Self>>()
+        {
+            return Some(std::boxed::Box::new(std::rc::Rc::new(self.clone())));
+        }
+        if __t == std::any::TypeId::of::<dyn Object>()
+            || __t == std::any::TypeId::of::<std::rc::Rc<dyn Object>>()
+        {
+            return Some(std::boxed::Box::new(
+                std::rc::Rc::new(self.clone()) as std::rc::Rc<dyn Object>
+            ));
+        }
+        None
     }
 }

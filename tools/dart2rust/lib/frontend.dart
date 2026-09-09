@@ -1464,7 +1464,11 @@ class Frontend {
       return IrSetter(
         receiver,
         name,
-        combined(IrCall(receiver, name, const [])),
+        // `readElement` is the getter a compound assignment reads through --
+        // null for a plain `=`, where `combined` never looks at this call.
+        combined(
+          IrCall(receiver, name, const [], fails: _callFails(node.readElement)),
+        ),
       );
     }
     // A field the enclosing closure captured is written through its cell, and

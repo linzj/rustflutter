@@ -1,3 +1,4 @@
+use crate::dart_prelude::Object;
 use crate::dart_prelude::*;
 use crate::DartAny;
 use crate::Type;
@@ -14,43 +15,123 @@ pub struct Counter {
 }
 
 impl Counter {
-    pub fn new(value: f64, step: f64) -> Self {
-        Self {
-            value: value,
-            step: step,
+    pub fn new(value: f64, step: f64) -> Result<Self, std::rc::Rc<dyn Object>> {
+        dart_register::<Self>();
+        Ok({
+            Self {
+                value: value,
+                step: step,
+            }
+        })
+    }
+
+    /// Writes a field: `&mut self`.
+    pub fn bump(&mut self) -> Result<(), std::rc::Rc<dyn Object>> {
+        self.value = (self.value + self.step);
+        Ok(())
+    }
+
+    /// Reads only: stays `&self`.
+    pub fn doubled(&self) -> Result<f64, std::rc::Rc<dyn Object>> {
+        Ok((self.value * 2.0))
+    }
+
+    /// Two hops. Declared *before* `middle` on purpose: in declaration order a single pass
+    /// reaches `middle` only after it has passed `outer`, so it leaves this one
+    /// as `&self`. With the order the other way round the fixpoint is invisible
+    /// and a mutation removing it survives -- which it did, the first time.
+    pub fn outer(&mut self) -> Result<(), std::rc::Rc<dyn Object>> {
+        self.middle()?;
+        Ok(())
+    }
+
+    /// Calls a mutating method. Mutating by contagion, one hop.
+    pub fn middle(&mut self) -> Result<(), std::rc::Rc<dyn Object>> {
+        self.bump()?;
+        Ok(())
+    }
+
+    /// Calls only a non-mutating method, so it stays `&self`.
+    pub fn quiet(&self) -> Result<f64, std::rc::Rc<dyn Object>> {
+        Ok((self.doubled()? + 1.0))
+    }
+
+    /// A compound write.
+    pub fn scale(&mut self, by: f64) -> Result<(), std::rc::Rc<dyn Object>> {
+        self.value = (self.value * by);
+        Ok(())
+    }
+}
+
+impl FromDynamic for Counter {
+    fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
+        value.dart_cast_any::<Self>()
+    }
+    fn from_same(value: &Self) -> Option<Self> {
+        Some(value.clone())
+    }
+}
+
+impl NativeAnswer for Counter {
+    fn from_answer(answer: std::rc::Rc<dyn Object>, symbol: &str) -> Self {
+        match answer.dart_cast_any::<Self>() {
+            Some(value) => value,
+            None => panic!(
+                "native `{}` answered {:?} where Counter was declared",
+                symbol, answer
+            ),
         }
     }
-
-    pub fn bump(&mut self) -> () {
-        self.value = (self.value + self.step);
+    fn absent() -> Self {
+        panic!("native answered nothing where Counter was declared")
     }
+}
 
-    pub fn doubled(&self) -> f64 {
-        (self.value * 2.0)
+impl DartNullable for Counter {
+    type Or = Option<Self>;
+    fn option(or: Option<Self>) -> Option<Self> {
+        or
     }
-
-    pub fn outer(&mut self) -> () {
-        self.middle();
+    fn from_option(option: Option<Self>) -> Option<Self> {
+        option
     }
+}
 
-    pub fn middle(&mut self) -> () {
-        self.bump();
-    }
-
-    pub fn quiet(&self) -> f64 {
-        (self.doubled() + 1.0)
-    }
-
-    pub fn scale(&mut self, by: f64) -> () {
-        self.value = (self.value * by);
+impl DartEq for Counter {
+    fn dart_eq(&self, other: &Self) -> bool {
+        self == other
     }
 }
 
 impl DartAny for Counter {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
+    fn dart_to_string(&self) -> String {
+        format!("Instance of '{}'", "Counter")
+    }
+    fn dart_eq_any(&self, other: &dyn std::any::Any) -> bool {
+        match other.downcast_ref::<Self>() {
+            Some(o) => self.dart_eq(o),
+            None => false,
+        }
+    }
+    fn dart_hash_any(&self) -> i64 {
+        self.dart_hash_code()
     }
     fn dart_runtime_type(&self) -> Type {
-        Type { name: "Counter" }
+        Type::of("Counter")
+    }
+    fn dart_cast(&self, __t: std::any::TypeId) -> Option<std::boxed::Box<dyn std::any::Any>> {
+        if __t == std::any::TypeId::of::<Self>()
+            || __t == std::any::TypeId::of::<std::rc::Rc<Self>>()
+        {
+            return Some(std::boxed::Box::new(std::rc::Rc::new(self.clone())));
+        }
+        if __t == std::any::TypeId::of::<dyn Object>()
+            || __t == std::any::TypeId::of::<std::rc::Rc<dyn Object>>()
+        {
+            return Some(std::boxed::Box::new(
+                std::rc::Rc::new(self.clone()) as std::rc::Rc<dyn Object>
+            ));
+        }
+        None
     }
 }

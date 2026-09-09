@@ -430,6 +430,7 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 | ws887 | 复审抓到 ws886 过度宣称:重生成的黄金按错误数收下,实为退步——全部退回,并给「黄金怎么验收」装尺子(`regen.py` 先问 `can_propagate()`);顺手清掉恒真式死码 `_computeFailing`/`_errorIn`/`_traitDeclares` | **生成的 Rust 仍一字未动**(926 模块 md5 e69150fe);analyze 86 条不变;check.sh 干净退出 |
 | ws888 | 复审指出 ws887 的门是字面绊线:`'fails:' not in ...` 被一行 TODO 注释就能打开。换成行为探针——真跑这一轮要用的每个 driver,输出里那个必失败的调用不带 `?` 就拒绝;`--anyway` 从 `testdata/src` 改写进 gitignore 的 `.agree/anyway/` | 探针 21 秒,两个 driver 都当场重现出 `Ok((self.checked(value) * 2.0))`;补上 TODO 注释后旧门放行、新门照拒;`git status` 零改动;check.sh 干净退出,86 条 / 87 checks |
 | ws889 | 两个 fixture driver 现在都发得出 `?`:`_fails` 开头那句 `if (throws == null)` 删掉——它收着一个 `ThrowsAnalysis` 却一行答案都不读,是穿着分析外衣的开关;分析器前端补上 `_callFails`(10 个调用点),两侧共用 `ir.dart` 的 `translatedLibrary`。**顺带撞见这一轮最大的一件事**:删掉那个「什么都不决定」的分析,gallery 输出动了 32,653 行——真正起作用的是它把每个 body 都读了一遍;dill 改成显式 `BinaryBuilder(disableLazyReading: true)` | gallery 仍是 e69150fe(926 模块 / 49 拒绝),eager 读 60 秒 / 1.29 GB;预言机 exit 0,曾经新分叉的 7 个(cascade/failure/freefn/ifnull/mutation/nullcheck/trycatch)重新一致,BEHIND 仍是 16;analyze 86 -> 80,check.sh 上限同步下调 |
+| ws890 | 黄金重生成:32 个文件,driver 已被行为探针证明发得出 `?`,预言机绿着。**验收不是数字**——44 个错误一条不落地读完,归成 7 个根因,全部在生成的代码里,没有一条在 `lib.rs` | lib 139 -> 44 错;`lib.rs` 里另有 317 个是「调用现在返回 Result」的机械改造,还没做,146 个 `#[test]` 仍然全黑;预言机 exit 0,BEHIND 仍 16 |
 
 ## 下一步(2026-09-05 重铺)
 
@@ -754,6 +755,35 @@ ws601:  722 stub / 252 拒绝 / 63 crate 全可达(138 分区,延迟库合并后
   矛盾重新焊进去。重生成那一轮的验收是 **crate 编过、146 个 test 跑绿**,
   不是错误数降低:ws886 那次错误数正是降的(139→79),一个「只许降」的
   棘轮会照样收下它。
+- **黄金层重新点着了,它第一件事是报出 7 个真缺陷(ws890)**。32 个文件由
+  一个「能发 `?`」被行为探针证明过的 driver 生成,预言机同时是绿的,44 个
+  错误全部在**生成的代码**里——`lib.rs` 一条都没有。逐条读完,归成 7 个根因:
+  1. **const 初值里生成运行时 downcast**(`constinstance`,24 条):
+     `3.0.as_any().downcast_ref::<f64>().unwrap().clone()` 写在 `const` 里。
+     复审第三轮点名的两个形状之一,**修好 driver 之后仍在**,所以它是真的。
+  2. **闭包字面量传进 `Rc<dyn Fn>` 槽没包 `Rc::new`**(`closures`,7 条)。
+     也可能反过来:那个槽本该写成 `impl Fn`。同一文件里另一处包了。
+  3. **泛型 trait 方法的 erased 变体把槽写成裸 trait 名**(`generic`,4 条):
+     `items: Vec<Object>`、`ignored: Object`。复审点名的另一个形状,也是真的。
+     gallery 里 0 次,因为包驱动传 `erase: true` 而 fixture driver 什么都不传
+     ——**所以它同时是一条配置欠账**,见下。
+  4. **`RangeError::new` 拿到 `String`,而签名要 `Rc<dyn Object>`**
+     (`trycatch` 2、`failure` 1、`control` 1)。
+  5. **setter 返回 `Ok(dart_null_object())`,签名却是 `Result<(), _>`**
+     (`setters`,2 条)。
+  6. **`Map.get` 的借用**(`lists`,2 条):`sizes.get(name)` 少一个 `&`,
+     而且返回 `&i64` 填进要 `i64` 的位置。
+  7. **`match` 在表达式位置上默认臂是空的**(`branching`,1 条):
+     `_ => {}` 给出 `()`,而那个 match 要 `Result<f64, _>`。
+- **fixture driver 的配置仍然不是生产配置**。`KernelFrontend` 的 17 个具名参数
+  里,包驱动传 15 个,fixture driver 传 2 个。`?` 只是第一个症状(ws889 修了,
+  而且是把那个假开关删掉),`erase` 是第二个(上面第 3 条)。剩下的还有
+  `typeEnvironment`、`coerceByType`、`covariantParameters`、`dynamicSlots`、
+  `open`、`instantiations`。
+  **这里有个要定的事**:让 fixture driver 对齐生产配置,和「两个前端逐字节可比」
+  是冲突的——分析器前端没有 erasure、没有 `typeEnvironment`。可能的答案是把两件事
+  分开:黄金只从 Kernel 侧的生产配置生成,`fixtures.py` 继续用最小配置只做比较。
+  这会改变黄金层的定义,所以先写下来,不顺手做。
 - **dill 的 body 什么时候读,决定这个编译器输出什么(ws889 发现,机制未明)**。
   `loadComponentFromBinary` 把每个函数体留在 `lazyBuilder` 后面,第一个读
   `FunctionNode.body` 的人触发它。这本该是不可见的,它不是:同一个 dill、

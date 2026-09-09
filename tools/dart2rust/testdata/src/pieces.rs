@@ -1,3 +1,4 @@
+use crate::dart_prelude::Object;
 use crate::dart_prelude::*;
 use crate::DartAny;
 use crate::Type;
@@ -14,50 +15,126 @@ pub struct Label {
 }
 
 impl Label {
-    pub fn new(name: String, count: i64) -> Self {
-        Self {
-            name: name.clone(),
-            count: count,
+    pub fn new(name: String, count: i64) -> Result<Self, std::rc::Rc<dyn Object>> {
+        dart_register::<Self>();
+        Ok({
+            Self {
+                name: name,
+                count: count,
+            }
+        })
+    }
+
+    pub fn twice(x: f64) -> Result<f64, std::rc::Rc<dyn Object>> {
+        Ok((x * 2.0))
+    }
+
+    /// `format!`, with the literal pieces becoming the pattern.
+    pub fn describe(&self) -> Result<String, std::rc::Rc<dyn Object>> {
+        Ok(format!("{} has {}", self.name.clone(), self.count))
+    }
+
+    /// A literal brace has to survive, since `format!` reads braces.
+    pub fn braced(&self) -> Result<String, std::rc::Rc<dyn Object>> {
+        Ok(format!("{{{}}}", self.name.clone()))
+    }
+
+    /// A static method used as a value. Nothing is captured, so none of the
+    /// ownership question an instance tear-off raises applies.
+    pub fn doubled(&self, x: f64) -> Result<f64, std::rc::Rc<dyn Object>> {
+        let f: std::rc::Rc<dyn Fn(f64) -> Result<f64, std::rc::Rc<dyn Object>>> =
+            std::rc::Rc::new(Label::twice);
+        Ok((f)(x)?)
+    }
+
+    /// A local function, which is a closure bound to a local.
+    pub fn stepped(&self, x: f64) -> Result<f64, std::rc::Rc<dyn Object>> {
+        let step =
+            std::rc::Rc::new(|v: f64| -> Result<_, std::rc::Rc<dyn Object>> { Ok((v + 1.0)) });
+        Ok((step)((step)(x)?)?)
+    }
+
+    /// `total = ..` used for its value, inside the argument of another call.
+    /// 7.0 doubled is 14.0, plus the 7.0 the assignment left behind.
+    pub fn running(&self, x: f64) -> Result<f64, std::rc::Rc<dyn Object>> {
+        let mut total: f64 = 0.0;
+        Ok((Label::twice({
+            let __set = (x + 3.0);
+            total = __set.clone();
+            __set
+        })? + total))
+    }
+}
+
+impl FromDynamic for Label {
+    fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
+        value.dart_cast_any::<Self>()
+    }
+    fn from_same(value: &Self) -> Option<Self> {
+        Some(value.clone())
+    }
+}
+
+impl NativeAnswer for Label {
+    fn from_answer(answer: std::rc::Rc<dyn Object>, symbol: &str) -> Self {
+        match answer.dart_cast_any::<Self>() {
+            Some(value) => value,
+            None => panic!(
+                "native `{}` answered {:?} where Label was declared",
+                symbol, answer
+            ),
         }
     }
-
-    pub fn twice(x: f64) -> f64 {
-        (x * 2.0)
+    fn absent() -> Self {
+        panic!("native answered nothing where Label was declared")
     }
+}
 
-    pub fn describe(&self) -> String {
-        format!("{} has {}", self.name.clone(), self.count)
+impl DartNullable for Label {
+    type Or = Option<Self>;
+    fn option(or: Option<Self>) -> Option<Self> {
+        or
     }
-
-    pub fn braced(&self) -> String {
-        format!("{{{}}}", self.name.clone())
+    fn from_option(option: Option<Self>) -> Option<Self> {
+        option
     }
+}
 
-    pub fn doubled(&self, x: f64) -> f64 {
-        let f: std::rc::Rc<dyn Fn(f64) -> f64> = std::rc::Rc::new(Label::twice);
-        (f)(x)
-    }
-
-    pub fn stepped(&self, x: f64) -> f64 {
-        let step = |v: f64| (v + 1.0);
-        (step)((step)(x))
-    }
-
-    pub fn running(&self, x: f64) -> f64 {
-        let mut total: f64 = 0.0;
-        (Label::twice({
-            let __set = (x + 3.0);
-            total = __set;
-            __set
-        }) + total)
+impl DartEq for Label {
+    fn dart_eq(&self, other: &Self) -> bool {
+        self == other
     }
 }
 
 impl DartAny for Label {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
+    fn dart_to_string(&self) -> String {
+        format!("Instance of '{}'", "Label")
+    }
+    fn dart_eq_any(&self, other: &dyn std::any::Any) -> bool {
+        match other.downcast_ref::<Self>() {
+            Some(o) => self.dart_eq(o),
+            None => false,
+        }
+    }
+    fn dart_hash_any(&self) -> i64 {
+        self.dart_hash_code()
     }
     fn dart_runtime_type(&self) -> Type {
-        Type { name: "Label" }
+        Type::of("Label")
+    }
+    fn dart_cast(&self, __t: std::any::TypeId) -> Option<std::boxed::Box<dyn std::any::Any>> {
+        if __t == std::any::TypeId::of::<Self>()
+            || __t == std::any::TypeId::of::<std::rc::Rc<Self>>()
+        {
+            return Some(std::boxed::Box::new(std::rc::Rc::new(self.clone())));
+        }
+        if __t == std::any::TypeId::of::<dyn Object>()
+            || __t == std::any::TypeId::of::<std::rc::Rc<dyn Object>>()
+        {
+            return Some(std::boxed::Box::new(
+                std::rc::Rc::new(self.clone()) as std::rc::Rc<dyn Object>
+            ));
+        }
+        None
     }
 }

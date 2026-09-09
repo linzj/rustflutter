@@ -1,3 +1,4 @@
+use crate::dart_prelude::Object;
 use crate::dart_prelude::*;
 use crate::DartAny;
 use crate::Type;
@@ -7,113 +8,244 @@ use crate::Type;
 // Translated, not ported: this is the compiler's output, not a
 // hand-written re-expression. See tools/dart2rust/README.md.
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct Closures {
     pub factor: f64,
+    pub __self: DartSelf<Self>,
+}
+
+impl DartSelfRef for Closures {
+    fn dart_self_ref(&self) -> &DartSelf<Self> {
+        &self.__self
+    }
+}
+
+impl PartialEq for Closures {
+    fn eq(&self, other: &Self) -> bool {
+        std::ptr::eq(self, other)
+    }
 }
 
 impl Closures {
-    pub fn new(factor: f64) -> std::rc::Rc<Self> {
-        std::rc::Rc::new(Self { factor: factor })
-    }
-
-    pub fn apply_twice(f: std::rc::Rc<dyn Fn(f64) -> f64>, x: f64) -> f64 {
-        (f)((f)(x))
-    }
-
-    pub fn doubled(&self, x: f64) -> f64 {
-        Closures::apply_twice(std::rc::Rc::new(|v: f64| (v + 1.0)), x)
-    }
-
-    pub fn scaled_by(&self, amount: f64, x: f64) -> f64 {
-        Closures::apply_twice(
-            std::rc::Rc::new({
-                let amount = amount.clone();
-                move |v: f64| (v * amount)
-            }),
-            x,
-        )
-    }
-
-    pub fn blend(&self, a: f64, b: f64, x: f64) -> f64 {
-        Closures::apply_twice(
-            std::rc::Rc::new({
-                let a = a.clone();
-                let b = b.clone();
-                move |v: f64| ((v * a) + b)
-            }),
-            x,
-        )
-    }
-
-    pub fn combine(f: std::rc::Rc<dyn Fn(f64, f64) -> f64>) -> f64 {
-        (f)(10.0, 3.0)
-    }
-
-    pub fn subtracted(&self) -> f64 {
-        Closures::combine(std::rc::Rc::new(|a: f64, b: f64| (a - b)))
-    }
-
-    pub fn by_factor(self: &std::rc::Rc<Self>, x: f64) -> f64 {
-        Closures::apply_twice(
-            std::rc::Rc::new({
-                let __me = self.clone();
-                move |v: f64| (v * __me.factor)
-            }),
-            x,
-        )
-    }
-
-    pub fn scaled(&self, v: f64) -> f64 {
-        (v * self.factor)
-    }
-
-    pub fn twice_scaled(self: &std::rc::Rc<Self>, x: f64) -> f64 {
-        Closures::apply_twice(
-            std::rc::Rc::new({
-                let __me = self.clone();
-                move |v: f64| __me.scaled(v)
-            }),
-            x,
-        )
-    }
-
-    pub fn keep(mut f: std::rc::Rc<dyn Fn(f64) -> f64>) -> std::rc::Rc<dyn Fn(f64) -> f64> {
-        f.clone()
-    }
-
-    pub fn by_remembering(&self, x: f64) -> f64 {
-        let f: std::rc::Rc<dyn Fn(f64) -> f64> = Closures::keep(std::rc::Rc::new({
-            let factor = self.factor;
-            move |v: f64| (v * factor)
-        }));
-        (f)(x)
-    }
-
-    pub fn by_tear_off(self: &std::rc::Rc<Self>, x: f64) -> f64 {
-        Closures::apply_twice(
-            std::rc::Rc::new({
-                let __me = self.clone();
-                move |v: f64| __me.scaled(v)
-            }),
-            x,
-        )
-    }
-
-    pub fn scaler(&self) -> std::rc::Rc<dyn Fn(f64) -> f64> {
-        std::rc::Rc::new({
-            let factor = self.factor;
-            move |v: f64| (v * factor)
+    pub fn new(factor: f64) -> Result<std::rc::Rc<Self>, std::rc::Rc<dyn Object>> {
+        Ok({
+            dart_rc(Self {
+                __self: DartSelf::new(),
+                factor: factor,
+            })
         })
+    }
+
+    /// A static method rather than a top-level function: top-level functions are
+    /// not translated yet (964 refusals of their own), and a fixture that needs
+    /// an untranslated construct tests nothing.
+    pub fn apply_twice(
+        f: std::rc::Rc<dyn Fn(f64) -> Result<f64, std::rc::Rc<dyn Object>>>,
+        x: f64,
+    ) -> Result<f64, std::rc::Rc<dyn Object>> {
+        Ok((f)((f)(x)?)?)
+    }
+
+    /// Captures nothing: a plain function in Rust terms.
+    pub fn doubled(&self, x: f64) -> Result<f64, std::rc::Rc<dyn Object>> {
+        Ok(Closures::apply_twice(
+            |v: f64| -> Result<_, std::rc::Rc<dyn Object>> { Ok((v + 1.0)) },
+            x,
+        )?)
+    }
+
+    /// Reads an outer local. Rust borrows it; nothing has to be said.
+    pub fn scaled_by(&self, amount: f64, x: f64) -> Result<f64, std::rc::Rc<dyn Object>> {
+        Ok(Closures::apply_twice(
+            |v: f64| -> Result<_, std::rc::Rc<dyn Object>> { Ok((v * amount)) },
+            x,
+        )?)
+    }
+
+    /// Two captured locals, so pairing them wrongly changes the answer.
+    pub fn blend(&self, a: f64, b: f64, x: f64) -> Result<f64, std::rc::Rc<dyn Object>> {
+        Ok(Closures::apply_twice(
+            |v: f64| -> Result<_, std::rc::Rc<dyn Object>> { Ok(((v * a) + b)) },
+            x,
+        )?)
+    }
+
+    /// A two-parameter closure whose arguments are **not** interchangeable: with
+    /// one parameter, reversing the list is a no-op and a mutation that shuffles
+    /// them survives. Round twenty-one learned the same thing about `super`.
+    pub fn combine(
+        f: std::rc::Rc<dyn Fn(f64, f64) -> Result<f64, std::rc::Rc<dyn Object>>>,
+    ) -> Result<f64, std::rc::Rc<dyn Object>> {
+        Ok((f)(10.0, 3.0)?)
+    }
+
+    pub fn subtracted(&self) -> Result<f64, std::rc::Rc<dyn Object>> {
+        Ok(Closures::combine(
+            |a: f64, b: f64| -> Result<_, std::rc::Rc<dyn Object>> { Ok((a - b)) },
+        )?)
+    }
+
+    /// Reads a field of `this` from a closure written as a call argument. The
+    /// borrow lasts exactly as long as `applyTwice` does, so this translates.
+    pub fn by_factor(self: &std::rc::Rc<Self>, x: f64) -> Result<f64, std::rc::Rc<dyn Object>> {
+        Ok(Closures::apply_twice(
+            {
+                let __me = self.dart_self_ref().get();
+                move |v: f64| -> Result<_, std::rc::Rc<dyn Object>> { Ok((v * __me.factor)) }
+            },
+            x,
+        )?)
+    }
+
+    pub fn scaled(&self, v: f64) -> Result<f64, std::rc::Rc<dyn Object>> {
+        Ok((v * self.factor))
+    }
+
+    /// Calls a method on `this` rather than reading a field, which needs the
+    /// whole object and not a borrow of one of its fields. Refused.
+    pub fn twice_scaled(self: &std::rc::Rc<Self>, x: f64) -> Result<f64, std::rc::Rc<dyn Object>> {
+        Ok(Closures::apply_twice(
+            {
+                let __me = self.dart_self_ref().get();
+                move |v: f64| -> Result<_, std::rc::Rc<dyn Object>> { Ok(__me.scaled(v)?) }
+            },
+            x,
+        )?)
+    }
+
+    /// A callee that **keeps** what it is given, rather than calling it and
+    /// being done. `applyTwice` calls its closure and returns; this one puts it
+    /// somewhere that outlives the call, so a closure reaching `this` cannot
+    /// borrow for it and is refused.
+    ///
+    /// The two together are the point: being an argument is not the question.
+    /// The question is whether the callee is finished with it -- measured at
+    /// 394 of 1234 across the package, and they are `addListener`,
+    /// `scheduleMicrotask` and `Timer`.
+    pub fn keep(
+        f: std::rc::Rc<dyn Fn(f64) -> Result<f64, std::rc::Rc<dyn Object>>>,
+    ) -> Result<
+        std::rc::Rc<dyn Fn(f64) -> Result<f64, std::rc::Rc<dyn Object>>>,
+        std::rc::Rc<dyn Object>,
+    > {
+        Ok(f)
+    }
+
+    pub fn by_remembering(&self, x: f64) -> Result<f64, std::rc::Rc<dyn Object>> {
+        let f: std::rc::Rc<dyn Fn(f64) -> Result<f64, std::rc::Rc<dyn Object>>> =
+            Closures::keep(std::rc::Rc::new({
+                let factor = self.factor;
+                move |v: f64| -> Result<_, std::rc::Rc<dyn Object>> { Ok((v * factor.clone())) }
+            }))?;
+        Ok((f)(x)?)
+    }
+
+    /// A **method used as a value**: `applyTwice(scaled, x)` hands the method
+    /// over without calling it. In Rust that is a closure that calls it, so it
+    /// is the same question as any other closure and gets the same answer --
+    /// here it is an argument, a borrowed position, so it may borrow `this`.
+    pub fn by_tear_off(self: &std::rc::Rc<Self>, x: f64) -> Result<f64, std::rc::Rc<dyn Object>> {
+        Ok(Closures::apply_twice(
+            {
+                let __me = self.dart_self_ref().get();
+                move |v: f64| -> Result<_, std::rc::Rc<dyn Object>> { Ok(__me.scaled(v)?) }
+            },
+            x,
+        )?)
+    }
+
+    /// Reads a `final` field and is **returned**, so it outlives the call.
+    ///
+    /// It cannot hold `this`, and it does not have to: `factor` is `final`, so a
+    /// copy taken when the closure is made is the same value a read at call time
+    /// would give. That is what makes copying sound here and not in general --
+    /// a field that can change would give two different answers.
+    pub fn scaler(
+        &self,
+    ) -> Result<
+        std::rc::Rc<dyn Fn(f64) -> Result<f64, std::rc::Rc<dyn Object>>>,
+        std::rc::Rc<dyn Object>,
+    > {
+        Ok(std::rc::Rc::new({
+            let factor = self.factor;
+            move |v: f64| -> Result<_, std::rc::Rc<dyn Object>> { Ok((v * factor.clone())) }
+        }))
+    }
+}
+
+impl FromDynamic for Closures {
+    fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
+        value.dart_cast_any::<Self>()
+    }
+    fn from_same(value: &Self) -> Option<Self> {
+        Some(value.clone())
+    }
+}
+
+impl NativeAnswer for Closures {
+    fn from_answer(answer: std::rc::Rc<dyn Object>, symbol: &str) -> Self {
+        match answer.dart_cast_any::<Self>() {
+            Some(value) => value,
+            None => panic!(
+                "native `{}` answered {:?} where Closures was declared",
+                symbol, answer
+            ),
+        }
+    }
+    fn absent() -> Self {
+        panic!("native answered nothing where Closures was declared")
+    }
+}
+
+impl DartNullable for Closures {
+    type Or = Option<Self>;
+    fn option(or: Option<Self>) -> Option<Self> {
+        or
+    }
+    fn from_option(option: Option<Self>) -> Option<Self> {
+        option
+    }
+}
+
+impl DartEq for Closures {
+    fn dart_eq(&self, other: &Self) -> bool {
+        std::ptr::eq(self, other)
+    }
+    fn dart_hash_code(&self) -> i64 {
+        (std::rc::Rc::as_ptr(&self.__self.get()) as *const u8 as usize as i64) & 0x3fff_ffff
     }
 }
 
 impl DartAny for Closures {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
+    fn dart_to_string(&self) -> String {
+        format!("Instance of '{}'", "Closures")
+    }
+    fn dart_eq_any(&self, other: &dyn std::any::Any) -> bool {
+        match other.downcast_ref::<Self>() {
+            Some(o) => self.dart_eq(o),
+            None => false,
+        }
+    }
+    fn dart_hash_any(&self) -> i64 {
+        self.dart_hash_code()
     }
     fn dart_runtime_type(&self) -> Type {
-        Type { name: "Closures" }
+        Type::of("Closures")
+    }
+    fn dart_cast(&self, __t: std::any::TypeId) -> Option<std::boxed::Box<dyn std::any::Any>> {
+        if __t == std::any::TypeId::of::<Self>()
+            || __t == std::any::TypeId::of::<std::rc::Rc<Self>>()
+        {
+            return Some(std::boxed::Box::new(self.dart_self_ref().get()));
+        }
+        if __t == std::any::TypeId::of::<dyn Object>()
+            || __t == std::any::TypeId::of::<std::rc::Rc<dyn Object>>()
+        {
+            return Some(std::boxed::Box::new(
+                self.dart_self_ref().get() as std::rc::Rc<dyn Object>
+            ));
+        }
+        None
     }
 }
 
@@ -122,6 +254,13 @@ impl DartAny for Closures {
 // Translated, not ported: this is the compiler's output, not a
 // hand-written re-expression. See tools/dart2rust/README.md.
 
+/// A **mutable** field that a closure both reads and writes, from a closure
+/// that outlives the call.
+///
+/// A copy would be wrong: `count` changes, and the closure and the object have
+/// to see the same one. So the field lives in a cell they both hold a handle
+/// to -- which is what "shared" means here, and why it is only for the mutable
+/// ones. A `final` field is cheaper copied, and round 97 does that.
 #[derive(Clone, Debug)]
 pub struct Ticks {
     pub count: std::rc::Rc<std::cell::Cell<i64>>,
@@ -134,31 +273,102 @@ impl PartialEq for Ticks {
 }
 
 impl Ticks {
-    pub fn new() -> Self {
-        Self {
-            count: std::rc::Rc::new(std::cell::Cell::new(0)),
-        }
-    }
-
-    pub fn counter(&self) -> std::rc::Rc<dyn Fn() -> ()> {
-        std::rc::Rc::new({
-            let count = self.count.clone();
-            move || {
-                count.set((count.get() + 1));
+    pub fn new() -> Result<Self, std::rc::Rc<dyn Object>> {
+        dart_register::<Self>();
+        Ok({
+            Self {
+                count: std::rc::Rc::new(std::cell::Cell::new(0)),
             }
         })
     }
 
-    pub fn seen(&self) -> i64 {
-        self.count.get()
+    pub fn counter(
+        &self,
+    ) -> Result<std::rc::Rc<dyn Fn() -> Result<(), std::rc::Rc<dyn Object>>>, std::rc::Rc<dyn Object>>
+    {
+        Ok(std::rc::Rc::new({
+            let mut count = self.count.clone();
+            move || -> Result<_, std::rc::Rc<dyn Object>> {
+                count.set((count.get() + 1));
+                Ok(())
+            }
+        }))
+    }
+
+    pub fn seen(&self) -> Result<i64, std::rc::Rc<dyn Object>> {
+        Ok(self.count.get())
+    }
+}
+
+impl FromDynamic for Ticks {
+    fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
+        value.dart_cast_any::<Self>()
+    }
+    fn from_same(value: &Self) -> Option<Self> {
+        Some(value.clone())
+    }
+}
+
+impl NativeAnswer for Ticks {
+    fn from_answer(answer: std::rc::Rc<dyn Object>, symbol: &str) -> Self {
+        match answer.dart_cast_any::<Self>() {
+            Some(value) => value,
+            None => panic!(
+                "native `{}` answered {:?} where Ticks was declared",
+                symbol, answer
+            ),
+        }
+    }
+    fn absent() -> Self {
+        panic!("native answered nothing where Ticks was declared")
+    }
+}
+
+impl DartNullable for Ticks {
+    type Or = Option<Self>;
+    fn option(or: Option<Self>) -> Option<Self> {
+        or
+    }
+    fn from_option(option: Option<Self>) -> Option<Self> {
+        option
+    }
+}
+
+impl DartEq for Ticks {
+    fn dart_eq(&self, other: &Self) -> bool {
+        self == other
     }
 }
 
 impl DartAny for Ticks {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
+    fn dart_to_string(&self) -> String {
+        format!("Instance of '{}'", "Ticks")
+    }
+    fn dart_eq_any(&self, other: &dyn std::any::Any) -> bool {
+        match other.downcast_ref::<Self>() {
+            Some(o) => self.dart_eq(o),
+            None => false,
+        }
+    }
+    fn dart_hash_any(&self) -> i64 {
+        self.dart_hash_code()
     }
     fn dart_runtime_type(&self) -> Type {
-        Type { name: "Ticks" }
+        Type::of("Ticks")
+    }
+    fn dart_cast(&self, __t: std::any::TypeId) -> Option<std::boxed::Box<dyn std::any::Any>> {
+        if __t == std::any::TypeId::of::<Self>()
+            || __t == std::any::TypeId::of::<std::rc::Rc<Self>>()
+        {
+            return Some(std::boxed::Box::new(std::rc::Rc::new(self.clone())));
+        }
+        if __t == std::any::TypeId::of::<dyn Object>()
+            || __t == std::any::TypeId::of::<std::rc::Rc<dyn Object>>()
+        {
+            return Some(std::boxed::Box::new(
+                std::rc::Rc::new(self.clone()) as std::rc::Rc<dyn Object>
+            ));
+        }
+        None
     }
 }
