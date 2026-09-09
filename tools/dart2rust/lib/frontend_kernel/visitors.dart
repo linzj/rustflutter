@@ -1146,12 +1146,40 @@ class _ReferenceCollector extends RecursiveVisitor {
   void _member(Member? member) {
     if (member == null) return;
     found.add(member.enclosingLibrary);
-    members.add(member);
+    if (!members.add(member)) return;
+    // ..and the types in its signature. Rust has no inference across a call:
+    // the emitter spells the callee's parameter type wherever it adapts an
+    // argument (`Rc<dyn Fn(Rc<dyn PointerUpEvent>) -> _>` for `Listener`'s
+    // `onPointerUp`) and its return type wherever it names a local. Dart
+    // wrote `var`, so the type is in the callee's declaration and nowhere in
+    // this library's tree -- the reference to the member is the reference to
+    // its types.
+    _signature(member);
     // The class a constructor or static belongs to is named by the call
     // (`Image(..)` in `ImageIcon.build` named `widgets/image.dart`'s
     // `Image`, which two modules define; without the class here the
     // import chose neither, E0433, 18 at ws464).
     _class(member.enclosingClass);
+  }
+
+  /// The types a member's declaration names, without its body.
+  void _signature(Member member) {
+    if (member is Field) {
+      member.type.accept(this);
+      return;
+    }
+    final fn = member.function;
+    if (fn == null) return;
+    for (final p in fn.positionalParameters) {
+      p.type.accept(this);
+    }
+    for (final p in fn.namedParameters) {
+      p.type.accept(this);
+    }
+    fn.returnType.accept(this);
+    for (final p in fn.typeParameters) {
+      p.bound.accept(this);
+    }
   }
 
   void _class(Class? cls) {

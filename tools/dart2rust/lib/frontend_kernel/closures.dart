@@ -740,12 +740,41 @@ augment class KernelFrontend {
   }
 
   /// Whether any method body (not a constructor) writes a field of `this`.
-  static bool _writesFieldInMethod(Class node) {
+  ///
+  /// The same set of bodies `lowerClass` lowers into the class, not just the
+  /// ones the declaration still lists. The CFE copies a mixin's members into
+  /// the anonymous *application* above the class and leaves the declaration
+  /// hollow, so `class Counter extends Policy with CacheMixin` has no
+  /// procedures of its own and `CacheMixin.invalidate` -- which does
+  /// `_cache.remove(k)` -- was invisible here. The backend saw the mutation
+  /// all the same (`_mutating` reads the lowered IR), made the trait method
+  /// `&mut self`, and every call through the `Rc<dyn Policy>` was E0596 with
+  /// nothing this census could have told it. The two have to read the same
+  /// bodies (`WidgetOrderTraversalPolicy.invalidateScopeData`, the panic that
+  /// stopped run900).
+  bool _writesFieldInMethod(Class node) {
     final finder = _ThisWriteFinder();
-    for (final p in node.procedures) {
-      if (p.isStatic || p.isAbstract) continue;
-      p.function.body?.accept(finder);
-      if (finder.found) return true;
+    bool walk(Class owner) {
+      for (final p in owner.procedures) {
+        if (p.isStatic || p.isAbstract) continue;
+        p.function.body?.accept(finder);
+        if (finder.found) return true;
+      }
+      return false;
+    }
+
+    if (walk(node)) return true;
+    var above = node.supertype;
+    while (above != null && above.classNode.isAnonymousMixin) {
+      if (walk(above.classNode)) return true;
+      above = above.classNode.supertype;
+    }
+    // A mixin declaration TFA has emptied keeps its body in an application
+    // (`_appliedProcedure`), and that is the body lowered into the trait.
+    if (node.isMixinDeclaration) {
+      for (final application in applications[node] ?? const <Class>[]) {
+        if (walk(application)) return true;
+      }
     }
     return false;
   }
