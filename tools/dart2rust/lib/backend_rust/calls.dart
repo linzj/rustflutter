@@ -46,6 +46,14 @@ augment class RustBackend {
     // Cleared before the receiver and arguments print: a call inside them
     // would otherwise take this `await`'s flag.
     _awaiting = false;
+    // A call on a receiver that never returns is that receiver. Dart
+    // evaluates the receiver first, so the call is not reached either --
+    // and in Rust a method on a `!` has no type to resolve against ("type
+    // annotations needed ... cannot infer type", E0282). The AOT compiler
+    // plants such a receiver wherever it proves a value cannot exist, and
+    // `DropdownMenuThemeData.inputDecorationTheme` reads as one
+    // (`{ let __t1 = ..; unreachable!(..) }.data(..)`, ws965).
+    if (_neverReturns(target)) return expr(target!);
     // Before the receiver is rendered: rendering a chain on its own is
     // refused, and this is the one place a chain is not on its own.
     // Any arguments, not none: Dart's `toList({bool growable = true})` has a

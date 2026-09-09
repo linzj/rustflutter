@@ -149,6 +149,10 @@ augment class RustBackend {
       // ..matched on a copy of the handle when the operand is a place:
       // matching the local itself moved the future out of it, and the
       // line after read it again (`loadFontIfNecessary`, ws562).
+      // ..and awaiting one is that operand too: `()` is no future, and
+      // the future it stands for was never made
+      // (`_ContrastEvaluation._evaluate`, ws965).
+      IrAwait(:final operand) when _neverReturns(operand) => expr(operand),
       IrAwait(:final operand)
           when operand.rustType?.name == 'Future' &&
               (operand.rustType?.nullable ?? false) =>
@@ -339,6 +343,12 @@ augment class RustBackend {
             : '(${expr(value)} as $rust)',
       // `state as T?` with `T` a type parameter: by id, and the `Option`
       // stays one (see `dart_cast_any`).
+      // A cast of an operand that never returns is that operand, as a call
+      // on one is: there is nothing to cast, and the cast's own type is
+      // what rustc could not infer (`DropdownMenuThemeData
+      // .inputDecorationTheme` and `DatePickerThemeData`'s, ws965).
+      IrCastTo(:final target) when _neverReturns(target) => expr(target),
+      IrDowncast(:final target) when _neverReturns(target) => expr(target),
       IrCastTo(:final target, :final type) when _isTypeParam(type.name) =>
         '${expr(target)}.dart_cast_any::<${type.name}>()'
             '${type.nullable ? "" : ".unwrap()"}',

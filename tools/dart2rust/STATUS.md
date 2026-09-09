@@ -554,7 +554,6 @@ Dart 的循环变量是同一个对象。加 `mut` 只是把「诚实地 panic �
 | 轮 | 规则 / 读数 | 数 |
 |---|---|---|
 | run877 | the reading, after ws875-ws877 | — |
-| ws893 | 促升过的局部作接收者:`_WalkSelf` 与 `_mutPlace` 现在剥同样的两层(`!` 与「读即克隆」),`let mut` 才跟得上 | stub **150 → 149**,拒绝 45,可达 64;run894 708 行 / 差异 0 / 0 panic;夹具 `promotedmut` |
 | ws894 | `dart:ffi` 的 `_abi()`:结构体布局是「按 ABI 一项的常量表 + `_abi()` 下标」,prelude 按目标机的 `OS`/`ARCH` 在 `Abi.values` 里查,查不到就说没有 | 拒绝 **45 → 38**,stub 149(未升),可达 64;run895 708 行 / 差异 0 / 0 panic;夹具 `ffisizeof` |
 | ws895 | 窄化过的动态 `num` 调用要记下手里剩的是什么(按 prelude 的 `DartDouble` 签名);`_returned` 原先只认识 `IrNew`/`IrConstInstance` 两种「能变成对象的东西」,一次调用是第三种 | stub **149 → 147**,拒绝 38,可达 64;run896 708 行 / 差异 0 / 0 panic / 196 帧;夹具 `dyncall` |
 | ws896 | 模块图的边是从生成文本正则回扫出来的,连字符串和注释一起扫:五个翻译文案里的单词("Header"、"Sac a main")就是五条真边。扫描前剥掉注释与字面量;再加一条配对规则——只有当一个「所有定义处都是 `fn`」的名字在本模块**既被绑定、又从未被调用/走路径**时才不算引用 | 拒绝 38、stub **147**(未升)、可达 64 → 67;`merged_gallery_scc` 1,026,045 行拆成 `scc_gallery` 942,252(l10n)+ `gallery_above` 82,892(app,**-91.9%**);链尾 53s → 33s;先只用前半句时 rustc 当场给了 188 条 `cannot find value`(自由函数当值传),那正是配对规则的由来 |
@@ -594,6 +593,7 @@ Dart 的循环变量是同一个对象。加 `mut` 只是把「诚实地 panic �
 | ws961 | **裸的集合类型也有元素**。Dart 写 `as List?` 就是 `List<dynamic>`,而降下来的 downcast 目标一个类型实参都没带,`downcast_ref::<Vec>()` 不是任何 Rust 类型(E0107,`PredictiveBackEvent.fromMap` 拿平台消息的字段就是这么转的)。规则:downcast 目标是集合而没写实参时,按它的元数把 `dynamic` 拼出来——`List`/`Set` 一个,`Map` 两个,这正是 Dart 说裸集合装的东西。夹具 `rawlistcast` 覆盖裸的、缺键的、以及写了元素的三种,先红(一模一样的 E0107)后绿 | stub **99 → 98**、拒绝 29、可达 69、0 error;run961 连采五次:707 行 / 类型差异 0 / 0 panic |
 | ws963 | **窄化转换的源也得有类型**。`Uint32List.fromList(xs)` 拼成 `xs.iter().map(|v| *v as u32).collect::<Vec<u32>>()`,而这串东西对**它读的是什么**一个字都没说;源是个字面量列表时,Rust 的整数默认把它定成 `i32`,SHA-256 那八个初值里有五个装不下(`literal out of range for i32`,而且是 deny 的)。做法:把源按**它自己记下来的类型**绑一道(`{ let __src: T = ..; __src }`)——不是按名字认 `List`,列表字面量记的是 CFE 给的运行时类名(`_GrowableList<int>`),拼出来同样是 `Vec<i64>`。夹具 `typedfromlist` 覆盖超过 2^31 的整数源和 double 源两种,先红后绿 | stub **98 → 97**(crypto 的 `Sha256Sink`)、拒绝 29、可达 69、0 error;run963 连采五次:707 行 / 类型差异 0 / 0 panic |
 | ws964 | **界是可空的类型参数,促升要把界的 `Option` 也摘掉**。`T extends String?` 按界拼(`_spelledAsBound`),所以 `T` 是 `Option<String>`;Kernel 说类型参数自己的可空性是**未定**而不是可空,于是 `if (input == null || input.isEmpty) return input;` 之后那个促升读没有解包,`substring` 落在 `Option<String>` 上。两条:促升解包问的是**拼法**(记下来的 IrType 可空、且不是投影),不是 Kernel 说的可空性;并且 `'..' as T` 在按界拼的参数上**不是 trait 转换**——`dart_cast_to::<dyn String>` 把结构体当成了 trait(E0404)——而是往那个拼法上的普通 coercion。夹具 `promotedor` 覆盖 `||` 守卫的两半和 `as T`,先红后绿 | stub **97 → 96**(intl 的 `toBeginningOfSentenceCase`)、拒绝 29、可达 69、0 error;run964 连采五次:707 行 / 类型差异 0 / 0 panic |
+| ws965 | **建在「不返回」的操作数上的表达式,就是那个操作数**。Dart 先算操作数,所以后面那一步根本到不了;Rust 这边在 `!` 上既解析不出方法(E0282「cannot infer type」),也 await 不了(`()` is not a future)。AOT 编译器凡是证明某个值不可能存在,就在那里种一句自己的 throw,前端按**文本**认出来降成 `unreachable!()`。三处:调用的接收者、`await` 的操作数、以及**转换**的操作数——`dart_cast_to` 那条才是 `inputDecorationTheme` 真正走的路(先按调用改,量出来一个没清;看了未打桩的源码才知道是 `IrCastTo`)。另外按**字面量文本**认而不是按 `identical`:flattening 会重建整棵树,到后端的是副本。夹具 `deadoperand` 把 TFA 那句 marker 亲手写出来(夹具那么小,TFA 自己不会种,只会把整段折掉),覆盖裸的和绑定过的两种;它与 Dart 同输出,但**没能复现出块那一种**——那一种是 CFE 的表达式 `Let`,记在这里 | stub **96 → 93**(`DropdownMenuThemeData`/`DatePickerThemeData` 的 `inputDecorationTheme`,`_ContrastEvaluation._evaluate`)、拒绝 29、可达 69、0 error;run965 连采五次:707 行 / 类型差异 0 / 0 panic |
 
 ## 下一步(2026-09-05 重铺)
 
@@ -620,12 +620,12 @@ Dart 的循环变量是同一个对象。加 `mut` 只是把「诚实地 panic �
 trait 泛型方法**已解**(擦除孪生 `m__erased`,ws482/ws494)。6 仍是 **0/168**,
 但 `runtime/` crate 从 09-06 起存在(无头引擎层)。
 
-**(2026-09-10 校注)** 现状:**ws964 96 stub / 29 拒绝 / 69 crate 全可达 / 0 error**,
-运行尺子 run964 **707 行、类型差异 0、0 panic,连采五次一模一样**——尺子从 ws934
+**(2026-09-10 校注)** 现状:**ws965 93 stub / 29 拒绝 / 69 crate 全可达 / 0 error**,
+运行尺子 run965 **707 行、类型差异 0、0 panic,连采五次一模一样**——尺子从 ws934
 起不再抖(根因见〈已知欠账〉第一条),所以「读三次取多数」那套读法可以退休了,
 一次就算数;为了看住回归,每轮仍连采五次。
 
-**剩下的 96 个桩已经没有大簇了**,最大的一族是 3 个(`TickerFuture` 从 `Option`
+**剩下的 93 个桩已经没有大簇了**,最大的一族是 3 个(`TickerFuture` 从 `Option`
 里 await),其余都是一两个;而**拒绝这边还有一族 9 个**——win32 的 `_WindowsMessage`
 / `_WindowingInitRequest` 走 `dart:ffi` 的 `_loadInt32/_loadInt64/_loadPointer` 与
 `Struct` 的 `#fromTypedDataBase`,是 29 个拒绝里唯一还成簇的。按性价比排,下一步值得做的:

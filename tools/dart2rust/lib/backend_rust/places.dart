@@ -291,6 +291,20 @@ augment class RustBackend {
     return '<${List.filled(arity, spelled).join(', ')}>';
   }
 
+  /// Whether an expression never returns: the one line Dart's AOT compiler
+  /// proved dead (`IrLiteral.unreachable`), reached through the block that
+  /// leads to it. `coerce.dart` asks the same question of a value; this is
+  /// the backend's copy, for the places that build an expression *around*
+  /// one.
+  ///
+  /// By the literal's text, not by identity with `IrLiteral.unreachable`:
+  /// the flattening pass rebuilds the tree, so the instance that reaches
+  /// the backend is a copy (`expressions.dart` reads it the same way where
+  /// it drops a binding of one).
+  static bool _neverReturns(IrExpr? e) =>
+      (e is IrLiteral && e.value.startsWith('unreachable!')) ||
+      (e is IrBlockValue && _neverReturns(e.value));
+
   String _asAny(IrExpr e) {
     final read = _optionRead(e);
     if (read != null) {
