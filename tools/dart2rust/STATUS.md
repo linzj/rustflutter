@@ -522,7 +522,6 @@ Dart 的循环变量是同一个对象。加 `mut` 只是把「诚实地 panic �
 | 轮 | 规则 / 读数 | 数 |
 |---|---|---|
 | run877 | the reading, after ws875-ws877 | — |
-| ws881 | 两个 god class 各拆成一个目录的 part(`augment class`),搬运零改字 | stub **152**,拒绝 49,可达 64;**生成的 Rust 与拆前逐字节相同** |
 | ws882 | part 文件再切细:按成员边界切进两个 5k 文件,最大 part 1,841 行 | **生成的 Rust 与拆前逐字节相同**(md5 4429c8f1),故 152/49/64 不变——这一轮只跑了翻译,没跑 cargo 九轮 |
 | ws883 | `_expressionRaw` 1,717 行一个方法拆成十段 run,`the_class` 再切四份;最大 part 1,452 | **生成的 Rust 仍与拆前逐字节相同**(md5 4429c8f1) |
 | ws884 | 拒绝回滚的名单补全(9→22 字段)并加 `bin/statecheck.py` 守住 | stub **152**,拒绝 49,可达 64;**生成的 Rust 一字未动**——是陷阱不是活 bug |
@@ -561,6 +560,7 @@ Dart 的循环变量是同一个对象。加 `mut` 只是把「诚实地 panic �
 | ws943 | **`a ?? b` 两边是同一个类、但类型实参不同时,左边的拼法只有在右边真放得进去的时候才算数**。`children ?? buttonItems` 一边是 `List<Widget>`、一边是 `List<ContextMenuButtonItem>`,Dart 说整个是 `List<Object>`;而 `lub` 的判定只比 `classNode`,两边都是 `List` 就取了左边,于是右边逐元素被抬成一个它并不实现的 `Widget`。判定改成「类不同**或者**右边不是左边的子类型」(`typeEnvironment.isSubtypeOf`)。夹具 `ifnulllub` 先红(3 个编译错)后绿 | stub **112 → 110**(逐条比新增 **0**,少了两个 `adaptive_text_selection_toolbar.rs` 的 `build`)、拒绝 32、可达 69、0 error;run943 连采五次:707 行 / 类型差异 0 / 0 panic |
 | ws947 | `String.fromCharCodes(codes)` 是前端手写的一条 prelude 调用,而它的实参**一个转换都没走**:`Uint8List` 是 `Vec<u8>`,prelude 收 `Vec<i64>`。手写的 prelude 调用得自己要那次加宽(`_widensNarrowElements` 给别的 `List<int>` 槽做的那次)| stub **110 → 109**(逐条比新增 **0**,少了 `crypto_below/src/digest.rs` 的 `_hex_encode`)、拒绝 32、可达 69、0 error;run947 连采五次:707 行 / 类型差异 0 / 0 panic |
 | ws948 | **促升过的类型参数没有拼法**。Kernel 在 `if (x == null) return;` 证明了一个 `T?` 非空之后,把那个位置写成 `IntersectionType(T% & Object)`,而 `_type` 没有这一条,整个成员被拒。促升改的是**知道什么**,不是**手里拿的是什么**:拼法就是这个参数自己的、非空的那个。(拼成促升到的那一侧会说 `Object`,而值是个 `T`。)夹具 `promotedparam` 先红(带着一模一样的拒绝信息 panic)后绿 | stub 109(不变)、拒绝 **32 → 31**(`UndoHistoryState._update` 现在翻得出来**而且编得过**,没有换成一个桩)、可达 69、0 error;run948 连采五次:707 行 / 类型差异 0 / 0 panic |
+| ws949/950 | **Dart 的 `continue <case>;`**:控制离开这一个 case 去跑**另一个**,而 Rust 的 `match` 跑完一条臂就完了。`LicenseEntryWithLineBreaks.paragraphs` 整个是用这个写的状态机,一直被整member 拒绝。做法:这个 switch 变成一个带标签的 `loop`,臂**编号**(`IrSwitch.threadLabel`),编号是一个 `let mut`,循环对它 `match`;`continue` 就是「改编号、再转一圈」(`IrContinueSwitch`)。臂号在**降体之前**先编好,因为体里要指名道姓。ws949 只做了 `match` 那一种拼法,而这个 switch 的 case 值是 `String`——不是 Rust 的模式,于是拒绝换成了一个桩;ws950 补上 if 链那一种(普通 switch 早就有两种拼法)。夹具 `continueswitch` 两种拼法都覆盖,先红(带着一模一样的拒绝信息 panic)后绿 | stub 109(不变)、拒绝 **31 → 30**(`paragraphs` 现在翻得出来**而且编得过**)、可达 69、0 error;run950 连采五次:707 行 / 类型差异 0 / 0 panic |
 | ws891 | 第五轮复审抓到:ws889 落地后 `regen.py` 的 `hints()` 会**永远误报**——它按 `'throws:' not in driver` 字面判定,而正确的修法恰恰是把那个参数删掉,所以那条提示从此指向唯一不该做的修法。换成 `DECIDED_IN`:只指出决定写在哪两个函数里,不对文件的现状下任何断言。顺手分开探针的两种失败(没调用 vs 调用了没 `?`) | `fails:` 在 frontend.dart 已 11 处、`throws:` 在 kernel driver 已 0 处——两条提示一条正确变哑、一条永久说谎,实测属实;两个诊断分支各跑一次验过 |
 
 ## 下一步(2026-09-05 重铺)

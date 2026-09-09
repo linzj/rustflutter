@@ -391,38 +391,51 @@ augment class KernelFrontend {
       );
     }
     if (node is SwitchStatement) {
-      final cases = <IrCase>[];
-      IrStmt? otherwise;
-      for (final c in node.cases) {
-        final body = _caseBody(c.body);
-        if (c.isDefault) {
-          otherwise = body;
-          continue;
-        }
-        if (c.expressions.isEmpty) {
-          throw Unsupported('empty switch case', _sample(node));
-        }
-        // A case value widens into the scrutinee's type: `switch (tileMode)`
-        // over a `TileMode?` compares an `Option` with `Some(TileMode::Clamp)`.
-        final scrutinee = _staticType(node.expression);
-        cases.add(
-          IrCase([
-            for (final e in c.expressions)
-              _widened(e, scrutinee, expression(e)),
-          ], body),
+      // The arms are numbered *before* the bodies are lowered, because a
+      // body may say `continue <case>` and has to name the arm it means
+      // (`IrContinueSwitch`). The numbering is the emission's: the
+      // non-default cases in order, and `cases.length` for whatever ends
+      // up as `otherwise` -- the `default`, or the last case a language-
+      // exhaustive switch has instead of one (see below).
+      final nonDefault = [
+        for (final c in node.cases)
+          if (!c.isDefault) c,
+      ];
+      final defaultCase = node.cases.where((c) => c.isDefault).firstOrNull;
+      final pullsLast =
+          defaultCase == null &&
+          node.isExplicitlyExhaustive &&
+          nonDefault.isNotEmpty;
+      final armCount = pullsLast ? nonDefault.length - 1 : nonDefault.length;
+      final savedArms = _switchArms;
+      final savedLabel = _switchLabel;
+      final savedThreaded = _switchThreaded;
+      _switchArms = {
+        for (var i = 0; i < armCount; i++) nonDefault[i]: i,
+        if (defaultCase != null) defaultCase: armCount,
+        if (pullsLast) nonDefault.last: armCount,
+      };
+      _switchLabel = '__sw${_nextSwitch++}';
+      _switchThreaded = false;
+      try {
+        return _switchBody(node, defaultCase);
+      } finally {
+        _switchArms = savedArms;
+        _switchLabel = savedLabel;
+        _switchThreaded = savedThreaded;
+      }
+    }
+    if (node is ContinueSwitchStatement) {
+      final arm = _switchArms[node.target];
+      final label = _switchLabel;
+      if (arm == null || label == null) {
+        throw Unsupported(
+          'continue into a switch that is not the enclosing one',
+          _sample(node),
         );
       }
-      // A switch the language checked as exhaustive -- every `TileMode` and
-      // `null` -- has no `default`, and Rust's `if` chain made of it has no
-      // `else`: the chain's value is `()`, and a getter returning through it
-      // does not type. The last case is what is left when none of the
-      // others matched, so it is the `else`.
-      if (otherwise == null &&
-          node.isExplicitlyExhaustive &&
-          cases.isNotEmpty) {
-        otherwise = cases.removeLast().body;
-      }
-      return IrSwitch(expression(node.expression), cases, otherwise);
+      _switchThreaded = true;
+      return IrContinueSwitch(label, arm);
     }
     if (node is WhileStatement) {
       final restored = _forInWhile(node);
@@ -1000,4 +1013,56 @@ augment class KernelFrontend {
   /// The declared return type of the function being lowered, for `return`
   /// to widen into when it is nullable and the value is not.
   DartType? _returnsType;
+
+  /// The innermost `switch`'s cases, numbered as the emission numbers its
+  /// arms (see the `SwitchStatement` lowering). Empty outside one.
+  Map<SwitchCase, int> _switchArms = const {};
+
+  /// The Rust label of the loop that innermost switch's arms run inside,
+  /// used by a `continue <case>` to go round again.
+  String? _switchLabel;
+
+  /// Whether a body of the innermost switch actually said `continue <case>`:
+  /// only then is the loop worth emitting, and the ordinary `match` stands.
+  bool _switchThreaded = false;
+
+  int _nextSwitch = 0;
+
+  /// The `switch` itself, once its arms are numbered.
+  IrStmt _switchBody(SwitchStatement node, SwitchCase? defaultCase) {
+    final cases = <IrCase>[];
+    IrStmt? otherwise;
+    for (final c in node.cases) {
+      final body = _caseBody(c.body);
+      if (c.isDefault) {
+        otherwise = body;
+        continue;
+      }
+      if (c.expressions.isEmpty) {
+        throw Unsupported('empty switch case', _sample(node));
+      }
+      // A case value widens into the scrutinee's type: `switch (tileMode)`
+      // over a `TileMode?` compares an `Option` with `Some(TileMode::Clamp)`.
+      final scrutinee = _staticType(node.expression);
+      cases.add(
+        IrCase([
+          for (final e in c.expressions) _widened(e, scrutinee, expression(e)),
+        ], body),
+      );
+    }
+    // A switch the language checked as exhaustive -- every `TileMode` and
+    // `null` -- has no `default`, and Rust's `if` chain made of it has no
+    // `else`: the chain's value is `()`, and a getter returning through it
+    // does not type. The last case is what is left when none of the
+    // others matched, so it is the `else`.
+    if (otherwise == null && node.isExplicitlyExhaustive && cases.isNotEmpty) {
+      otherwise = cases.removeLast().body;
+    }
+    return IrSwitch(
+      expression(node.expression),
+      cases,
+      otherwise,
+      threadLabel: _switchThreaded ? _switchLabel : null,
+    );
+  }
 }

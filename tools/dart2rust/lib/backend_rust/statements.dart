@@ -42,6 +42,8 @@ augment class RustBackend {
           walk(body);
         case IrLabeled(:final body):
           walk(body);
+        case IrContinueSwitch():
+          break;
         case IrSwitch(:final cases, :final otherwise):
           for (final one in cases) {
             walk(one.body);
@@ -450,6 +452,73 @@ augment class RustBackend {
         _line(label == null ? 'break;' : "break '$label;");
       case IrContinue():
         _line('continue;');
+      case IrContinueSwitch(:final label, :final arm):
+        // `continue <case>;`: set the arm number the loop matches on and go
+        // round again (see `IrSwitch.threadLabel`).
+        _line('$label = $arm;');
+        _line("continue '$label;");
+      case IrSwitch(
+            :final value,
+            :final cases,
+            :final otherwise,
+            :final threadLabel,
+          )
+          when threadLabel != null:
+        // A switch one of whose cases says `continue <case>`. Rust's `match`
+        // runs one arm and is done, so the arms are *numbered* and run
+        // inside a labelled loop: the value picks the first number, an arm
+        // that continues picks the next, and falling out of the match ends
+        // the switch. The value is matched once, as Dart evaluates it once.
+        // The arm number, by the same two spellings the ordinary switch
+        // has: a `match` where every case value is a Rust pattern, an
+        // if-chain where one is not -- `case '[':` is a `String`, and a
+        // `"[".to_string()` arm is "expected a pattern, found an
+        // expression" (`LicenseEntryWithLineBreaks.paragraphs` again, the
+        // shape that made this loop necessary in the first place).
+        if (cases.every((c) => c.values.every(_isPattern))) {
+          _line('let mut $threadLabel: i64 = match ${expr(value)} {');
+          _indent++;
+          for (var i = 0; i < cases.length; i++) {
+            _line('${cases[i].values.map(expr).join(' | ')} => $i,');
+          }
+          _line('_ => ${cases.length},');
+          _indent--;
+          _line('};');
+        } else {
+          final held = '${threadLabel}_value';
+          _line('let $held = ${expr(value)};');
+          _line('let mut $threadLabel: i64 = ');
+          _indent++;
+          for (var i = 0; i < cases.length; i++) {
+            final test = cases[i].values
+                .map((v) => '$held == ${expr(v)}')
+                .join(' || ');
+            _line('if $test { $i } else');
+          }
+          _line('{ ${cases.length} };');
+          _indent--;
+        }
+        _line("'$threadLabel: loop {");
+        _indent++;
+        _line('match $threadLabel {');
+        _indent++;
+        for (var i = 0; i < cases.length; i++) {
+          _line('$i => {');
+          _indent++;
+          stmt(cases[i].body);
+          _indent--;
+          _line('}');
+        }
+        _line('_ => {');
+        _indent++;
+        if (otherwise != null) stmt(otherwise);
+        _indent--;
+        _line('}');
+        _indent--;
+        _line('}');
+        _line("break '$threadLabel;");
+        _indent--;
+        _line('}');
       case IrSwitch(:final value, :final cases, :final otherwise):
         // Rust's `match` takes *patterns*, and only some Dart case values are
         // one. An enum variant and an integer are; a string is not, and

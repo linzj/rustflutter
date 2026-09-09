@@ -795,6 +795,8 @@ augment class RustBackend {
     IrExpr go(IrExpr e) => _substitute(e, by, types);
     IrStmt at(IrStmt inner) => _substituteStmt(inner, by, types);
     return switch (s) {
+      // `continue <case>` carries no expression to substitute in.
+      IrContinueSwitch() => s,
       IrReturn(:final value) => IrReturn(value == null ? null : go(value)),
       IrLocalDecl(:final name, :final type, :final init, :final cell) =>
         IrLocalDecl(name, type, init == null ? null : go(init), cell: cell),

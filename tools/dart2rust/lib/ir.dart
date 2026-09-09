@@ -1284,7 +1284,7 @@ class IrLocalFunction extends IrStmt {
 /// this -- it is the same construct, including the exhaustiveness Dart's
 /// enum switches already rely on.
 class IrSwitch extends IrStmt {
-  const IrSwitch(this.value, this.cases, this.otherwise);
+  const IrSwitch(this.value, this.cases, this.otherwise, {this.threadLabel});
 
   final IrExpr value;
   final List<IrCase> cases;
@@ -1292,6 +1292,29 @@ class IrSwitch extends IrStmt {
   /// The `default:` body, or null. Rust needs a `_` arm when the arms are not
   /// exhaustive, and will say so itself when one is missing.
   final IrStmt? otherwise;
+
+  /// Set when a body of this switch says `continue <case>` ([IrContinueSwitch]):
+  /// the Rust label of the loop the arms are run inside, so that one arm can
+  /// hand control to another. Null for the ordinary `match`.
+  final String? threadLabel;
+}
+
+/// Dart's `continue <label>;` inside a `switch`: control leaves this case and
+/// runs *another* one, which Rust's `match` cannot do.
+///
+/// The switch it belongs to becomes a labelled `loop` whose arms are numbered
+/// (`IrSwitch.threadLabel`), the number is a `let mut` the loop matches on,
+/// and this sets the number and goes round again. `LicenseEntryWithLineBreaks.
+/// paragraphs` is written as a state machine that way, and was refused whole.
+class IrContinueSwitch extends IrStmt {
+  const IrContinueSwitch(this.label, this.arm);
+
+  /// The enclosing switch's loop label.
+  final String label;
+
+  /// Which arm to run: the index into `IrSwitch.cases`, or `cases.length` for
+  /// the `otherwise` body.
+  final int arm;
 }
 
 class IrCase {

@@ -112,6 +112,9 @@ class _WalkSelf {
 
   void statement(IrStmt s) {
     switch (s) {
+      // `continue <case>` reads and writes nothing of `this`.
+      case IrContinueSwitch():
+        break;
       case IrAssignField(:final target, :final name, :final owner):
         // Only a write to `this` makes the method mutating. A cascade writes a
         // *local* it just bound, which needs `let mut` and not `&mut self` --
