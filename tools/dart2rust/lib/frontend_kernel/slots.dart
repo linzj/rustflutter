@@ -749,14 +749,32 @@ augment class KernelFrontend {
     }
   }
 
+  /// One element of a list literal, widened into the element type.
+  ///
+  /// A `num` *element* is the `f64` the prelude spells it, so an `int`
+  /// among the elements is cast: `<num>[bounds.left, .., rect.position,
+  /// rect.direction.index]` mixes the two and the `Vec<f64>` takes only
+  /// one of them (`TextInput._setSelectionRects`). At a *callee's* `num`
+  /// slot the question is a different one -- `num.+` takes `num` and `i +
+  /// 1` stays an `i64` -- and `_numLiteral` answers that where it is
+  /// asked.
+  IrExpr listElement(Expression e, DartType? element) {
+    final lowered = _widened(
+      e,
+      element,
+      _withExpectedReturn(element, e, () => expression(e)),
+    );
+    final isNum =
+        element is InterfaceType &&
+        element.classNode.name == 'num' &&
+        element.nullability != Nullability.nullable;
+    if (!isNum || lowered.rustType?.name != 'int') return lowered;
+    return _toF64(lowered)..rustType = const IrType('double');
+  }
+
   IrExpr _listLiteral(ListLiteral node, DartType element) {
     return IrListLiteral([
-      for (final e in node.expressions)
-        _widened(
-          e,
-          element,
-          _withExpectedReturn(element, e, () => expression(e)),
-        ),
+      for (final e in node.expressions) listElement(e, element),
     ], _type(element));
   }
 }

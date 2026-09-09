@@ -411,6 +411,18 @@ IrExpr coerceInto(
     if (identical(inner, element)) return value;
     return IrNullAware(value, inner)..rustType = slot;
   }
+  // A `void` value where a `dynamic` goes: Dart's `void` has one value and
+  // it is `null`, so the expression runs and the null object is what comes
+  // out. `return switch (m) { 'commit' => _handleCommit(), .. }` out of a
+  // `Future<dynamic>` has three `void` arms and one `bool`
+  // (`WidgetsBinding._handleBackGestureInvocation`, two stubs).
+  if ((slot.name == 'dynamic' || slot.name == 'Object') &&
+      !isNullable(slot) &&
+      (have.name == 'void' || have.name == '()')) {
+    final nullObject = IrStaticCall(null, 'dart_null_object', const [])
+      ..rustType = slot;
+    return IrBlockValue([IrExprStmt(value)], nullObject)..rustType = slot;
+  }
   // `()` where an `Option` goes: nothing, then `None` (`Action.invoke`
   // overridden as `void` under a trait returning `Object?`).
   if (have.name == 'void' && slot.nullable) {

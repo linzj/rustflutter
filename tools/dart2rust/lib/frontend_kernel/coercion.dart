@@ -482,6 +482,23 @@ augment class KernelFrontend {
     // Ahead of the `translated` gate below, which a prelude callee does not
     // pass: the two spellings are not the same type since ws908, and no
     // rule under that gate would ever be asked.
+    // A `dynamic` into a prelude callee's *scalar* slot: the prelude takes
+    // an `i64`/`f64`/`bool`/`String` and a handle is not one, so the value
+    // goes through the checked conversion `as int` takes. The `translated`
+    // gate below never asks, because a scalar parameter mentions no top
+    // type (`DateTime.fromMillisecondsSinceEpoch(arguments)` with
+    // `arguments` read out of a `Map<String, Object?>`).
+    if (prelude &&
+        param is InterfaceType &&
+        scalarNames.contains(param.classNode.name) &&
+        param.nullability != Nullability.nullable &&
+        const {'dynamic', 'Object'}.contains(lowered.rustType?.name)) {
+      try {
+        return coerce(lowered, _type(param));
+      } on Unsupported {
+        // Unspelled: as it was.
+      }
+    }
     if (prelude &&
         lowered.rustType?.name == 'Iterable' &&
         param is InterfaceType &&

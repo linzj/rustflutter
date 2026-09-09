@@ -185,12 +185,7 @@ augment class KernelFrontend {
       // ..and into an `Object?` element (`Object.hashAll([isChecked, ..])`
       // over enums and structs) each is shared, as an argument would be.
       return IrListLiteral([
-        for (final e in positional)
-          _widened(
-            e,
-            element,
-            _withExpectedReturn(element, e, () => expression(e)),
-          ),
+        for (final e in positional) listElement(e, element),
       ], _type(element ?? const DynamicType()));
     }
     // The rest of `dart:math`'s functions are methods on `f64` in Rust,
