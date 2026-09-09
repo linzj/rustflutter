@@ -362,13 +362,25 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
   run848  708 行,0 类型差异,0 panic,201 帧
   run874  708 行,0 类型差异,0 panic,196 帧,2881 条平台消息
 
-  仍未收的两条(run804/run807 量的,仪器已在):
-    - gallery **永不静止**:一帧排下一帧,上游会停,我们不停
-    - 一帧**越来越贵**:frame 6 = 265ms,frame 500 = 493ms,
-      斜率 +0.46ms/帧(线性,即总量二次)。有东西按帧累积
+  这两条(run804/run807 量的)已被 ws934 一并收掉,证据在下:
+    - ~~gallery **永不静止**~~ **已销**。run969 连采五次都是 **6 帧、`exit=0`、
+      两秒跑完**,日志里没有「预算用尽」那一行——程序自己停了,跟上游一样。
+      原因是 ws934:`dyn Trait` 的 `==` 按地址比,`GlobalObjectKey` 每次 rebuild
+      都不相等,整棵 `WidgetsApp` 子树被扔掉重建 **193 次/分钟**。「永不静止」
+      量的就是这个 churn。
+    - 一帧**越来越贵**(frame 6 = 265ms,frame 500 = 493ms,斜率 +0.46ms/帧):
+      **大概率同源,但今天量不出来**——只跑 6 帧,500 帧的斜率无从谈起。按〈已知
+      欠账〉的出场规则第 2 条,它等一次重量:预算调回 60 秒跑一次,斜率还在就重开
+      并写新数,不在就删。**〈已知欠账〉里「运行尺子的下一格该是计数而不是采样」
+      那个探针,多半已经不需要了。**
 ```
 
 ## 撤回与作废(不要再试)
+
+**(2026-09-10)这一节的出场规则。** 本节**只进不出**——一条撤回记录的价值就是防重踩
+(一程十四条落地撤回六条,其中四条能编过而且答案是错的)。唯一允许的压缩是:**一条
+实验后来被重做并结案时,缩成「当初为什么撤、后来为什么对」两句**,过程移出(git 有)。
+不要为了短而删掉「为什么错」和「要重做需要什么」——那两样正是这一节存在的理由。
 
 **(2026-09-10,ws966 试过又撤回;一次都没触发)** `null?.x` 就是 `null`——这条规则
 前端早有(`_isNull(value)`,ws777),按的是 **Kernel 节点**;`TextStyle` 那个
@@ -397,23 +409,14 @@ struct(「签名用得着、还没给体」那一族),`HttpHeaders` 根本不存
 把这些补齐是一件独立的活:给一个**这个程序里没有任何东西造得出来**的 HTTP
 响应面写实现。要么先做那件事再开这张表,要么不开。
 
-**(2026-09-09,ws914 试过又撤回;证据不足,不是定论)** 在 `_widenedInto`
-的可空闸上加 `param is VoidType`。理由是对的——Kernel 给 `VoidType` 的
-nullability 是 `nullable`,照字面读它,每一次往 `void` 槽里存都被包成
-`Some(..)`,`WidgetsBinding._handleBackGestureInvocation` 那两个桩就是这么
-来的;桩确实掉了两个(127 → 125,新增 0)。撤回是因为改完连跑三次渲染树
-都是 2 行,而**这把尺子本来就在抖**:撤回之后同一个二进制连跑两次是
-707 行 / 2 行各一次。三次全空对上一个大约三成的空窗率,p 大概 0.2 ——
-**suggestive,不是证据**。
-
-所以这条记在这里的意思不是「这个改动错」,而是:**在尺子能稳定读之前,
-不要合并这种半径的改动**。那条闸管的是全程序每一个 `void` 槽,两个桩换
-不起一次读不出来的回归。
-
-**(2026-09-10)重做完了,是对的**——ws934 治好了抖动之后,ws936 把
-`param is VoidType` 放回去:stub 124 → **122**(新增 0,少的正是当初那两个
-`_handle_back_gesture_invocation__body`),渲染树连采五次全是 707 行 /
-类型差异 0 / 0 panic。当初撤回的三次空树是尺子在抖,不是这个改动。
+**(2026-09-09 ws914 撤回 → 2026-09-10 ws936 重做,已结案)** `_widenedInto` 的可空闸
+加 `param is VoidType`:Kernel 给 `VoidType` 的 nullability 是 `nullable`,照字面读它,
+每次往 `void` 槽里存都被包成 `Some(..)`(`WidgetsBinding._handleBackGestureInvocation`
+那两个桩就是这么来的)。**当初撤回**是因为改完连跑三次树都是 2 行;**那是尺子在抖,
+不是这个改动**——撤回后同一个二进制连跑两次是 707 行 / 2 行各一次,三次全空对上三成
+空窗率 p≈0.2,suggestive 不是证据。ws934 治好抖动后 ws936 把它放回去:stub 124 →
+**122**,新增 0,少的正是那两个桩,五次采样全 707 行 / 类型差异 0 / 0 panic。
+**教训留着:半径这么大的改动(全程序每一个 `void` 槽),不要在尺子读不稳时合并。**
 
 **(2026-09-10,ws941 试过又撤回;可达 crate 掉了)** 把 `Sink` 加进
 `_preludeInterfaces`(外加一层「Dart 接口名 → prelude trait 名」的映射,因为
@@ -607,30 +610,21 @@ Dart 的循环变量是同一个对象。加 `mut` 只是把「诚实地 panic �
 | ws968 | **`Object.hashAllUnordered(xs)` prelude 里没有**,调用名了一个没人写的函数(E0425)。补上:每个元素的 hash 用**可交换**的方式折进去(求和、异或、计数,和 SDK 自己那套一样),所以同样的元素换个顺序算出来一样。补完之后那个桩还在,原因换成了 mismatched types——`hashAll`/`hashAllUnordered` 收的是 `Iterable<Object?>`,而 prelude 那两个写的是 `Vec<T>`,`RenderObject.hashCode` 递进去的是个 `Set`;于是两个都改成收**任何能迭代的东西**(`IntoIterator`,`Set<T>` 早就实现了)。夹具 `hashunordered` 覆盖「换序相同」「不同元素不同」「有序的那个确实看顺序」和「收 `Set`」四条,先红后绿 | stub **92 → 91**(`RenderObject.hashCode`)、拒绝 29、可达 69、0 error;run968 连采五次:707 行 / 类型差异 0 / 0 panic |
 | ws969 | **字面量之间的算术,做接收者一样是没定住的**。`(1.5 * 0.35).sin()` 和 `1.5.sin()` 一样——里面没有一处说它是哪种浮点(E0689)。ws956 教会了这条规则穿过取负,这是另一种拼法:穿过 `+ - * /`,并且**两边都得是字面量**——只要有一个带类型的操作数,推导本来就有了。后缀写在**最左边那个字面量**上,一处就把整个表达式定住。夹具 `binaryfloatrecv` 覆盖全字面量的两种和带类型操作数的一种,先红(一模一样的 E0689)后绿 | stub **91 → 90**(`InkSparkle._updateFragmentShader`);第三轮的错误数 86 → 80,说明这条规则不止一处在用;拒绝 29、可达 69、0 error;run969 连采五次:707 行 / 类型差异 0 / 0 panic |
 
-## 下一步(2026-09-05 重铺)
-
-本节和〈当前队头〉原来停在 2026-09-03 目标改写时(`crate.py` 的 416 个错误、
-老 census 的类别表),早已对不上,作废重铺。活账是上面的 ws 表,队头以表末
-(ws350:**3284 stub / 804 refusal / 782 `todo!`**,138+1 个 crate 全到)为准:
-
-原来的六条(`todo!` 剩员、refusal 归并、Result 记账债、`Rc<dyn Fn>` 的
-`PartialEq`、`dynamic` vs `Object?`、运行时 0/168)正文移出本文,git 有;
-两处校注就是它们的现状,列在下面。
-
-**loop 已停**(cron `5435ce19` 已删)。下次继续时环境变量见上面那节。
+## 下一步
 
 **不做**(量过的,仍然算数):nightly 的并行前端(第 65 轮,对名字解析无效);
 按 SCC 拆 crate(第 40 轮,库图只允许并行两个);翻译 `dart:core`(第 44 轮,
 +10347)。
 
+**2026-09-05 那版「六条」的正文已删**(git 有,压缩点 `dbc6d961`)。六条里四条已解
+(`Rc<dyn Fn>` 的 `PartialEq`——ws438 起集合相等一律 `DartEq`;`dynamic` vs `Object?`
+——ws497 `Object?` 即 `dynamic`;多实现体的 trait 泛型方法——擦除孪生 `m__erased`,
+ws482/ws494;refusal 归并 804 → 29,一直在按类别收)。还活着的两条:
 
-**(2026-09-07 校注)** 六条的现状:1(`todo!` 剩员)此后再未量,勿引用 782 为新数。
-2(refusal)804 → **252**,一直在按类别收。3(Result 记账债)仍挂:函数值调用不
-参与传播、原语不进 Result;事件循环现在吃掉回调异常并报告(2593df32),债变为
-「报了但没人 catch」。4 **已解**(ws438 起集合相等一律 `DartEq`)。5 前半**已解**
-(ws497:`Object?` 即 `dynamic`);RegExp 仍无引擎(暂未在路径上);多实现体的
-trait 泛型方法**已解**(擦除孪生 `m__erased`,ws482/ws494)。6 仍是 **0/168**,
-但 `runtime/` crate 从 09-06 起存在(无头引擎层)。
+- **Result 记账债**:函数值调用不参与传播、原语不进 Result;事件循环吃掉回调异常
+  并报告(2593df32),债变成「报了但没人 catch」。新的一面见〈已知欠账〉:99.05%
+  的函数带 `Result` 而只有 6.9% 会失败。
+- **运行时 `Dart_*` 仍是 0/168**;`runtime/` crate(无头引擎)从 09-06 起存在。
 
 **(2026-09-10 校注)** 现状:**ws969 90 stub / 29 拒绝 / 69 crate 全可达 / 0 error**,
 运行尺子 run969 **707 行、类型差异 0、0 panic,连采五次一模一样**——尺子从 ws934
@@ -649,6 +643,58 @@ trait 泛型方法**已解**(擦除孪生 `m__erased`,ws482/ws494)。6 仍是 **
    这个改动要买的东西。半径 6553 处 `Vec<` 拼写,前置三条(48541 个 `__v.push(`
    要留裸 `Vec`、`fn iterator(self: Rc<Self>)` 已验、`Rc<RefCell<..>>` 到
    `Rc<dyn DartIterable<T>>` 是 unsizing)都清了。
+
+   **(2026-09-10 补正:这个拼法不是终点,是通往终点的唯一一步。)** 忠实的终点是
+   `List<T>` 落成 **`Rc<dyn DartList<T>>`**——`List` 在 Dart 里是*接口*不是类,
+   而今天类型下降见到 `List` 就无条件写 `Vec<T>`,**和 ws908 之前对 `Iterable`
+   犯的是同一个错**(那次是见到 `Iterable` 就写 `Vec<T>`,于是「静态类型写着
+   `Iterable`、手里是 `Set`」每处都是类型错误)。正被压平的第二、第三个实现在
+   生成代码里数得出来:`Float64List` 123、`Uint8List` 72、`Float32List` 57、
+   `Int32List` 44、`Int64List` 6、`ListQueue` 2、`UnmodifiableView` 1,**共 305 处**;
+   ffi 那 5 个字段读写要的「`_typedDataBase` 共享且可变」是同一件事。
+
+   但**终点今天造不出来**,两道门都只有 `Rc<RefCell<..>>` 开得了:
+
+   - **`dyn DartList<T>` 不满足对象安全。** trait 上八个泛型方法
+     (`first_where<F>`、`first_where_or<F, G>`、`remove_where<F>`、`retain_where<F>`、
+     `fold_dart<R, F>`、`reduce_dart<F>`、`index_where<F>`、`last_where(_or)<F, G>`),
+     一个 `where Self: Sized` 都没有。生成代码里 `dyn DartList` **0 次不是没人用,
+     是写不出来**——对照 `dyn DartIterable` **851 次**,那个 trait 只有 `iterator`
+     和 `dart_to_list` 两个方法,是 ws908 照普查特意做薄的。
+   - **`DartList` 的写方法全是 `&mut self`**(`sort_by_dart`、`set_range`、
+     `insert_all`、`remove_range`、`fill_range`…),`Rc<dyn ..>` 后面拿不到 `&mut`。
+     要它们能用,只有内部可变一条路。
+   - **`DartList<T>` 连超 trait 都没写。** Dart 里 `List` 就是 `Iterable`
+     (`List<E> implements EfficientLengthIterable<E>`),Rust 这边该是
+     `trait DartList<T>: DartIterable<T>`;而今天 `DartIterable<T>: DartAny` 写了,
+     **`DartList<T>` 后面一个超 trait 都没有**——两者在类型系统里毫无关系,只是
+     `Vec` 各实现了一份。补上之后 `Rc<dyn DartList<T>>` 才谈得上 upcast 成
+     `Rc<dyn DartIterable<T>>`(trait upcasting,Rust 1.86 起稳定,本机 rustc 1.98)。
+     **这条按本仓库的规矩要实测,不能假设**——`Rc<Self>` 做 `dyn` 接收者那条就是
+     专门写十行 Rust 验过的(10a017dd)。
+
+   **为什么不是直接用现成的 `Rc<dyn DartIterable<T>>`**(问过一次,记下来):
+   `DartIterable` 只有 `iterator` + `dart_to_list` 两个方法,**只读**,而
+   `dart_to_list()` 交回的是**副本**。拿它当 `List` 的拼法不是慢,是**错**——
+   `list[i] = x` / `list.add(x)` 会写进副本再扔掉,**编得过、静静答错**,正是本文
+   反复记的那一类。生成代码里它表达不了的操作:`.push(` 49011、索引 1203、
+   `.len() as i64` 555、`.insert(` 434、`.remove(` 287、`.clear()` 134、`.sort_by` 17
+   ——**约 5.16 万处**,每处都会变成「整表复制 → 在副本上做 → 扔掉」。反方向也丢:
+   `DartIterable` 的实现者含 `Set`/`LinkedList`,拿它当 `List` 槽等于让一个 `Set`
+   悄悄落进 `List` 槽,正是 ws908 修的那个错的镜像。
+
+   所以层次是:**`Rc<RefCell<Vec<T>>>` 是表示,`Rc<dyn DartList<T>>` 是槽的拼法**,
+   后者靠免费的 unsizing 建在前者上(已验)。而且**现在还不该上 trait**:
+   `DartList` 的实现者只有 `Vec<T>` 一个,而 `DartIterable` 有四个(`Vec`/`Set`/
+   `LinkedList`/+1)——`dyn` 的开销全付、多态一分不赚,要等 typed-data 视图真成为
+   第二个实现者,而那件事的前置又是内部可变。次序是锁死的。
+
+   **还欠一个普查。** ws908 动 `Iterable` 之前先量了两个数(`Iterable` 作为槽
+   1662 处;一个体向它要的成员 25 个名字 501 处),trait 该多薄就是这两个数定的。
+   **`List` 的同一份普查从没做过**——`DartList` 该多胖、哪些成员留在具体 `Vec` 上,
+   今天没有依据。仪器现成(在类型下降那一处打点,不是文本 grep)。
+   (2026-09-10 复量的半径:`Vec<` 拼写 6593 处、`__v.push(` 47996 处,与上面
+   6553/48541 是同一个量在轮次间的漂移。)
 2. **prelude 接口的成员经由对象调用**:`binarySearch<T extends Comparable<Object>>`
    的 `element.compareTo(v)` 落在裸 `T` 上没有方法。`_receiver` 只把类型参数窄化到
    **翻译出来的**抽象界;prelude 有 trait 的那几个(`Comparable`、`DartIterator`)
@@ -674,9 +720,8 @@ trait 泛型方法**已解**(擦除孪生 `m__erased`,ws482/ws494)。6 仍是 **
 **队头现在不是一张类别表**:剩下的 152 个 stub 是长尾(最大的一个形状只有两个成员),
 52 个拒绝里大半是四个「决定」而不是四条规则——见〈已知欠账〉的前两条与〈章结〉。
 
-## 当前队头(2026-09-05)
+## 两半与三把尺子(定义;现状见〈下一步〉末尾的校注)
 
-两半,两把尺子。
 
 **运行时那半(`bin/embedder_api.py`,engine `0c2d270c5a9`)** ——不变:
 
@@ -690,7 +735,7 @@ trait 泛型方法**已解**(擦除孪生 `m__erased`,ws482/ws494)。6 仍是 **
 **翻译那半(dill `0700f1e5`,`gen_kernel --aot --tfa --minimal-kernel` 出的
 sig dill,前缀 `package:,dart:ui`,931 个库;尺子 `bin/stubs.py`,峰值 4–19 GB)**
 
-`ws350: 3284 stub / 804 refusal / 782 todo!`,轨迹见〈数字轨迹〉。
+尺子的轨迹见〈数字轨迹〉,现状见〈下一步〉末尾的 2026-09-10 校注。
 
 三个数各量一样东西:**stub** 是「译出了、编不过」的函数;**refusal** 是
 「没译出」的函数;**`todo!`** 是「编得过、一跑就 panic」的转发器体——
@@ -826,6 +871,23 @@ ws344 才照到它,一量 26199 个,削到 782。
 
 ## 已知欠账
 
+**(2026-09-10)这一节的出场规则。** 三次压缩都只压尺寸、没定出场条件,于是 1266 行
+在一天内涨回 1499——涨的 221 行几乎全在本节。**一条账在下面三种情况下从本节删除**
+(git 留底,不写墓碑):
+
+1. **做掉了**——落地的那一轮在〈活账〉里有行,这里不必再留一份。
+2. **重量归零**——原来那个数今天量不出来了(仪器还在、条件变了)。销账时把新读数
+   写进〈数字轨迹〉一行,本节删除。
+3. **被取代**——结论被后来的读数推翻。**这一种要改写原文,不是加校注**:ffi 那条
+   曾经同一件事三处三个数(16/11/9)、两个相反结论,就是靠加校注攒出来的。
+
+校注只用于「原文没错但要补一层」;凡是「原文错了」,直接改原文。
+
+- **`todo!` 的剩员从没再量过**。三把尺子里这一把量的是「编得过、一跑就 panic」的
+  转发器体:ws344 第一次照到它,一量 **26199 个**,削到 **782**——**此后再没量过**,
+  **勿引用 782 为新数**。桩扫到 0 的那天,决定「跑不跑得起来」的正是这个未知数。
+  仪器就是当初那个,重跑一次的成本很低。
+
 **(2026-09-09 量出来的三个数,ws911)**
 
 - **一次完整启动里,整表复制发生 86259 次、复制了 440334 个元素**
@@ -843,78 +905,18 @@ ws344 才照到它,一量 26199 个,削到 782。
   改动要靠**语义**(别名写得回去、`identical` 对列表不再恒假)来立论,
   不能靠性能。
 
-- **渲染树尺子抖了十几轮,根因找到了,尺子现在不抖了(ws934)。**
-
-  根因是**一条 `==`**:`impl DartEq for dyn Trait` 后端写的是
-  `std::ptr::addr_eq`——按地址比。Dart 的 `==` 是**派发到对象**上的,
-  `Key` 的每个子类都自己重写了 `==`。`_MaterialAppState._buildWidgetApp`
-  建的是 `WidgetsApp(key: GlobalObjectKey(this))`:两次 build 造出两个
-  `GlobalObjectKey`,包着同一个 state,Dart 说相等,这里说不等。于是
-
-  ```
-  Widget.canUpdate(old, new)  ->  runtimeType 相同,key 不等  ->  false
-  Element.updateChild         ->  deactivate + inflate,整棵子树重建
-  ```
-
-  在 `element_super_update_child` 的重建分支上挂一个**静默**普查(累加到
-  `thread_local`,预算用尽时打一行),一次跑得到:
-
-  ```
-  PROBE reinflate total=291
-    [WidgetsApp -> WidgetsApp tyeq=true keyeq=false okey=GlobalObjectKey nkey=GlobalObjectKey x193]
-    [SizedBox -> Semantics x97]
-    [SizedBox -> UnmanagedRestorationScope x1]
-  ```
-
-  **193 次**。每重建一次,下面就有一个新的 `_LocalizationsState`,它的
-  `_locale` 又是 null,`build` 返回 `SizedBox.shrink()`——树就只剩 6 行,
-  直到那一份代理加载完(`LocaleNamesLocalizationsDelegate.load` 在坏的那次
-  正挂着,好的那次不挂)。所以树是**来回摆**的,不是「建不起来」:
-
-  ```
-  DART2RUST_TREE_EVERY=50   frame 50 707 / 100 6 / 150 6 / 200 707 / 250 6
-  ```
-
-  预算到期时 dump 落在哪一相,读数就是哪一个。改完之后连采五次:
-  **707 行 / 类型差异 0 / 0 panic,五次一模一样**;而且程序现在会**自己跑完**
-  (6 帧后空闲退出,`RUN-DONE exit=0`),不再是每帧重建整棵树撑到 432 帧。
-
-  **这条线索上此前记错的三件,一并更正:**
-
-  1. 「那一次跑的整整 380 帧里,树一直是 6 行,从来没到过 707」——**错**。
-     那个探针是每 20 帧走一遍树,开销本身把它压住了;换成每 50 帧就看得见
-     707 和 6 交替。
-  2. 空树的那个 `SizedBox` 不是 `_RootRestorationScopeState` 的。它的
-     blank 分支在好坏两次里都只走 **1** 次(静默计数器量的)。空树的第 5 层
-     是 `_LocalizationsState.build` 的 `SizedBox.shrink()`——比它低四层。
-  3. 「一次跑里有 197 个不同的 `_RootRestorationScopeState`」——数是真的
-     (以 `Rc::as_ptr(&self._root_bucket_valid)` 作身份,约 194 个),但**好坏
-     两次一样**(好的那次 194/193),所以它是同一个重建的**后果**,不是
-     区分好坏的那一条。
-
-  **量这种东西必须用静默探针**:每次 build 打一行(196 行)会让 7/7 次都变空,
-  而同一个二进制不打就是六成满。计数器累加在 prelude 的 `thread_local` 里,
-  预算报告时打一行——这条已写进 memory。
-
-  (`DART2RUST_TREE_EVERY` 和预算用尽时的「还挂着哪些 future / 哪些 completer
-  没完成」都是这次查出来的工具,留着。)
-
-- ~~**provider 的擦除账还剩 6 个桩**~~ —— ws939 清掉了,根因是继承链一致性
-  规则的方向(见活账)。下面这段留着,因为它记的是**怎么找到的**:
-  ws934 的「擦除过的实例化在槽上 cast 回来」让
-  `widget.owner._delegate()` 这一步过了(`dart_cast_to::<dyn _Delegate<T>>()`,
-  对象的 `dart_cast` 本来就答得出这个 `TypeId`),但下一句立刻换了个错:
-
-  ```
-  cascaded.set_element(Some(self.dart_self_ref().get()))
-  expected Rc<_InheritedProviderScopeElement<<T as DartNullable>::Or>>
-  found    Rc<_InheritedProviderScopeElement<T>>
-  ```
-
-  也就是**投影(`Or`)和裸参数在同一个类上混着用**。这是另一条规则,不是
-  这一条;6 个桩(`value` / `unmount` / `build` / `update` / `reassemble` /
-  `mount`)全是同一形状,清起来应该是一次。
-
+- **渲染树尺子抖了十几轮,根因找到了,从 ws934 起不抖**(叙事在活账 ws935)。
+  根因是**一条 `==`**:`impl DartEq for dyn Trait` 写的是 `std::ptr::addr_eq`,按地址比;
+  而 Dart 的 `==` 派发到对象,`Key` 的每个子类都重写了它。`_MaterialAppState` 建的是
+  `WidgetsApp(key: GlobalObjectKey(this), ..)`,每次 rebuild 造一个新 key,两边比不等
+  → `Widget.canUpdate` 说不能更新 → `Element.updateChild` 把整棵子树扔掉重建,
+  **193 次/分钟**;重建出的 `_LocalizationsState` 在 delegate 装好前 build 出
+  `SizedBox.shrink()`——那就是半数读数里的 6 节点树。修法:`dart_any_eq`/`dart_any_hash`
+  向注册表要这个类自己的 `==`/`hashCode`,两个都没声明才退回同一性(Dart 的规则)。
+  **留下的两件工具**:`DART2RUST_TREE_EVERY=n` 每 n 帧打一次树的大小(它扰动被测对象,
+  只看形状、不看真值);预算用尽时报「还挂着哪些 future / 哪些 completer 没完成」。
+- ~~**provider 的擦除账还剩 6 个桩**~~ **已清**(ws939,根因是继承链一致性规则的
+  方向);后续那条「投影 `Or` 与裸参数在同一个类上混用」也已由 ws957 收掉。叙事在活账。
 - **`erasedread` 夹具还没真正复现那条规则。**两端 AGREE,但生成出来的
   `Owner<T>` **没有被擦除**——协变扫描确实标了它
   (`TRACE_COVARIANT_SITE Owner<T> ... Owner<int> -> Owner<Object>`,
@@ -922,45 +924,12 @@ ws344 才照到它,一量 26199 个,削到 782。
   所以这条规则目前的证据是**链上的桩数**(2 个清掉、0 个新增)和
   provider 生成代码里那句 cast,不是夹具。夹具欠着。
 
-- **`Rc<Self>` 做 `dyn` 接收者是合法的,验过了**(work.md 第 3 条动手前的
-  那个「别假设」)。十行 Rust,`rustc --edition 2021` 直接过并跑出 `ab/3`:
-
-  ```rust
-  trait DartIterable<T> { fn iterator(self: Rc<Self>) -> Rc<dyn DartIterator<T>>; }
-  impl<T: Clone + 'static> DartIterable<T> for RefCell<Vec<T>> { .. }
-  let handle: Rc<dyn DartIterable<String>> = xs.clone();   // 零拷贝的 unsizing
-  ```
-
-  同时验到的三件:`Rc<RefCell<Vec<T>>>` 到 `Rc<dyn DartIterable<T>>` 是
-  unsizing,**一次复制都没有**;迭代器 `current` 里「借一个元素、立刻放手」
-  写得出来;别名 `borrow_mut().push(..)` 之后另一边 `borrow().len()` 看得见
-  ——就是那个语义论点。所以第 3 条的三个前置里,这一个已经清掉。
-
 - **`gallery_above` 那 42 秒是冷缓存,不是 crate 重**:`touch` 它的源码后
   连续两次 `cargo build -p dart_main` 是 **8.1 秒 / 7.8 秒**。所以「给大库
   分子模块」这条不要做,该想的是别让 build 那份增量缓存每轮都作废
   (链子重写了全部源码)。
 
 **(2026-09-09 新增,ws908 自己换出来的)**
-
-- **每一次装进 `Iterable` 槽都克隆一份列表**:`!as_iterable` 发的是
-  `Rc::new((x).clone()) as Rc<dyn DartIterable<T>>`。那个 `.clone()` 是为
-  借来的值加的——`&Vec<T>` 的形参、`&Set<T>` 的字段读——句柄要拥有它手里
-  的东西,而后端在这一处分不出手里是值还是借用。生成代码里有 660 处
-  `dyn DartIterable`,其中多数的接收者本来就是一个刚做出来的临时值,这份
-  克隆是白花的。要去掉得让后端知道一个表达式是不是借用(`_borrowed`
-  这类判定现在没有),不是这一轮的活。**没量过它值多少**。
-
-- **界是 `Iterable<E>` 的类型参数,声明按界拼、调用按实例化拼**(ws909
-  量出来,夹具 `iterablebound` 红)。`_type` 见到 `T extends Iterable<E>`
-  就拼成界(`types.dart:176`),而界现在是 `Rc<dyn DartIterable<E>>`;可是
-  实参的槽是把 `T := Set<E>` 代进去之后的 `Set<E>`,于是 `coerceInto` 觉得
-  两边同型、原样放行,发出来的却是「`Set<String>` 塞进 `Rc<dyn
-  DartIterable<String>>`」。`collection` 的 `_UnorderedEquality<E, T extends
-  Iterable<E>>` 就是这个形状(`equality.rs` 的 `hash`/`equals`/`new` 三个
-  桩)。夹具已经写好并且是红的:`SetUnordered`/`ListUnordered` 各一次,
-  `Set` 和 `Vec` 都没被装箱。修法是让实参的槽跟着声明走——参数的声明类型
-  是一个「按界拼」的类型参数时,槽就是那个界,不是实例化。
 
 **(2026-09-09 新增,ws885 自己换出来的)**
 
@@ -1096,8 +1065,8 @@ ws344 才照到它,一量 26199 个,削到 782。
 - **无 `==` 的值类做键**:Dart 按身份,值 struct 按结构;AOT 还会删未读字段
   (run558 记,不在路径上)。
 - **Goal 3 差 `size=`**:渲染树类型序列已 6/6,dump 时拿不到 layout 结果。
-- ~~**727 个 stub 的长尾**~~(2026-09-09:**149**):最大类是 "mismatched types"(约一半),其余是参数数、
-  注解、闭包形状等;随运行尺子推进逐站收。
+- **stub 的长尾**(数随轮次动,现状看〈下一步〉末尾的校注):最大类是
+  "mismatched types",随运行尺子推进逐站收。
 - **擦除泛型的静态类型失真**:擦除 trait 的方法返回 `Elem<C>` 时 Rust 给的是
   `Elem<Rc<dyn Constraints>>`,而 Dart 侧局部声明为 `Elem<BoxC>`——`let e: Rc<Elem<BoxC>>` 对不上
   (atbounds 夹具第一版踩到,改夹具经抽象基类绕开;gallery 里 `createElement` 返回
@@ -1231,7 +1200,14 @@ int 分支不够:Dart 的 `(-7).abs()` 是 **int 7**,印 `7`;当成 double 印
 写好并且**是红的**(`_from_typed_data_base` 没有),留着钉住这一半。
 
 后面 4 个的内存来自一个 Windows DLL(`_winCoTaskMemAlloc`),在这台机器上
+后面 4 个的内存来自一个 Windows DLL(`_winCoTaskMemAlloc`),在这台机器上
 本来就该死在那个调用处,不该在这里假装有内存。
+
+**所以这一族的结论是**:「给 `Pointer` 一个内存模型」这个大决定**不用做**——
+`Rc<RefCell<Vec<T>>>` 落地时 5+2 个顺手掉,剩 4 个应该一直拒绝下去。ws969 的
+29 个拒绝里 ffi 这族是 9 个,是唯一还成簇的。(本条 2026-09-10 由一条写在
+〈已知欠账〉后段、结论相反的旧文并入——那条写于 ws894 之前,说的是 16 个拒绝、
+「这是一个决定」,已删。同一件事一度三处三个数、两个结论,就是加校注攒出来的。)
 
 - **`map(..).toList()` 的双重装箱(ws864,五个候选全部排除,叙事在 git)**:
   `CupertinoDatePicker.build` 发出的链把每个元素装两次——`map` 闭包的体按它
@@ -1258,9 +1234,8 @@ int 分支不够:Dart 的 `(-7).abs()` 是 **int 7**,印 `7`;当成 double 印
   代价:239 个类都要加字段、构造函数要赋值、const 实例要 Dart 的规范化值、
   派生的 `PartialEq`/`Hash` 全部改成手写并跳过它。为的是十一个拒绝。
   **量过、写下来了、没动手。**
-- **`dart:ffi` 的内存模型**:16 个拒绝在 win32 窗口层背后,prelude 故意只给名字
-  不给行为(「拒绝发生在调用点」)。清掉它等于给 `Pointer` 一个内存模型——
-  那是「这个编译器承诺什么」的决定,不是它的缺口。
+- **`dart:ffi` 的内存模型**:结论在上面〈`dart:ffi` 结构体剩下的一半〉(ws894 量过),
+  这里不另记一份。**要点:那个「给 `Pointer` 一个内存模型」的大决定不用做。**
 - **夹具的规模**:四组改动做到了要写夹具那一步,四个都无法在夹具里复现。
   `fx.sh` 走 AOT 管线(`FX_AOT=1`,TFA 会跑)且能跨库,所以缺的不是构造方式,
   是**闭世界的规模**——擦除普查和实例化清单由 924 个库共同决定,四个类的夹具
@@ -1398,6 +1373,9 @@ them are in four groups that are each one decision, not one rule:
          is at the call"); clearing them means giving `Pointer` a memory
          model, which is a decision about what this compiler promises, not
          a gap in it.
+         **(2026-09-10 correction)** Superseded. ws894 cut this group to 11
+         and counted what was left: none of it turns on a memory model.
+         See "`dart:ffi` 结构体剩下的一半" under 已知欠账.
      15  identity on a value class -- `identical` (5), `identityHashCode`
          (4), and the `super.==`/`super.hashCode` calls that stand on them
          (6). Counted: 239 classes have their identity observed, and the
