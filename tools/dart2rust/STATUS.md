@@ -370,6 +370,21 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 
 ## 撤回与作废(不要再试)
 
+**(2026-09-10,ws962 试过又撤回;拒绝 -1、桩 +1,净零)** 把 `dart:io` 的三个
+异常(新写的 `HttpException`,以及 prelude 早就有结构体的 `SocketException`
+/`FileSystemException`)加进 `_preludeClasses`,让 `is` 能经由 `DartCoreAs`
+问到它们。**规则是对的**:那三个结构体本来就在 prelude 里,只有那张表决定
+`is` 够不够得着;夹具 `ishttpexception` 先红(`cannot find type HttpException`)
+后绿,量出来 **拒绝 29 → 28**——`IOClient.send`(它在同一个 catch 里问
+`is HttpException` 和 `is SocketException`)不再被整member 拒绝。
+撤回是因为**它换来了一个桩**:`send` 翻得出来之后编不过,`response.statusCode`
+/`contentLength`/`isRedirect`/`persistentConnection`/`reasonPhrase`/`headers`
+/`handleError` 一个都没有——prelude 的 `HttpClientResponse` 是个空 unit
+struct(「签名用得着、还没给体」那一族),`HttpHeaders` 根本不存在,`handleError`
+要求它是个 `Stream<List<int>>`。**stub 98 → 99**,而「桩只降不升」是硬约束。
+把这些补齐是一件独立的活:给一个**这个程序里没有任何东西造得出来**的 HTTP
+响应面写实现。要么先做那件事再开这张表,要么不开。
+
 **(2026-09-09,ws914 试过又撤回;证据不足,不是定论)** 在 `_widenedInto`
 的可空闸上加 `param is VoidType`。理由是对的——Kernel 给 `VoidType` 的
 nullability 是 `nullable`,照字面读它,每一次往 `void` 槽里存都被包成
