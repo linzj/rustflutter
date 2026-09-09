@@ -413,6 +413,22 @@ augment class KernelFrontend {
         _letAliases.remove(node.variable);
       }
     }
+    // A temporary bound to `null`: nothing is bound. `null` has no place,
+    // no identity and no effect, so reading the literal where the body
+    // reads the variable is the same program -- and the binding was
+    // actively wrong, because a variable of static type `Null` is spelled
+    // `Option<Null>` while the slot the body puts it in wants its own
+    // `Option<T>` (`registry!.onChanged(null)` through a projected `T?`,
+    // `RawRadio._handleChanged`, ws957). Left to the literal, the slot
+    // types it, as an argument written in place would be.
+    if (_isNull(initial)) {
+      _letAliases[node.variable] = initial;
+      try {
+        return expression(node.body);
+      } finally {
+        _letAliases.remove(node.variable);
+      }
+    }
     final name = _nameFor(node.variable);
     // `alpha ?? a` after type flow analysis proved `alpha` non-null: the
     // conditional is gone and the body is the bound variable, *promoted*

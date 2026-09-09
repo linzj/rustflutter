@@ -539,7 +539,6 @@ Dart 的循环变量是同一个对象。加 `mut` 只是把「诚实地 panic �
 | 轮 | 规则 / 读数 | 数 |
 |---|---|---|
 | run877 | the reading, after ws875-ws877 | — |
-| ws886 | 把分析器重新变成门:前端迁到 analyzer 14.3(47→0 错),`check.sh` 摘掉 `|| true` 并给警告数加上限,双前端预言机重新点着 | 33 个 fixture 两侧全能生成(此前分析器那侧一个都不能——driver 自己编译不过);**生成的 Rust 一字未动**(926 模块 md5 e69150fe,拒绝仍 49);check.sh 干净退出,87 checks OK |
 | ws887 | 复审抓到 ws886 过度宣称:重生成的黄金按错误数收下,实为退步——全部退回,并给「黄金怎么验收」装尺子(`regen.py` 先问 `can_propagate()`);顺手清掉恒真式死码 `_computeFailing`/`_errorIn`/`_traitDeclares` | **生成的 Rust 仍一字未动**(926 模块 md5 e69150fe);analyze 86 条不变;check.sh 干净退出 |
 | ws888 | 复审指出 ws887 的门是字面绊线:`'fails:' not in ...` 被一行 TODO 注释就能打开。换成行为探针——真跑这一轮要用的每个 driver,输出里那个必失败的调用不带 `?` 就拒绝;`--anyway` 从 `testdata/src` 改写进 gitignore 的 `.agree/anyway/` | 探针 21 秒,两个 driver 都当场重现出 `Ok((self.checked(value) * 2.0))`;补上 TODO 注释后旧门放行、新门照拒;`git status` 零改动;check.sh 干净退出,86 条 / 87 checks |
 | ws889 | 两个 fixture driver 现在都发得出 `?`:`_fails` 开头那句 `if (throws == null)` 删掉——它收着一个 `ThrowsAnalysis` 却一行答案都不读,是穿着分析外衣的开关;分析器前端补上 `_callFails`(10 个调用点),两侧共用 `ir.dart` 的 `translatedLibrary`。**顺带撞见这一轮最大的一件事**:删掉那个「什么都不决定」的分析,gallery 输出动了 32,653 行——真正起作用的是它把每个 body 都读了一遍;dill 改成显式 `BinaryBuilder(disableLazyReading: true)` | gallery 仍是 e69150fe(926 模块 / 49 拒绝),eager 读 60 秒 / 1.29 GB;预言机 exit 0,曾经新分叉的 7 个(cascade/failure/freefn/ifnull/mutation/nullcheck/trycatch)重新一致,BEHIND 仍是 16;analyze 86 -> 80,check.sh 上限同步下调 |
@@ -579,6 +578,7 @@ Dart 的循环变量是同一个对象。加 `mut` 只是把「诚实地 panic �
 | ws891 | 第五轮复审抓到:ws889 落地后 `regen.py` 的 `hints()` 会**永远误报**——它按 `'throws:' not in driver` 字面判定,而正确的修法恰恰是把那个参数删掉,所以那条提示从此指向唯一不该做的修法。换成 `DECIDED_IN`:只指出决定写在哪两个函数里,不对文件的现状下任何断言。顺手分开探针的两种失败(没调用 vs 调用了没 `?`) | `fails:` 在 frontend.dart 已 11 处、`throws:` 在 kernel driver 已 0 处——两条提示一条正确变哑、一条永久说谎,实测属实;两个诊断分支各跑一次验过 |
 | ws955 | **没有东西能告诉 rustc 一个 prelude 静态调用的类型参数是什么**:`Iterable<int>.generate(n)` 省掉了生成器,填进去的 `None` 什么也不说,`count` 是 `i64` 与元素无关;结果又被迭代而不是存进一个带标注的局部,于是上下文那头也没得推(`type annotations needed for &_`,starter study 的 `home.dart`)。规则:被调方是 prelude 的、且调用**实际填了的**每一个形参都不提到类型参数,就把类型实参拼出来。**但工厂的类型参数是它那个类的**——prelude 把类写成泛型时,它们在 impl 上而不在关联函数上(`Completer<T>.sync()` 是 `Completer::sync()`);少了这一分,E0107 多出 6 个,dart:ui 的 `_futurize` 在内。哪些 prelude 类型带自己的参数,是**读 prelude 源码**读出来的(`_genericPreludeTypes`),不是手列的表。夹具 `generateindices` 两半都覆盖,先红(一模一样的 `&_`)后绿 | stub **109 → 108**、拒绝 29、可达 69、0 error;run955 连采五次:707 行 / 类型差异 0 / 0 panic |
 | ws956 | **一个浮点字面量做接收者要自己说是 `f64`**——这条规则早就有(HCT 里 21 个 E0689),但它只认**光秃秃的**字面量,而 `math.min(-_kFlingVelocity, ..)` 里那个接收者是一个 `const double` 取负之后折出来的字面量,在 IR 里是 `IrUnary('-', 字面量)`:rustc 眼里它照样是 `{float}`,这边却不认。改成看**值**是不是浮点字面量(穿过取负),并且把后缀写在**字面量身上**——`(-(2.0_f64))`,不是 `(-2.0)_f64`,后缀属于字面量而不属于它外面那层表达式。夹具 `minnegconst` 三种拼法(取负的 const、写在调用里的负字面量、光秃秃的)都覆盖,先红后绿 | stub **108 → 107**(reply 的 `_handleDragEnd`)、拒绝 29、可达 69、0 error;run956 连采五次:707 行 / 类型差异 0 / 0 panic |
+| ws957 | **投影的 `T?` 每过一道边界都要换一次拼法**,radio group 那三个桩是同一件事的三种形状。(a)`??`:`<T as DartNullable>::Or` 是关联类型不是 `Option`,`match` 不了——原来只把**被匹配的那一边**摊平,于是两条臂不一样;要**两边都摊**,再把结果放回这个表达式记着的那个投影里(`registry?.groupValue ?? widget.groupValue`)。(b)**tear-off 的被调方槽**:ws952 只认泛型**方法**自己的类型参数,而泛型**类**的 `T?` 同样是投影(`Registry<T>.changed(T? value)` 撕成 `ValueChanged<T?>`,收到的是体里那个 `Option<T>`)。(c)**绑到 `null` 的 `Let` 什么也不绑**:`null` 没有位置、没有身份、没有副作用,body 读哪儿就把字面量放哪儿——原来那条绑定还是**错的**,因为静态类型 `Null` 的变量拼成 `Option<Null>`,而槽要的是它自己的 `Option<T>`(`registry!.onChanged(null)`)。夹具 `projectednullget` 三种形状都覆盖,先红后绿 | stub **107 → 103**(radio 三个,外加 `_detail_page_route` —— (c) 顺手清的)、拒绝 29、可达 69、0 error;run957 连采五次:707 行 / 类型差异 0 / 0 panic |
 
 ## 下一步(2026-09-05 重铺)
 
@@ -605,12 +605,12 @@ Dart 的循环变量是同一个对象。加 `mut` 只是把「诚实地 panic �
 trait 泛型方法**已解**(擦除孪生 `m__erased`,ws482/ws494)。6 仍是 **0/168**,
 但 `runtime/` crate 从 09-06 起存在(无头引擎层)。
 
-**(2026-09-10 校注)** 现状:**ws956 107 stub / 29 拒绝 / 69 crate 全可达 / 0 error**,
-运行尺子 run956 **707 行、类型差异 0、0 panic,连采五次一模一样**——尺子从 ws934
+**(2026-09-10 校注)** 现状:**ws957 103 stub / 29 拒绝 / 69 crate 全可达 / 0 error**,
+运行尺子 run957 **707 行、类型差异 0、0 panic,连采五次一模一样**——尺子从 ws934
 起不再抖(根因见〈已知欠账〉第一条),所以「读三次取多数」那套读法可以退休了,
 一次就算数;为了看住回归,每轮仍连采五次。
 
-**剩下的 107 个桩已经没有大簇了**,最大的一族是 3 个(`TickerFuture` 从 `Option`
+**剩下的 103 个桩已经没有大簇了**,最大的一族是 3 个(`TickerFuture` 从 `Option`
 里 await),其余都是一两个;而**拒绝这边还有一族 9 个**——win32 的 `_WindowsMessage`
 / `_WindowingInitRequest` 走 `dart:ffi` 的 `_loadInt32/_loadInt64/_loadPointer` 与
 `Struct` 的 `#fromTypedDataBase`,是 29 个拒绝里唯一还成簇的。按性价比排,下一步值得做的:

@@ -116,14 +116,30 @@ augment class RustBackend {
       ..rustType = IrType(t.name, nullable: true, arguments: t.arguments);
   }
 
-  IrIfNull _plainIfNull(IrIfNull e) => e.left.rustType?.projected == true
-      ? (IrIfNull(
-          _plain(e.left),
-          e.right,
-          nullableResult: e.nullableResult,
-          eager: e.eager,
-        )..rustType = e.rustType)
-      : e;
+  /// `??` where an arm is the projected `T?`. `<T as DartNullable>::Or` is
+  /// an associated type and not an `Option`, so it cannot be matched on --
+  /// and *both* arms have to be the plain `Option<T>`, not just the one
+  /// being matched: with only the left plained the arms disagreed
+  /// (`registry?.groupValue ?? widget.groupValue` in
+  /// `_RadioListTileState.effectiveGroupValue`, ws957). What comes out is
+  /// then plain, so it is put back into the projection this expression is
+  /// recorded as, exactly as `_nullAware` does for a projected body.
+  String _ifNullProjected(IrIfNull e) {
+    final name = e.rustType?.projected == true ? e.rustType!.name : null;
+    if (e.left.rustType?.projected != true &&
+        e.right.rustType?.projected != true) {
+      return _ifNull(e);
+    }
+    final plain = IrIfNull(
+      _plain(e.left),
+      _plain(e.right),
+      nullableResult: e.nullableResult,
+      eager: e.eager,
+      assignsLeft: e.assignsLeft,
+    )..rustType = e.rustType;
+    final text = _ifNull(plain);
+    return name == null ? text : '<$name as DartNullable>::from_option($text)';
+  }
 
   /// The trait declaring `name` that `owner` implements at more than one
   /// instantiation (`IrClass.extraImpls`), or null: a plain call of such a

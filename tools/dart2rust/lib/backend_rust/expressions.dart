@@ -445,7 +445,7 @@ augment class RustBackend {
                       library[operand.rustType!.name] != null)
             ? '{ let _ = &${expr(operand)}; false }'
             : '${expr(_plain(operand))}.is_none()',
-      IrIfNull() => _ifNull(_plainIfNull(e as IrIfNull)),
+      IrIfNull() => _ifNullProjected(e as IrIfNull),
       // `as_ref()`: `a?.b` reads `a`, and `a` is a field or a loop variable
       // behind a reference far more often than an owned `Option` -- `.map`
       // alone moved out of `*child` (E0507). A body that needs the value

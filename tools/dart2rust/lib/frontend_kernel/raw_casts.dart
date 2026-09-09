@@ -435,24 +435,42 @@ augment class KernelFrontend {
       // the value is put into the callee's spelling on the way through,
       // as an ordinary call's argument is (`NavigatorState.pop<T>([T?
       // result])` torn off in `showDialog`, ws951).
+      //
+      // ..and its *class's* parameter as well, which is still a parameter
+      // here and so still an associated type: `Registry<T>.changed(T? value)`
+      // torn off into a `ValueChanged<T?>` was handed the plain `Option<T>` a
+      // body works with (the radio group's registry, ws957).
       IrType? calleeSlot(DartType declared) {
-        if (method == null ||
-            declared is! TypeParameterType ||
-            !fn.typeParameters.contains(declared.parameter) ||
+        if (declared is! TypeParameterType ||
             declared.nullability != Nullability.nullable) {
           return null;
         }
+        if (method != null && fn.typeParameters.contains(declared.parameter)) {
+          final put = _type(
+            method.substituteType(
+              declared.withDeclaredNullability(Nullability.nonNullable),
+            ),
+          );
+          return IrType(
+            put.name,
+            nullable: true,
+            projected: true,
+            arguments: put.arguments,
+          );
+        }
+        // Only a parameter this compiler keeps and spells as itself: an
+        // erased one's slot is its bound, and a scalar- or list-bounded
+        // one is spelled at the bound too (`_spelledAsBound`) -- neither
+        // is projected.
+        if (_erasedParameter(declared.parameter) ||
+            _spelledAsBound(declared.parameter)) {
+          return null;
+        }
         final put = _type(
-          method.substituteType(
-            declared.withDeclaredNullability(Nullability.nonNullable),
-          ),
+          declared.withDeclaredNullability(Nullability.nonNullable),
         );
-        return IrType(
-          put.name,
-          nullable: true,
-          projected: true,
-          arguments: put.arguments,
-        );
+        if (put.name != declared.parameter.name) return null;
+        return IrType(put.name, nullable: true, projected: true);
       }
 
       IrExpr passedOn(String name, IrType held, DartType declared) {
