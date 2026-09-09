@@ -402,6 +402,27 @@ nullability 是 `nullable`,照字面读它,每一次往 `void` 槽里存都被�
 哪些成员被拒了,protocol impl 那一侧读它就行。这条和「一个被拒的成员不能被
 后写的 protocol impl 调用」是同一条规矩,只是 `dart_cast` 还没照办。
 
+**(2026-09-10,ws944 试过又撤回;夹具当场抓住)** 给「体里对它调了变异方法的
+`for` 循环变量」加 `mut`。三个桩(`SemanticsNode.detach`、`sendSemanticsUpdate`、
+`_buildBottomSheet`)都是这一形状,加上 `mut` 之后确实编得过了——**而且是错的**。
+夹具 `forinmut` 当场说了话:
+
+```
+--- rust: 4,4/abbccc|dddde
+--- dart: 2,2/abb+|e+
+DISAGREE
+```
+
+`for x in xs.iter().cloned()` 交给体的是元素的**副本**,改副本改不到集合里去;
+Dart 的循环变量是同一个对象。加 `mut` 只是把「诚实地 panic 的桩」换成
+「悄悄算错」,比原样更坏。撤回。
+
+**这是别名问题的第三块证据**(前两块:`merge_sort` 把同一个 list 当两个
+`&mut` 参数传;`_mergeSort` 同样)。正解要么是 `iter_mut()` 走可变的那个位置
+(`_mutPlace` 已有,但 `Set<Set<..>>` 的元素在 Rust 里不能就地改),要么是
+把 `List<T>` 换成 `Rc<RefCell<Vec<T>>>`(work.md 第 3 条)。夹具 `forinmut`
+留着并且**预期是红的**,和 `ffistruct` 一样——它是那个改动的验收条件。
+
 近期的(细节在活账/git):
 
 - **ws879**:泛型局部函数(`T? effectiveValue<T>(..)`,4 个拒绝)——声明按 bound 擦除、
