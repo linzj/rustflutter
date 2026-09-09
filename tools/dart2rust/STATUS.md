@@ -726,6 +726,20 @@ ws344 才照到它,一量 26199 个,削到 782。
   尺子做成可复现的,得先查清那个周期是什么**(gallery 首页有没有自己在
   重建整棵树),这是一条没查的线索。
 
+- **`Rc<Self>` 做 `dyn` 接收者是合法的,验过了**(work.md 第 3 条动手前的
+  那个「别假设」)。十行 Rust,`rustc --edition 2021` 直接过并跑出 `ab/3`:
+
+  ```rust
+  trait DartIterable<T> { fn iterator(self: Rc<Self>) -> Rc<dyn DartIterator<T>>; }
+  impl<T: Clone + 'static> DartIterable<T> for RefCell<Vec<T>> { .. }
+  let handle: Rc<dyn DartIterable<String>> = xs.clone();   // 零拷贝的 unsizing
+  ```
+
+  同时验到的三件:`Rc<RefCell<Vec<T>>>` 到 `Rc<dyn DartIterable<T>>` 是
+  unsizing,**一次复制都没有**;迭代器 `current` 里「借一个元素、立刻放手」
+  写得出来;别名 `borrow_mut().push(..)` 之后另一边 `borrow().len()` 看得见
+  ——就是那个语义论点。所以第 3 条的三个前置里,这一个已经清掉。
+
 - **`gallery_above` 那 42 秒是冷缓存,不是 crate 重**:`touch` 它的源码后
   连续两次 `cargo build -p dart_main` 是 **8.1 秒 / 7.8 秒**。所以「给大库
   分子模块」这条不要做,该想的是别让 build 那份增量缓存每轮都作废
