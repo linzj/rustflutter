@@ -554,7 +554,6 @@ Dart 的循环变量是同一个对象。加 `mut` 只是把「诚实地 panic �
 | 轮 | 规则 / 读数 | 数 |
 |---|---|---|
 | run877 | the reading, after ws875-ws877 | — |
-| ws892 | 泛型局部函数:声明按类型参数的界擦写,调用点改读 `node.localFunction` 的原始签名;闭包调用兄弟局部函数是对那个绑定的一次读;块的值若是本块没绑定的局部,要克隆 | stub 150(未升),拒绝 **49 → 45**,可达 64;夹具 `genlocalfn`/`dynfn`/`ifnullmove` |
 | ws893 | 促升过的局部作接收者:`_WalkSelf` 与 `_mutPlace` 现在剥同样的两层(`!` 与「读即克隆」),`let mut` 才跟得上 | stub **150 → 149**,拒绝 45,可达 64;run894 708 行 / 差异 0 / 0 panic;夹具 `promotedmut` |
 | ws894 | `dart:ffi` 的 `_abi()`:结构体布局是「按 ABI 一项的常量表 + `_abi()` 下标」,prelude 按目标机的 `OS`/`ARCH` 在 `Abi.values` 里查,查不到就说没有 | 拒绝 **45 → 38**,stub 149(未升),可达 64;run895 708 行 / 差异 0 / 0 panic;夹具 `ffisizeof` |
 | ws895 | 窄化过的动态 `num` 调用要记下手里剩的是什么(按 prelude 的 `DartDouble` 签名);`_returned` 原先只认识 `IrNew`/`IrConstInstance` 两种「能变成对象的东西」,一次调用是第三种 | stub **149 → 147**,拒绝 38,可达 64;run896 708 行 / 差异 0 / 0 panic / 196 帧;夹具 `dyncall` |
@@ -594,6 +593,7 @@ Dart 的循环变量是同一个对象。加 `mut` 只是把「诚实地 panic �
 | ws960 | **运算符的形参也要 `mut`**。方法的形参在体里被赋值时会带上 `mut`,运算符的没有:`std::ops` 那个 impl 只是转发,而**装着体的那个固有方法**和转发器共用了同一份形参拼法,于是 `Priority operator +(int offset)`(体里先把 `offset` 夹住再用)报 E0384。转发器保持原样——它用不上的 `mut` 是一个被 deny 的 `unused_mut`;固有方法按 `_assignedIn(体)` 决定。夹具 `operatormut` 覆盖「写形参的」和「不写的」两种运算符,先红(一模一样的 E0384)后绿 | stub **100 → 99**、拒绝 29、可达 69、0 error;run960 连采五次:707 行 / 类型差异 0 / 0 panic |
 | ws961 | **裸的集合类型也有元素**。Dart 写 `as List?` 就是 `List<dynamic>`,而降下来的 downcast 目标一个类型实参都没带,`downcast_ref::<Vec>()` 不是任何 Rust 类型(E0107,`PredictiveBackEvent.fromMap` 拿平台消息的字段就是这么转的)。规则:downcast 目标是集合而没写实参时,按它的元数把 `dynamic` 拼出来——`List`/`Set` 一个,`Map` 两个,这正是 Dart 说裸集合装的东西。夹具 `rawlistcast` 覆盖裸的、缺键的、以及写了元素的三种,先红(一模一样的 E0107)后绿 | stub **99 → 98**、拒绝 29、可达 69、0 error;run961 连采五次:707 行 / 类型差异 0 / 0 panic |
 | ws963 | **窄化转换的源也得有类型**。`Uint32List.fromList(xs)` 拼成 `xs.iter().map(|v| *v as u32).collect::<Vec<u32>>()`,而这串东西对**它读的是什么**一个字都没说;源是个字面量列表时,Rust 的整数默认把它定成 `i32`,SHA-256 那八个初值里有五个装不下(`literal out of range for i32`,而且是 deny 的)。做法:把源按**它自己记下来的类型**绑一道(`{ let __src: T = ..; __src }`)——不是按名字认 `List`,列表字面量记的是 CFE 给的运行时类名(`_GrowableList<int>`),拼出来同样是 `Vec<i64>`。夹具 `typedfromlist` 覆盖超过 2^31 的整数源和 double 源两种,先红后绿 | stub **98 → 97**(crypto 的 `Sha256Sink`)、拒绝 29、可达 69、0 error;run963 连采五次:707 行 / 类型差异 0 / 0 panic |
+| ws964 | **界是可空的类型参数,促升要把界的 `Option` 也摘掉**。`T extends String?` 按界拼(`_spelledAsBound`),所以 `T` 是 `Option<String>`;Kernel 说类型参数自己的可空性是**未定**而不是可空,于是 `if (input == null || input.isEmpty) return input;` 之后那个促升读没有解包,`substring` 落在 `Option<String>` 上。两条:促升解包问的是**拼法**(记下来的 IrType 可空、且不是投影),不是 Kernel 说的可空性;并且 `'..' as T` 在按界拼的参数上**不是 trait 转换**——`dart_cast_to::<dyn String>` 把结构体当成了 trait(E0404)——而是往那个拼法上的普通 coercion。夹具 `promotedor` 覆盖 `||` 守卫的两半和 `as T`,先红后绿 | stub **97 → 96**(intl 的 `toBeginningOfSentenceCase`)、拒绝 29、可达 69、0 error;run964 连采五次:707 行 / 类型差异 0 / 0 panic |
 
 ## 下一步(2026-09-05 重铺)
 
@@ -620,12 +620,12 @@ Dart 的循环变量是同一个对象。加 `mut` 只是把「诚实地 panic �
 trait 泛型方法**已解**(擦除孪生 `m__erased`,ws482/ws494)。6 仍是 **0/168**,
 但 `runtime/` crate 从 09-06 起存在(无头引擎层)。
 
-**(2026-09-10 校注)** 现状:**ws963 97 stub / 29 拒绝 / 69 crate 全可达 / 0 error**,
-运行尺子 run963 **707 行、类型差异 0、0 panic,连采五次一模一样**——尺子从 ws934
+**(2026-09-10 校注)** 现状:**ws964 96 stub / 29 拒绝 / 69 crate 全可达 / 0 error**,
+运行尺子 run964 **707 行、类型差异 0、0 panic,连采五次一模一样**——尺子从 ws934
 起不再抖(根因见〈已知欠账〉第一条),所以「读三次取多数」那套读法可以退休了,
 一次就算数;为了看住回归,每轮仍连采五次。
 
-**剩下的 97 个桩已经没有大簇了**,最大的一族是 3 个(`TickerFuture` 从 `Option`
+**剩下的 96 个桩已经没有大簇了**,最大的一族是 3 个(`TickerFuture` 从 `Option`
 里 await),其余都是一两个;而**拒绝这边还有一族 9 个**——win32 的 `_WindowsMessage`
 / `_WindowingInitRequest` 走 `dart:ffi` 的 `_loadInt32/_loadInt64/_loadPointer` 与
 `Struct` 的 `#fromTypedDataBase`,是 29 个拒绝里唯一还成簇的。按性价比排,下一步值得做的:

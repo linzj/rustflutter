@@ -123,7 +123,19 @@ augment class KernelFrontend {
     // `Object` where the value is a `T` (`UndoHistoryState._update`, one
     // refusal at ws948).
     if (type is IntersectionType) {
-      return _type(type.left.withDeclaredNullability(Nullability.nonNullable));
+      final spelled = _type(
+        type.left.withDeclaredNullability(Nullability.nonNullable),
+      );
+      // ..and where the parameter is spelled at a *nullable* bound, the
+      // bound's `Option` goes too. `T extends String?` is a `String?` here
+      // whatever a use says, because the bound is what the body calls
+      // methods on -- and a promotion is precisely the claim that the
+      // `Option` is gone, so `input.substring(1)` after `if (input == null
+      // || input.isEmpty) return input;` is on a `String` (intl's
+      // `toBeginningOfSentenceCase`, ws964).
+      return spelled.nullable && !spelled.projected
+          ? IrType(spelled.name, arguments: spelled.arguments)
+          : spelled;
     }
     if (type is VoidType) return const IrType('void');
     // The bottom type. Thirty in the gallery's dill: `noSuchMethod`s declared

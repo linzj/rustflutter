@@ -327,10 +327,22 @@ augment class KernelFrontend {
       // A type parameter's own nullability is *undetermined*, not
       // non-nullable: `value` after `if (value is! T) throw` in
       // `Provider.of` was returned still an `Option<T>`.
+      // ..and a parameter spelled at a *nullable bound* is held in an
+      // `Option` too, whatever Kernel calls its nullability: `T extends
+      // String?` is an `Option<String>` here, so the promotion unwraps it
+      // as it would a `String?` (intl's `toBeginningOfSentenceCase`, whose
+      // `input.substring(1)` after the guard was on an `Option<String>`,
+      // ws964). Asked of the *spelling*, not of the declared type -- and
+      // not of a projected `T?`, which is an associated type and not an
+      // `Option` at all.
+      final declaredIr = _recordedType(declared);
+      final heldInOption =
+          declared.nullability == Nullability.nullable ||
+          (declaredIr != null && declaredIr.nullable && !declaredIr.projected);
       if (promoted != null &&
           declared is! DynamicType &&
           promoted.nullability != Nullability.nullable &&
-          declared.nullability == Nullability.nullable) {
+          heldInOption) {
         final inside = _nullChecked(
           IrCall(IrLocal(name), 'clone', const [])
             ..rustType = _recordedType(declared),

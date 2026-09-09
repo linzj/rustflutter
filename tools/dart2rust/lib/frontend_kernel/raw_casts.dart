@@ -136,7 +136,16 @@ augment class KernelFrontend {
           )..rustType = _type(to);
         }
         if (from is InterfaceType) {
-          return IrCastTo(expression(node.operand), _type(to));
+          // ..unless the parameter is spelled at its *bound*: `T extends
+          // String?` is an `Option<String>` here, so `'..' as T` is no
+          // trait cast at all -- `dart_cast_to::<dyn String>` named a
+          // struct as a trait (E0404) -- but the ordinary coercion into
+          // that spelling (intl's `toBeginningOfSentenceCase`, ws964).
+          final spelled = _type(to);
+          if (_spelledAsBound(to.parameter)) {
+            return coerce(expression(node.operand), spelled);
+          }
+          return IrCastTo(expression(node.operand), spelled);
         }
       }
       // `Object` and `dynamic` are trait objects here too (`Rc<dyn Object>`).
