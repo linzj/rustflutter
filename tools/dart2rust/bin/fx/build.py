@@ -20,6 +20,7 @@ TOOL = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, os.path.join(TOOL, 'bin'))
 
 import dill as dill_tool  # noqa: E402
+from paths import DART_EXPERIMENTS  # noqa: E402
 import fixtures  # noqa: E402
 
 
@@ -75,7 +76,8 @@ def main():
     # The whole `file:` package, so a fixture may span libraries.
     crate = os.path.join(work, 'pk_' + name)
     r = subprocess.run(
-        [dill_tool.paths()['dart'], 'run', '--packages=' + config,
+        [dill_tool.paths()['dart'], 'run', *DART_EXPERIMENTS,
+         '--packages=' + config,
          os.path.join(TOOL, 'bin', 'dart2rust_package.dart'),
          dill, 'file:', crate])
     if r.returncode != 0:

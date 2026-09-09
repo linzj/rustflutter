@@ -385,7 +385,6 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 
 | 轮 | 规则 / 读数 | 数 |
 |---|---|---|
-| ws822 | `Map.addEntries`, and two rules that measured to nothing | stub **202**,拒绝 79,可达 64 |
 | ws823 | `x is Function` is a test on a signature, not on being a function | stub **203**,拒绝 78,可达 64 |
 | ws826 | an enum the tree shaker emptied is not a refusal | stub **202**,拒绝 71,可达 64 |
 | ws828 | N catch clauses are one catch that dispatches on the type | stub **202**,拒绝 70,可达 64 |
@@ -425,6 +424,7 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 | ws878 | `identityHashCode` on a handle is the address behind it | stub **152**,拒绝 49,可达 64 |
 | ws879 | 泛型局部函数:翻得出来,编不过,整轮撤回(见〈撤回与作废〉) | stub **152**,拒绝 49,可达 64(未动) |
 | ws880 | 编译器自身:装回分析器与单测,四份变异名表并作一处,删死码 387 行 | stub **152**,拒绝 49,可达 64;**生成的 Rust 与 `HEAD~1` 逐字节相同** |
+| ws881 | 两个 god class 各拆成一个目录的 part(`augment class`),搬运零改字 | stub **152**,拒绝 49,可达 64;**生成的 Rust 与拆前逐字节相同** |
 
 ## 下一步(2026-09-05 重铺)
 
@@ -583,6 +583,34 @@ ws601:  722 stub / 252 拒绝 / 63 crate 全可达(138 分区,延迟库合并后
 读数当时并不覆盖它;是单独把 `src_ws880` 和 `src_head` 对了一遍才补上的。
 翻译阶段(`wrote .crate-ws` 出现)之后再改 `lib/*.dart`,虽然不会打断链子,
 但那次读数就不算数了。
+
+## 拆 god class 的结论(ws881,2026-09-09)
+
+**评审把 #1 和 #2 的顺序写反了。** 量出来的:`RustBackend` 的 7 个分节共享
+69 个字段里的 42 个,`KernelFrontend` 的 6 个分节共享 77 里的 35。所以在把
+隐式可变字段改成显式状态之前,分节**不可能**成为独立协作对象;mixin 也不行,
+分节之间是有环的(Expressions ↔ Statements ↔ The class),要用 mixin 就得给
+几百个跨节成员补一份抽象声明,等于把「同一份知识两处写」再犯一遍。
+
+能做且已做的是另一半:**文件拆开,类不拆**。`augment class` 把一个类摊到一个
+目录的 part 里,按文件本来就有的分节注释切,搬运时一个字符没改。
+`lib/backend_rust.dart` 12,936 → 581 + 7 个文件;
+`lib/frontend_kernel.dart` 15,749 → 850 + 6 个文件。最大的一块仍是
+`frontend_kernel/expressions.dart` 8,273 行——那一节内部没有分节注释,
+再切就得自己定边界,不再是机械操作了,留给下一轮。
+
+**代价,写下来而不是等人踩:**
+
+- `augment` 在 `--enable-experiment=augmentations` 后面,dev SDK 上的实验特性。
+  每一个跑这个编译器的 `dart` 都要带,`bin/experiments.sh` 是唯一命名它的地方。
+  SDK 哪天去掉这个特性,build 就停;退回去是机械的(把 part 拼回一个文件、
+  去掉 `augment class` 壳)。
+- **`dart format` 读不了 `augment class`**,对这 11 个文件 exit 65。也就是说
+  `dart format lib` 会报「Formatted 29 files (0 changed)」然后什么都没做,
+  而 pre-commit 会直接挡住任何碰这些文件的提交。`bin/fmt.py` 是入口:
+  把关键字从副本上摘掉、用同一个 SDK 的同一个 formatter 跑、再放回去。
+  `bin/check.sh` 和 `.githooks/pre-commit` 都走它。dart_style 哪天认了
+  `augment`,把 `bin/fmt.py` 删掉换回 `dart format` 就行。
 
 ## 已知欠账
 

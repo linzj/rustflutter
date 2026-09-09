@@ -34,6 +34,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.dirname(HERE)))
 
 sys.path.insert(0, HERE)
 import dill as dill_tool  # noqa: E402
+from paths import DART_EXPERIMENTS  # noqa: E402
 
 MISSING = re.compile(
     r"cannot find (?:type|value|function|struct|trait|attribute macro) "
@@ -50,7 +51,7 @@ def run(command, cwd=REPO, timeout=None):
 
 def libraries(dill, prefix):
     paths = dill_tool.paths()
-    r = run([paths['dart'], 'run', '--packages=' + CONFIG,
+    r = run([paths['dart'], 'run', *DART_EXPERIMENTS, '--packages=' + CONFIG,
              HERE + '/dart2rust_kernel.dart', dill, prefix, '--list',
              '--all'])
     # `--list` prints a class count and the uri; take the uri.
@@ -66,7 +67,7 @@ def examine(dill, uri, work):
     stem = uri.rsplit('/', 1)[-1].replace('.dart', '')
     out = os.path.join(work, stem + '.rs')
     paths = dill_tool.paths()
-    r = run([paths['dart'], 'run', '--packages=' + CONFIG,
+    r = run([paths['dart'], 'run', *DART_EXPERIMENTS, '--packages=' + CONFIG,
              HERE + '/dart2rust_kernel.dart', dill, uri, '-o', out])
     if r.returncode != 0 or not os.path.exists(out):
         return uri, None, ['<did not translate>']

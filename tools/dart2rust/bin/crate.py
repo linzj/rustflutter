@@ -66,6 +66,7 @@ SLICES = {
 
 sys.path.insert(0, HERE)
 import dill as dill_tool  # noqa: E402
+from paths import DART_EXPERIMENTS  # noqa: E402
 
 CARGO_TOML = """[package]
 name = "flutter_translated"
@@ -131,7 +132,7 @@ def main():
             newline='\n').write(CARGO_TOML)
 
     paths = dill_tool.paths()
-    r = run([paths['dart'], 'run', '--packages=' + config,
+    r = run([paths['dart'], 'run', *DART_EXPERIMENTS, '--packages=' + config,
              HERE + '/dart2rust_package.dart', args.dill, args.prefix, src])
     if r.returncode != 0:
         print(r.stdout)

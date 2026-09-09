@@ -16,6 +16,7 @@ be set to keep working as it did:
 `exe()` is the other half of the same move: the SDK's tools are `dart.exe` on
 Windows and `dart` everywhere else, and four call sites said `.exe` outright.
 """
+import io
 import os
 
 # Defaults per host, so neither box has to export anything to keep working.
@@ -32,6 +33,24 @@ FLUTTER = os.environ.get('RUSTFLUTTER_FLUTTER', _FLUTTER)
 APP = os.environ.get('RUSTFLUTTER_APP', _APP)
 ENGINE = os.environ.get(
     'RUSTFLUTTER_ENGINE', os.path.join(FLUTTER, 'engine', 'src'))
+
+
+def _experiments():
+    """The `--enable-experiment=` flags, read from `bin/experiments.sh`.
+
+    Parsed rather than repeated: a second copy of this list is exactly the
+    kind of thing that drifts (see `lib/member_names.dart`).
+    """
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        'experiments.sh')
+    for line in io.open(path, encoding='utf-8'):
+        if line.startswith('DART2RUST_EXPERIMENTS='):
+            return line.split('=', 1)[1].strip().strip('"').split()
+    raise RuntimeError('no DART2RUST_EXPERIMENTS in ' + path)
+
+
+#: Flags every `dart` that runs this compiler needs. See `bin/experiments.sh`.
+DART_EXPERIMENTS = _experiments()
 
 
 def exe(name):

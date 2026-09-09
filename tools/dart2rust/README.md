@@ -100,9 +100,14 @@ of every class in the framework.
 ## Layout
 
     lib/ir.dart            the IR. Knows nothing about Kernel or about Rust.
-    lib/frontend_kernel.dart  Kernel -> IR. The front end in use.
+    lib/frontend_kernel.dart  Kernel -> IR. The front end in use. One class in
+      frontend_kernel/       six files: types, expressions, coercion,
+                             statements, declarations, and the visitors and
+                             whole-program queries that were never in it.
     lib/frontend.dart      analyzer -> IR. Superseded, and does not compile.
-    lib/backend_rust.dart  IR -> Rust source
+    lib/backend_rust.dart  IR -> Rust source. One class in seven files:
+      backend_rust/          expressions, statements, the class, mutability,
+                             flattening, failure, and `_WalkSelf`.
     lib/coerce.dart        one rule for a value entering a slot, both ways
     lib/covariance.dart    where an override widens what a slot takes
     lib/throws.dart        which members can fail, over the whole program
@@ -114,7 +119,9 @@ of every class in the framework.
     bin/run_chain.sh       the ruler: how much translates and compiles
     bin/fx.sh              the other ruler: whether Rust and Dart agree
     bin/run_main.sh        runs the translated gallery headlessly
-    bin/check.sh           the analyzer and the unit tests
+    bin/check.sh           formatting, the analyzer and the unit tests
+    bin/fmt.py             `dart format`, around dart_style's `augment` gap
+    bin/experiments.sh     the one place the Dart experiments are named
     bin/embedder_api.py    what the engine asks of whatever replaces libdart
     testdata/              33 fixtures and the Rust they translate to
     STATUS.md              every round, with its numbers
@@ -154,11 +161,37 @@ Output is not formatted. Pipe it through `rustfmt --edition 2021` before use --
 the backend spends its effort on being right about what to emit, and layout is
 a solved problem it should not be re-solving.
 
+## The two big classes are each one class in a directory
+
+`KernelFrontend` was 14,272 lines and 594 members; `RustBackend` was 12,242.
+Each is now spread over the `part` files under `lib/frontend_kernel/` and
+`lib/backend_rust/`, split along the section comments the files already had
+(`// -- Expressions --`) with `augment class` putting them back together. Not
+one character of the moved code changed, and the generated Rust is byte for
+byte what it was before the split.
+
+**They are not separable objects, and the split does not pretend they are.**
+Measured 2026-09-09: the sections share 42 of `RustBackend`'s 69 fields and 35
+of `KernelFrontend`'s 77, because the state those fields hold is passed
+implicitly between sections rather than as arguments. Until that state is
+explicit, a section cannot become a collaborator, and mixins cannot express
+the split either -- the sections call each other in cycles. So the review that
+asked for the god classes to be split first and the implicit state second had
+the two the wrong way round; this is the half that could be done without
+changing behaviour.
+
+`augment` costs a flag (`bin/experiments.sh`), and it costs `dart format`:
+dart_style cannot parse `augment class` and exits 65 on those eleven files, so
+plain `dart format` reports "0 changed" and formats nothing. `bin/fmt.py` is
+the way in -- it takes the keyword off a copy, runs the same formatter from
+the same SDK, and puts it back. `bin/check.sh` and the pre-commit hook both go
+through it.
+
 ## Checks
 
     bin/check.sh
 
-`dart analyze` and `test/`. Neither existed before 2026-09-09: with no
+Formatting, `dart analyze` and `test/`. Neither existed before 2026-09-09: with no
 `.dart_tool/package_config.json` in this directory the analyzer could not
 resolve `package:kernel`, so it had never been run, and the compiler reached
 51k lines with it off. The first run found 165 issues, among them a dropped

@@ -5,7 +5,7 @@
 # in this directory, `dart analyze` could not resolve `package:kernel` and so
 # was never run, and the compiler reached 51k lines with the analyzer off.
 # `bin/devsetup.py` writes that config; run it once per machine.
-set -e
+set -u
 here=$(cd "$(dirname "$0")/.." && pwd)
 cd "$here"
 
@@ -14,9 +14,15 @@ if [ ! -f .dart_tool/package_config.json ]; then
     exit 1
 fi
 
+. "$here/bin/experiments.sh"
+
 dart=$(command -v dart || true)
 [ -n "$dart" ] || { echo "no dart on PATH" >&2; exit 1; }
 
+echo "== dart format (via bin/fmt.py: dart_style cannot read `augment`) =="
+python3 bin/fmt.py --check || status_fmt=1
+
+echo
 echo "== dart analyze =="
 # Warnings do not fail the run yet: `lib/frontend.dart`, the analyzer front
 # end the Kernel one replaced, no longer compiles against the current
@@ -25,8 +31,8 @@ dart analyze --no-fatal-warnings lib bin test || true
 
 echo
 echo "== tests =="
-status=0
+status=${status_fmt:-0}
 for t in test/*_test.dart; do
-    dart run "$t" || status=1
+    dart run $DART2RUST_EXPERIMENTS "$t" || status=1
 done
 exit $status

@@ -33,7 +33,7 @@ FIXTURES = os.path.join(TOOL, 'testdata', 'fixtures')
 SRC = os.path.join(TOOL, 'testdata', 'src')
 
 sys.path.insert(0, HERE)
-from paths import FLUTTER_DART, FLUTTER_PKGS  # noqa: E402
+from paths import DART_EXPERIMENTS, FLUTTER_DART, FLUTTER_PKGS  # noqa: E402
 
 import dill as dill_tool  # noqa: E402
 import fixtures as fixtures_tool  # noqa: E402
@@ -84,7 +84,7 @@ def needed_imports(text):
 
 def from_analyzer(fixture, out):
     r = subprocess.run(
-        [FLUTTER_DART, 'run', FLUTTER_PKGS,
+        [FLUTTER_DART, 'run', *DART_EXPERIMENTS, FLUTTER_PKGS,
          os.path.join(HERE, 'dart2rust.dart'), fixture, '--all', '-o', out],
         cwd=REPO, capture_output=True, text=True, errors='replace')
     return r.returncode == 0, (r.stdout or '') + (r.stderr or '')

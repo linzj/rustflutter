@@ -38,6 +38,7 @@ export DART2RUST_JOBS
 export RUSTC_BOOTSTRAP=1
 export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Zthreads=$DART2RUST_THREADS"
 here=$(cd "$(dirname "$0")/.." && pwd)
+. "$here/bin/experiments.sh"
 dart=$HOME/flutter_sdk/engine/src/out/host_profile/dart-sdk/bin/dart
 export PATH="$HOME/.cargo/bin:$PATH"
 
@@ -49,7 +50,8 @@ cd "$here" || exit 2
   # in target/, under 16 GB of it live. This reclaims it while
   # nothing is compiling.
   python3 bin/prune_target.py \
-  && "$dart" run --packages=.agree/kernel_package_config.json bin/dart2rust_package.dart \
+  && "$dart" run $DART2RUST_EXPERIMENTS \
+    --packages=.agree/kernel_package_config.json bin/dart2rust_package.dart \
     "$HOME/dart2rust_build/gallery/app_aot_sig.dill" "package:,dart:ui" .crate/src \
   && python3 bin/workspace.py \
   && python3 bin/stubs.py --rounds 80 --report "$report"

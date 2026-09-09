@@ -6,6 +6,10 @@
 # bitten by, and nothing that would only reformat it -- `dart format` already
 # owns layout, and a wall of style warnings would hide the real ones.
 analyzer:
+  # Kept in step with `bin/experiments.sh`, which is where every other tool
+  # reads it from; the analyzer has no way to be pointed at that file.
+  enable-experiment:
+    - augmentations
   errors:
     # A `switch` over the IR's node kinds that has grown a case is a bug, not
     # a style question.

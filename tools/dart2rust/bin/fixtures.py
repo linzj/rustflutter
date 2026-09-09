@@ -38,6 +38,7 @@ FIXTURES = os.path.join(TOOL, 'testdata', 'fixtures')
 sys.path.insert(0, HERE)
 from paths import (  # noqa: E402
     APP_PACKAGES,
+    DART_EXPERIMENTS,
     FLUTTER_DART,
     FLUTTER_PKGS,
 )
@@ -71,14 +72,14 @@ def build_dill(fixture, work):
 
 
 def from_analyzer(fixture, out):
-    r = run([FLUTTER_DART, 'run', FLUTTER_PKGS,
+    r = run([FLUTTER_DART, 'run', *DART_EXPERIMENTS, FLUTTER_PKGS,
              'tools/dart2rust/bin/dart2rust.dart', fixture, '--all', '-o', out])
     return r.returncode == 0, (r.stderr or '')
 
 
 def from_kernel(dill_path, fixture, out, config):
     paths = dill_tool.paths()
-    r = run([paths['dart'], 'run', '--packages=' + config,
+    r = run([paths['dart'], 'run', *DART_EXPERIMENTS, '--packages=' + config,
              'tools/dart2rust/bin/dart2rust_kernel.dart', dill_path,
              as_uri(fixture), '-o', out])
     return r.returncode == 0, (r.stderr or '')

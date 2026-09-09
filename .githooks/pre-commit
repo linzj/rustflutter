@@ -61,6 +61,22 @@ for f in $files; do
                 fail=1
                 continue
             fi
+            # dart2rust's two big classes are each split across `part` files
+            # with `augment class`, which dart_style cannot parse -- plain
+            # `dart format` exits 65 on them, which would block every commit
+            # touching one. `bin/fmt.py` formats them by taking the keyword
+            # off a copy; it is the same formatter, same SDK.
+            case "$f" in
+                tools/dart2rust/*)
+                    if ! python3 "$repo_root/tools/dart2rust/bin/fmt.py" \
+                            --check "$repo_root/$f" >/dev/null 2>&1; then
+                        echo "pre-commit: dart format: $f" >&2
+                        echo "  fix with: python3 tools/dart2rust/bin/fmt.py" >&2
+                        fail=1
+                    fi
+                    continue
+                    ;;
+            esac
             if ! "$dart_bin" format --output=none --set-exit-if-changed                     "$repo_root/$f" >/dev/null 2>&1; then
                 echo "pre-commit: dart format: $f" >&2
                 echo "  fix with: dart format $f" >&2

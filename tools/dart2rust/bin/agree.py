@@ -37,7 +37,7 @@ HEADER = ('use crate::{Object, Offset, Rect, SentinelValue, Size, '
 UPSTREAM = 'E:/source/flutter/packages/flutter/lib/src/painting/alignment.dart'
 LIBRARY = 'package:flutter/src/painting/alignment.dart'
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from paths import FLUTTER_DART, FLUTTER_PKGS  # noqa: E402
+from paths import DART_EXPERIMENTS, FLUTTER_DART, FLUTTER_PKGS  # noqa: E402
 
 sys.path.insert(0, HERE)
 import dill as dill_tool  # noqa: E402  -- for the matched toolchain paths
@@ -49,14 +49,14 @@ def run(command, cwd=REPO):
 
 
 def from_analyzer(out):
-    r = run([FLUTTER_DART, 'run', FLUTTER_PKGS,
+    r = run([FLUTTER_DART, 'run', *DART_EXPERIMENTS, FLUTTER_PKGS,
              'tools/dart2rust/bin/dart2rust.dart', UPSTREAM, '--all', '-o', out])
     return r.returncode == 0, (r.stderr or '')
 
 
 def from_kernel(out, dill_path, config):
     paths = dill_tool.paths()
-    r = run([paths['dart'], 'run', '--packages=' + config,
+    r = run([paths['dart'], 'run', *DART_EXPERIMENTS, '--packages=' + config,
              'tools/dart2rust/bin/dart2rust_kernel.dart', dill_path, LIBRARY,
              '-o', out])
     return r.returncode == 0, (r.stderr or '')
