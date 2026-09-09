@@ -383,9 +383,10 @@ nullability 是 `nullable`,照字面读它,每一次往 `void` 槽里存都被�
 不要合并这种半径的改动**。那条闸管的是全程序每一个 `void` 槽,两个桩换
 不起一次读不出来的回归。
 
-**(2026-09-10 补)尺子已经稳了**——ws934 治好了抖动(连采五次全是 707 行 /
-类型差异 0 / 0 panic),所以这条现在**可以重做**:把 `param is VoidType`
-放回去,跑一次链和五次渲染树,读数就有意义了。这是下一步该做的事之一。
+**(2026-09-10)重做完了,是对的**——ws934 治好了抖动之后,ws936 把
+`param is VoidType` 放回去:stub 124 → **122**(新增 0,少的正是当初那两个
+`_handle_back_gesture_invocation__body`),渲染树连采五次全是 707 行 /
+类型差异 0 / 0 panic。当初撤回的三次空树是尺子在抖,不是这个改动。
 
 近期的(细节在活账/git):
 
@@ -470,7 +471,6 @@ nullability 是 `nullable`,照字面读它,每一次往 `void` 槽里存都被�
 
 | 轮 | 规则 / 读数 | 数 |
 |---|---|---|
-| ws874 | a method body falls into the null of its own type, once | stub **156**,拒绝 57,可达 64 |
 | ws875 | a scalar stands in an interface slot it implements | stub **154**,拒绝 57,可达 64 |
 | ws876 | `a ?? b` is an object where Dart says `Object`, not its text | stub **152**,拒绝 57,可达 64 |
 | ws877 | a super call reaches an operator, as it reaches any other member | stub **152**,拒绝 52,可达 64 |
@@ -510,6 +510,7 @@ nullability 是 `nullable`,照字面读它,每一次往 `void` 槽里存都被�
 | ws915 | **`SynchronousFuture.then` 必须当场回调**,而这里它派了个任务。Flutter 自己在 `_RootRestorationScopeState._replaceRootBucket` 里写了断言:`assert(!_isWaitingForRootBucket); // Ensure that load finished synchronously.`——靠的就是 `rootBucket` 在桶已经有效时返回 `SynchronousFuture`,`then` 同步回调。派任务的话,那一帧 `build` 返回 `SizedBox.shrink()`,整棵子树就没了。prelude 的 `DartFuture` 加一位 `synchronous`(只有 `DartFuture::synchronous` 会置),`then` 见到它就当场跑 `on_value` 并交回另一个同步 future;`Future.value(x).then(f)` 不受影响——Dart 那个本来就是微任务。**认哪个类不看名字**:问它自己的 `then` 体里有没有把回调参数当函数调用(`_CallsParameter`)——`SynchronousFuture.then` 里是 `onValue(_value)`,`package:async` 的 `DelegatingFuture.then` 是转交给别的 future,不算。这个程序里 `_futureLike` 只匹配到 `SynchronousFuture` 一个类(`package:async` 不在可达集里),但判定是照体写的,再来一个也答得对 | stub **127**(不变)、拒绝 33、可达 69、0 error;`future_synchronous` 出现在 10 个文件里,包括 `services_restoration.rs`;**渲染树的抖动没治好**:5 次采样 2 满 3 空,和改之前分不出来。**帧数 432 → 290(降 33%),原因没查**——这是这条改动已知的代价,记在这里 |
 | ws916 | `xs.iter().map(|child| ..)` 交给体的是 `&Rc<dyn X>`,比句柄多一层引用,而接收者按 `_isHandle` 拼成 `&*child`——少解一层,于是 `FocusNode::to_diagnostics_node(&*child, ..)` 说「`Rc<dyn FocusNode>` 没有实现 `FocusNode`」。空安全绑定(`IrBound`)早就有这条 `&**`,缺的是**谁知道这个局部是按引用绑的**——只有 `_stepClosure` 知道,所以它像记 `_cellLocals` 一样把这些名字记进 `_refLocals`,接收者那一处照着 `IrBound` 的样子多解一层 | stub 127 → **126**、拒绝 33、可达 69、0 error;与 ws932 逐条比新增 0,少了 `focus_node_super_debug_describe_children` |
 | ws934 | **trait 对象的 `==` 按地址比,而 Dart 的 `==` 派发到对象**:`WidgetsApp(key: GlobalObjectKey(this))` 的两把钥匙包着同一个 state,Dart 说相等、这里说不等,于是 `canUpdate` 说不能更新,`WidgetsApp` 连同整棵子树每次 rebuild 都重建(60 秒 193 次)——渲染尺子抖了十几轮就是这件事,细节在〈已知欠账〉。改成和 `dyn Object` 一样走对象自己的答案(prelude 的 `dart_any_eq`/`dart_any_hash`:注册表里有就用类的 `==`,没有退回地址)。顺路两条:擦除过的实例化在槽上 cast 回来(类型参数带 `'static`,`TypeId` 问得出),而「结果按界读回来」的调用上接收者不做这次 cast(否则转换两次);`statecheck.py` 点名的 `_refLocals` 补进 `_member` 的存/还 | stub **126 → 124**(逐条比新增 **0**)、拒绝 33、可达 69、0 error;21 个 fixture 全 AGREE;**run935 连采五次全是 707 行 / 类型差异 0 / 0 panic**——尺子第一次不抖 |
+| ws936 | 把 ws914 撤回的那条放回去并**量了**:Kernel 给 `VoidType` 的 nullability 是 `nullable`,照字面读,每一次往 `void` 槽里存都被包成 `Some(..)`;`_widened` 的可空闸现在也认 `param is VoidType`。当初撤回的理由是「改完连跑三次渲染树都是 2 行」,而那是尺子在抖(ws934 治好了)。顺路给擦除加了一个诊断:`DART2RUST_TRACE_ERASED=1` 说协变扫描标过的参数最后**擦没擦、被哪一道闸拦下**——协变的 trace 只说标了什么 | stub **124 → 122**(逐条比新增 **0**,少了 `widgets_binding.rs` 的 `_handle_back_gesture_invocation__body` 与它的 super fn)、拒绝 33、可达 69、0 error;run936 连采五次:707 行 / 类型差异 0 / 0 panic |
 | ws891 | 第五轮复审抓到:ws889 落地后 `regen.py` 的 `hints()` 会**永远误报**——它按 `'throws:' not in driver` 字面判定,而正确的修法恰恰是把那个参数删掉,所以那条提示从此指向唯一不该做的修法。换成 `DECIDED_IN`:只指出决定写在哪两个函数里,不对文件的现状下任何断言。顺手分开探针的两种失败(没调用 vs 调用了没 `?`) | `fails:` 在 frontend.dart 已 11 处、`throws:` 在 kernel driver 已 0 处——两条提示一条正确变哑、一条永久说谎,实测属实;两个诊断分支各跑一次验过 |
 
 ## 下一步(2026-09-05 重铺)

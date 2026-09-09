@@ -864,7 +864,15 @@ augment class KernelFrontend {
           ? IrSome(widened)
           : widened;
     }
-    if (param == null || param.nullability != Nullability.nullable) {
+    // ..and `void`, which Kernel writes with a *nullable* nullability: read
+    // literally, every value stored into a `void` slot came out `Some(..)`
+    // -- `WidgetsBinding._handleBackGestureInvocation`'s two stubs were
+    // that. Withdrawn once (ws914) because three render-tree samples came
+    // back empty and the ruler was flaking at the time; the ruler stopped
+    // flaking at ws934, so this is back and measured.
+    if (param == null ||
+        param is VoidType ||
+        param.nullability != Nullability.nullable) {
       // A nullable value into a non-nullable parameter: Dart would not have
       // compiled it, so type flow analysis proved it non-null and rewrote
       // the check away (`alpha ?? a` became `alpha`). The unwrap is that

@@ -512,7 +512,33 @@ augment class KernelFrontend {
     return finder.found;
   }
 
+  /// `DART2RUST_TRACE_ERASED=1`: one line per parameter the covariance scan
+  /// marked, saying whether erasure actually followed and which guard
+  /// decided. The scan's own trace (`DART2RUST_TRACE_COVARIANT`) says what
+  /// was marked; this says what was done with it, which is the half that
+  /// was missing when `Owner<T>` came out generic after being marked.
+  static final bool _traceErased =
+      Platform.environment['DART2RUST_TRACE_ERASED'] == '1';
+
+  final Set<TypeParameter> _tracedErased = {};
+
   bool _erasedParameter(TypeParameter p) {
+    if (_traceErased && covariantParameters.contains(p)) {
+      if (_tracedErased.add(p)) {
+        final owner = p.declaration;
+        final where = owner is Class ? owner.name : '$owner';
+        final why = !erase
+            ? 'erase off'
+            : (owner is Class && !_translatedClass(owner))
+            ? 'not translated'
+            : _keptForTypeLiteral(p)
+            ? 'kept for a type literal'
+            : _erasableBound(p.bound)
+            ? 'ERASED'
+            : 'bound ${p.bound} has no handle';
+        stderr.writeln('TRACE_ERASED $where<${p.name}> $why');
+      }
+    }
     if (!erase) return false;
     // Erasure is a property of the declarations this compiler writes: a
     // prelude class's parameter (`HashSet<E>`) is the prelude's own
