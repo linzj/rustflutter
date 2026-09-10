@@ -18,7 +18,34 @@ augment class RustBackend {
         : library[owner]?.methods
               .where((m) => m.name == name && m.isStatic)
               .firstOrNull;
-    if (target == null || !target.isAsync) return 'std::rc::Rc::new($path)';
+    if (target == null || !target.isAsync) {
+      final made = 'std::rc::Rc::new($path)';
+      // Unsized here, where the node says what it is: `Rc::new(f)` on a
+      // function item is an `Rc<fn item>`, and unsizing applies to the
+      // pointer, so Rust will not reach through an `Option` to do it.
+      // `Some(Rc::new(_buildCupertinoDialogTransitions))` is an
+      // `Option<Rc<fn item>>` where `Option<Rc<dyn Fn(..)>>` was wanted
+      // ("expected `dyn Fn`, found fn item", `CupertinoDialogRoute`'s
+      // `transitionBuilder ?? _buildCupertinoDialogTransitions`). The
+      // binding is the device the closure path already uses (`!rc`).
+      //
+      // Only for a target that is *known* and all-positional, because that
+      // is exactly when nothing downstream still owes this value a change
+      // of shape. Rust puts parameters in declaration order; a slot's
+      // function type may list named ones differently, and the un-unsized
+      // `Rc<fn item>` is what lets `_namedOrderAdapter` reorder them later.
+      // Pinning regardless froze five wrong signatures
+      // (`focusTraversalPolicyDefaultTraversalRequestFocusCallback`, where
+      // `(alignmentPolicy, alignment)` met `(alignment, alignmentPolicy)`),
+      // and pinning whenever the target was merely *not found* froze one
+      // more: `target` is looked up among this library's functions and
+      // static methods, so a constructor tear-off
+      // (`RoundedRectangleBorder::new`) is null here and named besides.
+      final pinnable = target != null && !target.params.any((p) => p.named);
+      return type != null && type.isFunction && pinnable
+          ? '{ let __f: ${this.type(type)} = $made; __f }'
+          : made;
+    }
     // The parameters and the error spelled, as a closure literal's are:
     // nothing else infers them behind the `Rc` (E0282, ws454).
     final params = type?.parameters ?? [for (final p in target.params) p.type];
