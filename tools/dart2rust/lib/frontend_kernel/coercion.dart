@@ -267,9 +267,22 @@ augment class KernelFrontend {
         value,
         param,
         lowered,
+        // ..and a slot spelled `Object` outright behaves like a bare
+        // `Function`: both are `Rc<dyn Object>` in the prelude's signature,
+        // and a closure reaching one has to become a function object. Only
+        // Dart's *declared* parameter was consulted here, so
+        // `Future.onError` -- whose parameter has a signature while the
+        // prelude's `catch_error` still takes `Rc<dyn Object>` -- skipped
+        // the coercion entirely and went in bare as `Rc::new(closure)`,
+        // standing up only because `impl<T: 'static> Object for T` is
+        // blanket. `catchError` never had the problem: its parameter *is* a
+        // bare `Function`.
         translated:
             translated &&
-            !(prelude && lowered is IrClosure && !_bareFunctionType(param)),
+            !(prelude &&
+                lowered is IrClosure &&
+                !_bareFunctionType(param) &&
+                slotIr?.name != 'Object'),
         prelude: prelude,
         slotIr: slotIr,
       );

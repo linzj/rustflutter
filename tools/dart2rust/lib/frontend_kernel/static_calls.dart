@@ -367,11 +367,24 @@ augment class KernelFrontend {
       // With the extension's own parameters put in: the handler returns
       // `FutureOr<T>`, and lowered against the declaration it spelled a
       // `T` nothing here declares.
+      //
+      // ..and the handler goes into an *object* slot, because that is what
+      // the prelude's `catch_error` takes (`on_error: Rc<dyn Object>`).
+      // Saying so here is what makes a closure become a function object:
+      // `coerce.dart` decides that from the slot, and left to the
+      // extension's own declaration the slot is a typed function, so the
+      // closure went in bare as `Rc::new(closure)` and stood up only
+      // because `impl<T: 'static> Object for T` is blanket. `catchError`
+      // never had the problem -- its Dart parameter is a bare `Function`,
+      // which already spells the object.
       final args = _arguments(
         node.arguments,
         target.function,
         true,
         _instantiated(node),
+        null,
+        null,
+        [null, const IrType('Object')],
       );
       final value = node.arguments.types.isNotEmpty
           ? _type(node.arguments.types.first)
