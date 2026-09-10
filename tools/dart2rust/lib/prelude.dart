@@ -5899,11 +5899,20 @@ impl<T> Pointer<T> {
     }
 }
 
+/// Written out rather than derived, both of them: a derive would add a
+/// `T: Clone`/`T: Copy` bound that a pointer does not need -- it is an
+/// address, and `PhantomData<T>` is `Copy` whatever `T` is.
+///
+/// `Copy` because Dart's `Pointer` is a value: `_onMessage` passes the same
+/// `message` to a handler on every turn of a loop, and without it the
+/// second turn used a moved value.
 impl<T> Clone for Pointer<T> {
     fn clone(&self) -> Self {
-        Pointer(self.0, std::marker::PhantomData)
+        *self
     }
 }
+
+impl<T> Copy for Pointer<T> {}
 
 /// A marker, not a trait: `Pointer<NativeType>` is written as a *type*
 /// upstream, and a trait there wants `dyn` (4 `E0782`).
