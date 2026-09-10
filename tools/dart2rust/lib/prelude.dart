@@ -8065,6 +8065,54 @@ impl<T: DartNullable + 'static> Completer<T> {
         self.future.resolve(Ok(value));
     }
 
+    /// Dart's `complete` takes a `FutureOr<T>`, not just a `T`: handed a
+    /// future, the completer's own future completes when that one does.
+    /// `SchedulerBinding.scheduleTask` does exactly that -- its
+    /// `TaskCallback<T>` returns `FutureOr<T>` and its result goes straight
+    /// into `completer.complete(..)` ("`?` operator has incompatible types",
+    /// E0308, ws977).
+    ///
+    /// Separate from `complete` rather than folded into it: `complete`'s
+    /// parameter is the *projected* `T?`, which is what every other call
+    /// site passes, and making that generic would move inference under all
+    /// of them for the sake of one shape.
+    pub fn complete_or(&self, value: Option<FutureOr<T>>)
+    where
+        T: Clone,
+    {
+        if self.future.is_done() {
+            panic!("Completer completed twice");
+        }
+        // `complete([FutureOr<T>? value])`: the argument is optional there
+        // too, and an omitted one completes with this type's null.
+        let Some(value) = value else {
+            let null = T::dart_null()
+                .expect("Completer completed with null for a non-nullable type");
+            self.future.resolve(Ok(null));
+            return;
+        };
+        match value {
+            FutureOr::Value(value) => {
+                let value = value
+                    .or_else(T::dart_null)
+                    .expect("Completer completed with null for a non-nullable type");
+                self.future.resolve(Ok(value));
+            }
+            // Chained through the scheduler, the way `when_complete` does:
+            // this completer's future settles when the given one does.
+            FutureOr::Future(future) => {
+                let shared = self.future.clone();
+                DartFuture::spawn_named("Completer.complete", std::boxed::Box::pin(async move {
+                    let settled = future.await;
+                    if !shared.is_done() {
+                        shared.resolve(settled.clone());
+                    }
+                    settled
+                }));
+            }
+        }
+    }
+
     pub fn is_completed(&self) -> bool {
         self.future.is_done()
     }

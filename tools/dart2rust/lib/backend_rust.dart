@@ -368,6 +368,12 @@ class RustBackend {
     final methodTypeParams = _methodTypeParams;
     final returns = _returns;
     final selfBinding = _selfBinding;
+    // `_superSelf` says how `this`'s type is spelled inside the super
+    // function being written (`dyn Trait` or `__Self`). Its own restore
+    // sits at the end of the body, which a refusal throws straight past --
+    // and then the *next* member is written spelling `dyn Trait` for a
+    // `this` that is not one. `bin/statecheck.py` caught it (ws977).
+    final superSelf = _superSelf;
     final spellsReturn = _spellsReturn;
     final refLocals = _refLocals;
     try {
@@ -419,6 +425,7 @@ class RustBackend {
       _methodTypeParams = methodTypeParams;
       _returns = returns;
       _selfBinding = selfBinding;
+      _superSelf = superSelf;
       _spellsReturn = spellsReturn;
       _refLocals = refLocals;
     }

@@ -42,7 +42,7 @@ augment class RustBackend {
 
   String _call(
     IrExpr? target,
-    String name,
+    String name0,
     List<IrExpr> args, {
     String? qualifier,
     String? receiverClass,
@@ -52,6 +52,27 @@ augment class RustBackend {
     bool asyncTarget = false,
     IrType? resultType,
   }) {
+    // Dart's `Completer.complete` takes a `FutureOr<T>`, not just a `T`:
+    // handed a future, the completer's own future settles when that one
+    // does. `SchedulerBinding.scheduleTask`'s `TaskCallback<T>` returns a
+    // `FutureOr<T>` and hands its result straight over ("`?` operator has
+    // incompatible types", E0308, ws977). The prelude keeps the two apart
+    // (`complete_or`), so that `complete`'s parameter stays the projected
+    // `T?` that every other call site passes.
+    // The `FutureOr` sits *inside* the `Some` the projected `T?` slot puts
+    // round it (`IrSome`), so the wrapper's own type says nothing -- reading
+    // it was a rule that never fired (82 -> 82, byte-identical, ws977).
+    // `complete_or` takes the `Option` too, which is Dart's own signature:
+    // `complete([FutureOr<T>? value])`.
+    final completeArg = args.length == 1 ? args.single : null;
+    final name =
+        name0 == 'complete' &&
+            (completeArg is IrSome
+                    ? completeArg.value.rustType?.name
+                    : completeArg?.rustType?.name) ==
+                'FutureOr'
+        ? 'complete_or'
+        : name0;
     final turbofish = typeArguments.isEmpty
         ? ''
         : '::<${typeArguments.map(type).join(', ')}>';
