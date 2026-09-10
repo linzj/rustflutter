@@ -916,8 +916,14 @@ augment class RustBackend {
     }).toList();
     final op = method.operator;
     if (op != null && operatorTraits.containsKey(op)) {
-      if (op == 'unary-') return '-*self';
-      return '*self $op ${args.single}';
+      // `std::ops` takes its operands by value, so `*self` moves -- which is
+      // free for a `Copy` struct and an error for one that is not. A class
+      // carrying an identity token is never `Copy` (the token is an `Rc`),
+      // and `BorderRadius * other` said so: "cannot move out of `*self`
+      // which is behind a shared reference" (ws1064).
+      final own = cls.identityToken ? 'self.clone()' : '*self';
+      if (op == 'unary-') return '-$own';
+      return '$own $op ${args.single}';
     }
     // `Type::method(self, ...)`, not `self.method(...)`. Inside `impl Base for
     // This` the trait's own method has the same name, and `self.method(...)`

@@ -14,12 +14,28 @@
 /// the class counted. `_ScribbleCacheKey` in `EditableText` is the shape that
 /// is left: immutable, never handed out, and asked `identical(other, this)`.
 ///
-/// A class with a `const` constructor is also left out. Dart canonicalises
-/// constants, so two `const Frozen(1)` are one object -- but a local
-/// `const Frozen(1)` reaches the backend as a *call* to the constructor, and
-/// a fresh token per call would call them different objects. That is the
-/// constant half, and it is a round of its own.
+/// **Constants are in scope now** (ws1064). Dart canonicalises them, so two
+/// `const Frozen(1)` are one object, and a constant is never the object a
+/// constructor built. The front end used to rebuild an evaluated constant as
+/// a constructor call because it reads like the source -- and that call mints
+/// a fresh token, which would have made two canonicalised constants into two
+/// objects. For a class carrying a token the constant stays a constant, and
+/// two tokenless values compare by their fields, which is exactly what
+/// `identical` means for them.
 library;
+
+/// Const-constructible, and built both ways below.
+///
+/// `label` is read further down on purpose: a field nothing reads is shaken
+/// out by TFA, and a `Frozen` of one `int` is a class this compiler treats as
+/// a pure value -- `Copy`, in a `Cell`, read by `get()` -- which carries no
+/// token by design. An earlier draft of this fixture never read it and tested
+/// nothing.
+class Frozen {
+  const Frozen(this.n, this.label);
+  final int n;
+  final String label;
+}
 
 class Tag {
   Tag(this.name, this.rank);
@@ -59,6 +75,23 @@ String use() {
     '${identityHashCode(a) == identityHashCode(twin)}/'
     '${identityHashCode(a) == identityHashCode(a)}',
   );
+
+  // Canonicalised constants are one object; two runtime instances are two;
+  // and a constant is never the one a constructor built.
+  const Frozen c1 = Frozen(1, 'x');
+  const Frozen c2 = Frozen(1, 'x');
+  const Frozen c3 = Frozen(2, 'x');
+  final Frozen made = Frozen(1, 'x');
+  final Frozen alsoMade = Frozen(1, 'x');
+  out.add(
+    '${identical(c1, c2)}/${identical(c1, c3)}/'
+    '${identical(c1, made)}/${identical(made, alsoMade)}',
+  );
+  out.add(
+    '${identityHashCode(c1) == identityHashCode(c2)}/'
+    '${identityHashCode(made) == identityHashCode(alsoMade)}',
+  );
+  out.add('${c1.label}${c3.n}${made.label}');
 
   return out.join('|');
 }

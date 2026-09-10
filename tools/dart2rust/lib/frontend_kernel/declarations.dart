@@ -511,6 +511,27 @@ augment class KernelFrontend {
     return any;
   }
 
+  /// Whether this class carries an identity token (`IrClass.identityToken`).
+  ///
+  /// Asked of classes other than the one being lowered, so the rule lives
+  /// here rather than inline: `constants.dart` needs it to decide whether a
+  /// constant may be rebuilt as a constructor call.
+  ///
+  /// A token is for a value this compiler *copies*. A counted class has a
+  /// handle with a real address; an enum is a Rust enum with nowhere to put a
+  /// token; an abstract class is a trait whose implementors carry their own.
+  /// And a class this compiler treats as a pure value -- every field a
+  /// number, a `bool` or an enum -- derives `Copy`, lives in a `Cell` and is
+  /// read with `get()`. `Copy` is the promise that a bitwise duplicate is a
+  /// *new* value, the opposite of what a token says, and taking it away cost
+  /// 43 stubs for one refusal when it was measured (ws1060).
+  bool _carriesIdentityToken(Class node) =>
+      identityObserved.contains(node) &&
+      !_countedClass(node) &&
+      !node.isEnum &&
+      !(node.isAbstract || _isOpen(node)) &&
+      !_allCopyableFields(node);
+
   /// Whether the CFE applied this class as a mixin anywhere -- which is
   /// where its bodies, fields and closures went.
   ///
@@ -880,30 +901,7 @@ augment class KernelFrontend {
           // where the address of a copy would answer nothing: a counted class
           // has a handle already, an enum is a Rust enum with no room for one,
           // and an abstract class is a trait whose implementors carry their own.
-          ..identityToken =
-              identityObserved.contains(node) &&
-              !_counted &&
-              !node.isEnum &&
-              !(node.isAbstract || _isOpen(node)) &&
-              // ..and not a class this compiler treats as a pure value: one
-              // whose every field is a scalar or an enum derives `Copy`, is held
-              // in a `Cell` and read with `get()`, and duplicating it bitwise
-              // *is* making a new value -- the exact opposite of what a token
-              // says. Taking `Copy` away to give such a class identity cost 43
-              // stubs for one refusal when it was measured (`SemanticsFlags`,
-              // whose fields are all `bool`, and every `Cell<SemanticsFlags>`
-              // read with it: "the method `get` exists ... but its trait bounds
-              // were not satisfied"). They keep their refusal.
-              !_allCopyableFields(node) &&
-              // ..and not a class with a `const` constructor. Dart canonicalises
-              // constant instances, so two of them are one object -- but this
-              // compiler does not always *see* a construction as constant (a
-              // local `const Frozen(1)` reaches the backend as a call to the
-              // constructor), and a fresh token per call would then say two
-              // canonicalised constants are different objects. Making that right
-              // is the constant half of this, and it is a round of its own; until
-              // then such a class keeps its refusal, which says something true.
-              !node.constructors.any((c) => c.isConst);
+          ..identityToken = _carriesIdentityToken(node);
     final refused = <String>[];
     if (base != null && _isFlatBase(base)) {
       // The fields the base would have held, at the instantiation this

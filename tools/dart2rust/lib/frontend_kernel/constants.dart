@@ -185,12 +185,18 @@ augment class KernelFrontend {
         for (final e in constant.fieldValues.entries)
           e.key.asField.name.text: e.value,
       };
-      final rebuilt = _asConstructorCall(
-        cls,
-        byName,
-        node,
-        constant.typeArguments,
-      );
+      // ..except where the class carries an identity token. Rebuilding a
+      // constant as a constructor call would run the constructor, and the
+      // constructor mints a *fresh* token -- so two `const X(1)`, which Dart
+      // canonicalises into one object, would come out as two. A constant has
+      // to stay a constant there: the struct literal carries
+      // `__identity: None`, and two tokenless values of a class compare by
+      // their fields, which for a canonicalised constant is what `identical`
+      // means (see `IrClass.identityToken`). The rebuild is only ever an
+      // optimisation for readability; this is the one place it is wrong.
+      final rebuilt = _carriesIdentityToken(cls)
+          ? null
+          : _asConstructorCall(cls, byName, node, constant.typeArguments);
       if (rebuilt != null) {
         return _isOpen(cls)
             ? IrUpcast(
