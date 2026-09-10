@@ -185,6 +185,27 @@ class AggregateCensus {
       final d = p.defaultValue;
       if (d != null && !_pureData(d, data)) return 'parameter default computes';
     }
+    // A class's *own* instance field initialisers run in every constructor,
+    // and Kernel leaves them on `Field.initializer` -- they are not in
+    // `c.initializers`. Looking only at the constructor let 77 constructors
+    // through that compute in a field declaration:
+    // `_AppBarDefaultsM2._theme = Theme.of(this.context)` is a call, and the
+    // generated Rust has it inside `new`. None of the 77 reached a counted
+    // tree, so no number this census reported moved -- but a fixed point
+    // that drives code generation would flatten `_AppBarDefaultsM2(context)`
+    // into a static table and delete the `Theme.of` call outright.
+    final owner = c.enclosingClass;
+    final assignedHere = <Field>{
+      for (final init in c.initializers)
+        if (init is FieldInitializer) init.field,
+    };
+    for (final f in owner.fields) {
+      if (f.isStatic || assignedHere.contains(f)) continue;
+      final declared = f.initializer;
+      if (declared != null && !_pureData(declared, data)) {
+        return 'class field initializer computes';
+      }
+    }
     for (final init in c.initializers) {
       switch (init) {
         case FieldInitializer(:final value):
