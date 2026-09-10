@@ -506,7 +506,108 @@ augment class RustBackend {
     }
   }
 
+  /// The `Future<T>` a class says it *is*, from its own `implements` or an
+  /// abstract ancestor's; null when it is not one.
+  IrType? _isDartFuture(IrClass of) {
+    for (final c in [of, ..._abstractAncestors(of)]) {
+      for (final i in c.interfaces) {
+        if (i.name == 'Future' && i.arguments.length == 1) return i;
+      }
+    }
+    return null;
+  }
+
+  /// The translated class an awaited value is, when that class is a `Future`
+  /// of Dart's rather than the prelude's: what the await site calls
+  /// `dart_into_future` on.
+  IrClass? _awaitedClass(IrExpr operand) {
+    final name = operand.rustType?.name;
+    if (name == null || name == 'Future' || name == 'FutureOr') return null;
+    final owner = library[name] ?? library.elsewhere[name];
+    if (owner == null || owner.isAbstract) return null;
+    return _isDartFuture(owner) == null ? null : owner;
+  }
+
+  /// A class that *implements* `Future<T>` is awaited through its own `then`,
+  /// which is what Dart's `await` does with any future.
+  ///
+  /// `TickerFuture implements Future<void>`, so `await controller.reverse()`
+  /// is ordinary Dart -- and `Rc<TickerFuture>` is no Rust future at all
+  /// ("`Rc<TickerFuture>` is not a future", E0277; 3 stubs on the animation
+  /// path at ws972). The interface cannot become a supertrait, because the
+  /// prelude's `Future` is the struct `DartFuture<T>` and not a trait.
+  ///
+  /// An **inherent** method, not `impl IntoFuture for Rc<Self>`: `Rc` is not
+  /// `#[fundamental]`, so that impl is not this crate's to write, and the
+  /// awaited value is always a handle. An inherent method auto-derefs
+  /// through the handle, which is what the await site calls.
+  void _emitAwaitable() {
+    final future = _isDartFuture(cls);
+    if (future == null || cls.isAbstract) return;
+    final arg = future.arguments.single;
+    // The reified argument the signature carries; `then` itself does not
+    // read it. Spelled as the class calls itself, so it says the same thing
+    // a written `.then<T>(..)` would.
+    final reified = arg.name == 'void'
+        ? 'VoidType'
+        : (library[arg.name] ?? library.elsewhere[arg.name])?.dartName ??
+              arg.name;
+    // Through the class's own `then`, whose callback hands the value
+    // straight back: `then` is what Dart's `await` calls, and its result is
+    // already the prelude's future.
+    // Spelled from the class's *own* `then`, not from a shape assumed here:
+    // the reified type arguments are hidden trailing parameters that only
+    // exist where the type parameter is kept (`__ty_<i>`), so `then` takes
+    // three arguments on `TickerFuture` and two on a class whose `R` no one
+    // reifies. Written as three either way, that was "this method takes 2
+    // arguments but 3 were supplied" (E0061, the `awaitclass` fixture).
+    final then = [
+      for (final c in [cls, ..._abstractAncestors(cls)])
+        ...c.methods.where((m) => m.name == 'then' && !m.isStatic),
+    ].firstOrNull;
+    if (then == null || then.params.isEmpty) return;
+    final rest = <String>[];
+    for (final p in then.params.skip(1)) {
+      if (p.type.name == 'Type') {
+        rest.add('Type::of("$reified")');
+      } else if (p.type.nullable) {
+        rest.add('None');
+      } else {
+        // Some other required parameter: this is not the `then` Dart's
+        // `await` calls, and guessing a value for it would be inventing
+        // behaviour. Left alone, and the await stays a stub that says so.
+        return;
+      }
+    }
+    final turbofish = then.typeParameters.isEmpty ? '' : '::<${type(arg)}>';
+    _member('impl ${cls.name} (awaitable)', () {
+      _line('impl ${cls.name} {');
+      _indent++;
+      _line('pub fn dart_into_future(&self) -> DartFuture<${type(arg)}> {');
+      _indent++;
+      _line(
+        'match self.then$turbofish(std::rc::Rc::new('
+        '|__v: ${type(arg)}| -> Result<_, std::rc::Rc<dyn Object>> '
+        '{ Ok(future_or_value(__v)) })'
+        '${rest.isEmpty ? '' : ', ${rest.join(', ')}'}) {',
+      );
+      _indent++;
+      _line('Ok(__f) => __f,');
+      // `then` may fail before there is a future; the failure is the
+      // future's, as it is for any other failing call in an `async` body.
+      _line('Err(__e) => DartFuture::ready(Err(__e)),');
+      _indent--;
+      _line('}');
+      _indent--;
+      _line('}');
+      _indent--;
+      _line('}');
+      _line('');
+    });
+  }
+
   void _emitBaseImpl() {
+    _emitAwaitable();
     _emitPreludeInterfaces();
     // Every abstract **ancestor**, not just a direct abstract base. `Padded`
     // extends the concrete `Square`, which extends the abstract `Shape`; with

@@ -160,6 +160,22 @@ augment class RustBackend {
                 operand.rustType!.arguments.first.nullable)
             ? '(match ${_awaitedPlace(operand)} { Some(__f) => __f.await$_propagate, None => None })'
             : '(match ${_awaitedPlace(operand)} { Some(__f) => Some(__f.await$_propagate), None => None })',
+      // A class that *is* a `Future` (`TickerFuture implements Future<void>`)
+      // is awaited through the `dart_into_future` its own `then` backs
+      // (`_emitAwaitable`): `Rc<TickerFuture>` is no Rust future, and Dart's
+      // `await` on any future is a `then` (E0277, 3 on the animation path at
+      // ws972).
+      // ..and a nullable one is asked first, as a nullable prelude future is
+      // just above: `await x?.forward()` awaits nothing when there is
+      // nothing there.
+      IrAwait(:final operand)
+          when _awaitedClass(operand) != null &&
+              (operand.rustType?.nullable ?? false) =>
+        '(match ${_awaitedPlace(operand)} '
+            '{ Some(__f) => Some(__f.dart_into_future().await$_propagate), '
+            'None => None })',
+      IrAwait(:final operand) when _awaitedClass(operand) != null =>
+        '${_awaitOperand(operand)}.dart_into_future().await$_propagate',
       IrAwait(:final operand) => '${_awaitOperand(operand)}.await$_propagate',
       IrMutRef(:final place) => _mutRef(place),
       IrIdentical(:final left, :final right) => _identical(left, right),
