@@ -638,8 +638,15 @@ augment class KernelFrontend {
       // Another object's *setter* is a call, which needs nothing from us
       // beyond a `&mut` receiver at the call site.
       if (value.interfaceTarget is! Field) {
+        // ..with the receiver narrowed as any member access's is
+        // (`_receiver`), which ws1027 did for a field write and this is the
+        // same question for a setter *call*.
+        // `GlobalKey<T extends State>.currentState` is `T?`, so
+        // `hideableKey.currentState!.placeholderSize = ..` in
+        // `_OpenContainerRoute` read the declaration's bound,
+        // `Rc<dyn State>`, and the setter is not there.
         return IrSetter(
-          expression(value.receiver),
+          _receiver(value.receiver),
           value.name.text,
           written,
           qualifier: _setterQualifier(value.receiver, value.interfaceTarget),
