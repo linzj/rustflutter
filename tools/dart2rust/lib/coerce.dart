@@ -945,6 +945,37 @@ IrExpr coerceInto(
   // ..only into a type the world can name: a type parameter of another
   // declaration (a super constructor's `T`, `DiagnosticsDebugCreator`,
   // ws516) is nothing to convert into.
+  // A trait handle into a *type parameter's* slot: the mirror of the rule
+  // below it. The value goes to `Object` first -- a handle unsizes -- and
+  // the type parameter's own `FromDynamic` (in every bound) takes it back.
+  // That is Dart's implicit downcast, failing as one does.
+  //
+  // Reached where a generic class was erased to its bound and read back
+  // through the parameter that promised more: `_InheritedModel<T extends
+  // Model>` holds `T model` and is emitted with `model: Rc<dyn Model>`, so
+  // `ScopedModel.of<T>`'s `return (widget as _InheritedModel<T>).model`
+  // handed an `Rc<dyn Model>` to a `T`. Same shape for `LayoutInfoType get
+  // layoutInfo => constraints as LayoutInfoType`, whose cast resolved to
+  // the one instantiation there is.
+  if (haveTrait &&
+      world.isTypeParameter(slot.name) &&
+      slot.arguments.isEmpty &&
+      !slot.isFunction &&
+      !isNullable(have) &&
+      !isNullable(slot)) {
+    final boxed = coerceInto(
+      value,
+      const IrType('Object'),
+      world,
+      inClosure: inClosure,
+    );
+    return IrStaticCall(
+      null,
+      'dart_from_dynamic',
+      [boxed],
+      typeArguments: [slot],
+    )..rustType = slot;
+  }
   // A type parameter's value into a trait slot (`model` of `T extends
   // InheritedModel` asked for `isSupportedAspect`): the object's own cast
   // (`dart_cast_to`, on every `DartAny`), which a handle forwards and a
