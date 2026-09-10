@@ -377,6 +377,22 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 
 ## 撤回与作废(不要再试)
 
+- **给 prelude 的 `Comparable<T>` 加上 `DartAny` 上界、并补一个 `comparable_compare`**——
+  **它会让 `_sort` 从「桩」变成「能编译但一定 panic」,所以撤回**(ws1058,2026-09-11)。
+  链条读数是「拒绝 17、stub 38、集合逐条相同」,看起来什么都没发生;
+  但**按〈stubdiff 比的是集合〉那条,0/0 不等于没变**——去读 `_sort` 的报错,它**挪了**:
+  `dart_cast_to` 原本连方法都不是(`trait bounds were not satisfied`),加了上界之后能调了,
+  下一个缺的是 `Comparable.compare` 这个 dart:core 的静态(`comparable_compare`,本编译器把抽象类的静态写成自由函数)。
+  两个都补上之后**夹具编译通过、运行时 panic**:`called Option::unwrap() on a None value`。
+  原因是**擦除后的实例化**:`Comparable.compare` 在 Dart 里声明在 `Comparable<dynamic>` 上,
+  所以后端发出的是 `dart_cast_to::<dyn Comparable<Rc<dyn DartAny>>>()`,
+  而一个 `implements Comparable<Weight>` 的类只为**它自己那个实例化**作答——标量同理
+  (`int` 是 `Comparable<num>`,`String` 是 `Comparable<String>`)。
+  **真正要做的是擦除实例化那一半**(prelude trait 的 erased twin:让 `dart_cast` 为擦除实例化作答,并在边界上适配实参),
+  上界和 `comparable_compare` 只是它的前置。
+  **为什么这条必须撤回**:桩是**被尺子数着**的,运行时 panic 不是——
+  这么换会让 stub 从 38 掉到 37,而程序并没有变对。**桩只能诚实地掉。**
+
 - **把 `super.==` / `super.hashCode`(落进 `Object` 的那两个)按身份答出来**——拒绝 22 → 20、桩数不动、
   可达 69,**读数是好的,还是撤回了**(ws1052,2026-09-11)。**夹具把它拆穿了**:
   `dart_self_<trait>()` 对一个**值结构**来说是 `Rc::new(self.clone())`——**每次调用现装一个新的**,
