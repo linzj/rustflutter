@@ -726,6 +726,37 @@ ws482/ws494;refusal 归并 804 → 29,一直在按类别收)。还活着的两�
 | `runZonedGuarded`、`identityHashCode` | 2 | 见下 |
 | 其余 | 5 | — |
 
+**桩这一头的形状(ws977 逐条看过的 82 个)**
+
+| 按 crate | 个 |
+|---|---|
+| `scc_flutter_widgets` | 38 |
+| `merged_foundation_leaf` | 7 |
+| `flutter_cupertino_above` | 6 |
+| 其余十来个 crate | 各 1–4 |
+
+**已经没有大族了。** 最大的一簇是 24 个「mismatched types」,而那 24 个成因各不相同;
+剩下的簇全在 2–6 个之间。这和前面十几轮不一样——那时一条规则能一次收掉 2–3 个。
+
+抽查下来,**剩下的桩里有相当一部分要的不是「一条翻译规则」,而是运行时里缺的一块**:
+
+- `LicenseRegistry.licenses` 要 `StreamController`——**prelude 里一个字都没有**,
+  要的是整套 Stream(订阅、broadcast)。
+- `CalendarDelegate<T extends DateTime>` 的 `T` 丢了界,因为 `DateTime` 是 prelude 的
+  **结构体**;Rust 不能拿结构体当类型参数的界,得先给 `DateTime` 一个 trait。
+- `_TaskEntry.run` 里逃逸的闭包读 `this` 的**字段**却没让类变成 counted
+  ——`_countedClass` 只看方法调用。这一条属于那个 counted/别名工程,ws437 拓宽它时
+  一次涨了 **+901** 个桩。
+- win32 / `dart:ffi` 那几个,和〈拒绝〉里那 9 条同源。
+
+另一部分确实是翻译规则:`equality.rs new`、`widgets_shortcuts.rs _value` 这些
+「mismatched types」都是投影类型(`<E as DartNullable>::Or`)那条边界上的,和 ws957–ws964
+收掉的是同一族。
+
+**所以「桩归零」和「拒绝归零」是同一件事的两半**:再往下走,要么在 prelude 里补运行时
+(Stream、ffi 回调、`DateTime` 的 trait),要么把 counted/别名那个工程做掉。**一条一条
+磨规则的阶段,到 82 这里基本磨完了。**
+
 **结论:这 29 条里没有一条是「谁忘了写个映射」。** 拒绝是因为诚实的答案还没有,
 不是因为没人去接线——这正是「宁可拒绝也不猜」那条规则在起作用。两条看着最像顺手
 可做的,查了call site 之后都不是:
