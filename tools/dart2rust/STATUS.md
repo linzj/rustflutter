@@ -1068,15 +1068,21 @@ CFE 把一个 `Struct` 子类摊成:两个字段(`_Compound._typedDataBase`、`_
 
 `b09ac222` 说「一条通用规则一轮就掉一格的阶段基本走完了」,这次把剩下的 74 个又过了一遍,确认了,并且把**每一条卡在哪儿**记下来,省得下次重新翻:
 
-- **`implements Iterator<E>` 的类没有 `impl DartIterator<E>`**(3 个桩:`_BoardIterator`、
-  `Board.iterator`/`element_at`、`transformations_demo.paint`)。后端有「这个类**是**一个 `Iterable`」那条路
-  (`_emitToList`/`_emitTraitToList`,按 `IrClass.iterableElement`),**没有「这个类是一个 `Iterator`」那条**。
-  类型那边是通的:`dart:core` 的 `Iterator` 已经规范化成 `DartIterator`(`types.dart:80`),
-  所以 `cls.interfaces` 里就有它。要发的是
-  `impl DartIterator<E> for X { fn move_next(&self) -> bool {..} fn current(&self) -> E {..} }`,
-  转给类自己的 `moveNext`/`current`。**要小心的两处**:`moveNext` 可能是失败的(要像 `_emitToList` 那样 panic 兜住),
-  `current` 在 counted 类上是**cell 字段**(`Rc<RefCell<Option<..>>>`),得按 cell 读。
-  **这是剩下的里面最像「一条通用规则」的一个。**
+- ~~**`implements Iterator<E>` 的类没有 `impl DartIterator<E>`**~~ **已做(ws990)**,掉了 1 个
+  (`Board.iterator`)。根因不是「缺一条发射路径」——路径本来就有(`_emitPreludeInterfaces`),
+  只是它要求接口的每个成员都落在**方法**上,而 Dart 允许用**字段**顶掉 getter。
+
+- **`Iterable` 的成员在「自己就是 Iterable 的类」上调不动**(剩下 2 个桩:
+  `Board.copyWithBoardPointColor` 的 `elementAt`、`transformations_demo.paint` 的 `forEach`)。
+  `Board extends Iterable<BoardPoint?>`,从 `dart:core` 继承了 `elementAt`/`forEach`,
+  而这边它们是**写在列表上**的。类自己带着 `__to_list`(`_emitToList` 发的),
+  **读它的那个东西是 `_listReceiver`**——但 `_listReceiver` 只接在 **for-in** 和几个按名字写死的成员上
+  (`cast`、`remove`、`contains`、`char_at` 那几处,都是按 `owner == 'List'/'Set'/'Map'` 分的)。
+  `Board` 的 `owner` 是 `Board`,一条都不匹配,于是落进通用调用,发出 `self.element_at(..)`,而结构体上没有这个方法。
+  **判据是现成的**:`node.interfaceTarget.enclosingClass` 就是 `dart:core` 的 `Iterable`,
+  接收者的静态类型又是一个翻译过的、`_iterableElement` 答得出来的类。
+  **没做的原因**:要改的是 `_instanceInvocation`,前端最热的那条路,
+  在一个已经很长的会话末尾动它不合算(ws979 就是这么来的)。下次从这里起。
 
 - **类型参数丢了 Dart 那边的界**(3 个桩:`CalendarDelegate<T extends DateTime>` 的 `year` ×2、
   `binarySearch` 的 `compare_to`)。**别再直接把界搬过去**——ws544 量过,**+252 个桩**:
