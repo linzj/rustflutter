@@ -714,8 +714,29 @@ ws482/ws494;refusal 归并 804 → 29,一直在按类别收)。还活着的两�
    只认 int/double/bool/String。要收下它,普查得把 `Constant` 交给前端去降,
    而不是自己拼 Rust 字面量。
 
-拒绝还剩 32:约 13 个是 `dart:ffi`/win32 的内存模型,约 8 个是值类上的
-`identical`/`hashCode`(故意拒绝,等那些类变成 counted),其余一两个一堆。
+**拒绝还剩 29,逐条数过(ws973,从 `.crate/src` 里的 `NOT TRANSLATED` 数的)**:
+
+| 组 | 个 | 要什么 |
+|---|---|---|
+| `dart:ffi`/win32 的指针读写、`_createNativeCallableIsolateLocal` | 9 | 一个 C 可调用的 trampoline 注册表;最后那个没有它就没有诚实的 Rust 实现 |
+| 值类上的 `identical` | 5 | counted 那个决定。**现在拒绝是对的**:按位相等会给出**错的答案**,不是缺答案 |
+| `const GZipCodec` ×2、`const JsonEncoder` | 3 | prelude 里真的 gzip 与 JSON 编码器 |
+| `super` 进 `Object`(`==`、`hashCode`) | 2 | 故意 |
+| `super`/`super(..)` 进不在本文件的类 | 3 | 一例一议 |
+| `runZonedGuarded`、`identityHashCode` | 2 | 见下 |
+| 其余 | 5 | — |
+
+**结论:这 29 条里没有一条是「谁忘了写个映射」。** 拒绝是因为诚实的答案还没有,
+不是因为没人去接线——这正是「宁可拒绝也不猜」那条规则在起作用。两条看着最像顺手
+可做的,查了call site 之后都不是:
+
+- `identityHashCode` 的调用方是 `_IdentityThemeDataCacheKey.hashCode`——一个**专门
+  拿身份做键**的类。按地址哈希一个值类,错的地方和值类上的 `identical` 一模一样。
+- `runZonedGuarded` 还要接住 zone 里**异步**回调抛出的错。写成 try/catch 对同步的
+  体是精确的,对异步那半是**静悄悄地吞掉**。
+
+所以「拒绝归零」不是桩那种磨法能磨到的:它前面横着三个正经工程(ffi 回调 trampoline、
+gzip + JSON 编码器、值类身份),外加约 7 条今天拒绝得**正确**的。
 
 **(2026-09-09 校注)** 本节六条与〈当前队头〉自 09-05 起未动,现状以〈活账〉窗口
 末行为准:**ws878 152 stub / 49 拒绝 / 64 crate 全可达**,运行尺子 run877
