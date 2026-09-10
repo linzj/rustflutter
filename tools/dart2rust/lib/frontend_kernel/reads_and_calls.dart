@@ -359,6 +359,49 @@ augment class KernelFrontend {
     );
   }
 
+  /// Whether a call is an `Iterable`'s own member reaching a translated
+  /// class that *is* an `Iterable`.
+  ///
+  /// Three questions, and all three had to be asked.
+  ///
+  /// *Where the member is declared*: a `dart:` class. `class Board extends
+  /// Object with IterableMixin<BoardPoint?>` declares `elementAt` and
+  /// `forEach` on `_MixinApplication386&Object&IterableMixin` in
+  /// `dart:mixin_deduplication`, which no name test can catch -- which is
+  /// why both fell through to an ordinary call: `board.element_at(i)` named
+  /// nothing and `board.for_each(f)` asked `Board` to be a Rust `Iterator`.
+  ///
+  /// *Which member*: one `Iterable` itself declares. `_History extends
+  /// Iterable with ChangeNotifier` has `notifyListeners` declared on a
+  /// `dart:mixin_deduplication` class that is an `Iterable` too, and that is
+  /// not an `Iterable` member at all (4 refusals reading
+  /// "`List.notifyListeners`" when this asked only about the declaring
+  /// class). `ObserverList.add` is the same shape.
+  ///
+  /// *Which receiver*: a translated class, which `_listReceiver` reads as
+  /// its list (`__to_list`, ws499) -- the way in has to match the way the
+  /// receiver is read. `Set`, `Queue`, `ListQueue` and `LinkedList` are
+  /// `dart:` classes that are `Iterable`s and have their own branches
+  /// below; routing them here refused 25 members `List` does not have
+  /// (`Set.difference`, `ListQueue.addLast`, `Queue.removeFirst`).
+  bool _dartIterableCall(Expression receiver, Class? declaring, String name) {
+    if (declaring == null) return false;
+    if (declaring.enclosingLibrary.importUri.scheme != 'dart') return false;
+    final env = typeEnvironment;
+    if (env == null) return false;
+    final static = _staticType(receiver);
+    if (static is! InterfaceType ||
+        !_translatedClass(static.classNode) ||
+        _iterableElement(static) == null) {
+      return false;
+    }
+    return env.hierarchy.getInterfaceMember(
+          env.coreTypes.iterableClass,
+          Name(name),
+        ) !=
+        null;
+  }
+
   /// The place Kernel's desugaring has to be undone.
   ///
   /// Every operator is a method call here, so `a + b` arrives as
@@ -725,7 +768,9 @@ augment class KernelFrontend {
         ),
       ], IrLocal(held));
     }
-    if (owner == 'List' || owner == 'Iterable') {
+    if (owner == 'List' ||
+        owner == 'Iterable' ||
+        _dartIterableCall(node.receiver, declaringOwner, name)) {
       if (name == '[]' && args.length == 1) {
         // Typed by the list's element, which a generic class's `List<E?>`
         // keeps projected (`<E as DartNullable>::Or`) where the static type
