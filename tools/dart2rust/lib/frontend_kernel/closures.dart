@@ -787,8 +787,22 @@ augment class KernelFrontend {
     // A closure that *writes* a shared field is fine -- the cell is what makes
     // it fine -- so writing no longer makes it demanding when every field it
     // touches is either final or shared.
-    final finder = _FinalFieldReads(_sharedFields);
+    final finder = _FinalFieldReads(_sharedFields, _fieldBehind);
     fn.accept(finder);
+    // `DART2RUST_TRACE_CARRIED` names the field that made this closure
+    // demand `this`. "A closure captures `this`" never said which field
+    // forced it, and the answer here was one word: `_updaters(Procedure)`
+    // -- a mixin's field arrives as the accessor the CFE left in its place
+    // (see `FieldBehind`).
+    if (Platform.environment['DART2RUST_TRACE_CARRIED'] == '1') {
+      stderr.writeln(
+        'TRACE_CARRIED demanding=${use.demandingBeyondFields} '
+        'allCarried=${finder.allCarried} '
+        'carried=${finder.fields.keys.join(",")} '
+        'refused=${finder.refused.join(",")} '
+        'shared=${_sharedFields.join(",")}',
+      );
+    }
     if (use.demandingBeyondFields) return null;
     if (!finder.allCarried || finder.fields.isEmpty) return null;
     return finder.fields.values.toList();

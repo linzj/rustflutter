@@ -433,6 +433,13 @@ augment class KernelFrontend {
     }
     final closures = <FunctionNode>[];
     node.accept(_ClosureFinder(closures));
+    // Not the applications' closures, though `_closureFields` reads them:
+    // this is asked per *expression* from `locals.dart` and
+    // `raw_writes.dart`, and walking a widely-applied mixin's applications
+    // each time took the gallery's translate from three minutes past forty.
+    // It does not lose the fact -- `_countedClass` sets `_sharedFields` from
+    // `_closureFields` before it asks, so the mixin's shared fields are
+    // already in view of the `_finalFieldsRead` below.
     for (final fn in closures) {
       // The same two questions `_closure` asks before it refuses -- does the
       // closure reach `this`, and would copying its final fields do instead.
@@ -462,13 +469,77 @@ augment class KernelFrontend {
   Set<String> _closureFields(Class node) {
     final closures = <FunctionNode>[];
     node.accept(_ClosureFinder(closures));
+    // A mixin declaration's bodies are not in the declaration: the CFE
+    // copies them into each application and leaves the declaration hollow.
+    // Its *closures* go with them, so a mixin asked this on its own answers
+    // "no field is shared" however many its closures write -- and then every
+    // one of those closures is refused for capturing `this`.
+    // `_appliedBody` already reads a method back out of an application and
+    // `IrClass.appliedFields` reads the fields back; this is the same fact,
+    // asked for the closures (`ListNotifierMixin.addListener`, whose
+    // returned closure removes the listener from `_updaters`).
+    closures.addAll(_appliedClosures(node));
     final touched = <String>{};
     for (final fn in closures) {
-      final walk = _FieldsTouched();
+      final walk = _FieldsTouched(_fieldBehind);
       fn.accept(walk);
       touched.addAll(walk.mutable);
     }
     return touched;
+  }
+
+  /// The closures in the applications of a mixin declaration, which is where
+  /// the CFE put its bodies. Empty for anything that is not one.
+  ///
+  /// Cached across libraries -- `applications` is one map the driver builds
+  /// once, so a mixin's applications are the same list whoever asks. Without
+  /// it a widely-applied mixin is re-walked by every library that lowers a
+  /// class using it.
+  static final _appliedClosureCache = <Class, List<FunctionNode>>{};
+
+  static final _appliedFieldCache = <Class, Map<String, Field>>{};
+
+  /// The fields an application of this mixin holds, by name: the ones the
+  /// hollow declaration left behind (see `IrClass.appliedFields`, which
+  /// hands the same fields to the trait).
+  Map<String, Field> _appliedFields(Class mixin) =>
+      _appliedFieldCache.putIfAbsent(mixin, () {
+        final found = <String, Field>{};
+        for (final application in applications[mixin] ?? const <Class>[]) {
+          for (final f in application.fields) {
+            if (!f.isStatic) found.putIfAbsent(f.name.text, () => f);
+          }
+        }
+        return found;
+      });
+
+  /// See `FieldBehind`. A mixin declaration's field arrives as the abstract
+  /// accessor the CFE left in its place; the field is in an application.
+  Field? _fieldBehind(Member? target) {
+    if (target is Field) return target;
+    if (target is! Procedure) return null;
+    if (!target.isGetter && !target.isSetter) return null;
+    final owner = target.enclosingClass;
+    if (owner == null || !owner.isMixinDeclaration) return null;
+    final field = _appliedFields(owner)[target.name.text];
+    // Only a *mutable* field. This exists to find cells, and a `final` field
+    // has none -- resolving one only feeds it to the copy path, where
+    // `WidgetsBinding.pipelineOwner` broke: it is `late final`, its own
+    // initialiser makes the callbacks that read it back, and at that moment
+    // there is no value to copy and no `self` to copy it from ("expected
+    // value, found module `self`", the one stub this cost).
+    return field != null && !field.isFinal ? field : null;
+  }
+
+  List<FunctionNode> _appliedClosures(Class node) {
+    if (!node.isMixinDeclaration) return const [];
+    return _appliedClosureCache.putIfAbsent(node, () {
+      final found = <FunctionNode>[];
+      for (final application in applications[node] ?? const <Class>[]) {
+        application.accept(_ClosureFinder(found));
+      }
+      return found;
+    });
   }
 
   /// Whether a static const field of an enum is one of its variants.
@@ -850,6 +921,12 @@ augment class KernelFrontend {
                 _type(_declaredFieldType(f) ?? f.type),
                 isFinal: f.isFinal,
                 isLate: f.isLate,
+                // As a declared field is (`_sharedFields`). Left off, an
+                // applied field never got a cell accessor, so a closure
+                // carrying one captured its *value* and then could not
+                // write it back: "cannot assign to `_turns`, as it is a
+                // captured variable in a `Fn` closure" (ws1056).
+                shared: _sharedFields.contains(f.name.text),
               ),
             );
           } on Unsupported {

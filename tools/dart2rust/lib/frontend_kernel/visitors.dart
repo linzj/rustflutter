@@ -413,11 +413,26 @@ class _ClosureFinder extends RecursiveVisitor {
 }
 
 /// The **mutable** fields of `this` a closure reads or writes.
+/// The field a member access on `this` really names.
+///
+/// In a mixin *declaration* the CFE leaves an abstract accessor where the
+/// field was and puts the field itself in each application, so a closure's
+/// `this._updaters` resolves to a `Procedure`, not a `Field` -- and every
+/// census that asks "is this field final, is it shared" answered "it is not
+/// a field at all" (`ListNotifierMixin.addListener`, ws1056).
+typedef FieldBehind = Field? Function(Member? target);
+
+Field? _fieldItself(Member? target) => target is Field ? target : null;
+
 class _FieldsTouched extends RecursiveVisitor {
+  _FieldsTouched([this.fieldBehind = _fieldItself]);
+
+  final FieldBehind fieldBehind;
   final mutable = <String>{};
 
   void _look(Member? target) {
-    if (target is Field && !target.isFinal) mutable.add(target.name.text);
+    final field = fieldBehind(target);
+    if (field != null && !field.isFinal) mutable.add(field.name.text);
   }
 
   @override
@@ -478,7 +493,10 @@ class _ParameterEscapes extends RecursiveVisitor {
 
 /// The `final` fields a closure reads on `this`, and whether they all are.
 class _FinalFieldReads extends RecursiveVisitor {
-  _FinalFieldReads(this.shared);
+  _FinalFieldReads(this.shared, [this.fieldBehind = _fieldItself]);
+
+  /// See `FieldBehind`: a mixin's field arrives as its accessor.
+  final FieldBehind fieldBehind;
 
   /// The class's fields that live in a cell, which a closure may hold a
   /// handle to and both read and write.
@@ -490,11 +508,20 @@ class _FinalFieldReads extends RecursiveVisitor {
   /// handle. One that is neither means the closure would need `this`.
   bool allCarried = true;
 
+  /// What made `allCarried` false, for the trace: the answer "a closure
+  /// captures `this`" never said which field forced it.
+  final refused = <String>[];
+
   void _look(Member? target) {
-    if (target is Field &&
-        (target.isFinal || shared.contains(target.name.text))) {
-      fields[target.name.text] = target;
+    final field = fieldBehind(target);
+    if (field != null && (field.isFinal || shared.contains(field.name.text))) {
+      fields[field.name.text] = field;
     } else {
+      refused.add(
+        field != null
+            ? '${field.name.text}(field,final=${field.isFinal})'
+            : '${target?.name.text}(${target.runtimeType})',
+      );
       allCarried = false;
     }
   }
@@ -511,10 +538,10 @@ class _FinalFieldReads extends RecursiveVisitor {
   @override
   void visitInstanceSet(InstanceSet node) {
     if (node.receiver is ThisExpression) {
-      final target = node.interfaceTarget;
+      final target = fieldBehind(node.interfaceTarget);
       // Writing is only carriable through a cell; a `final` field cannot be
       // written at all, so a write to one is not this shape.
-      if (target is Field && shared.contains(target.name.text)) {
+      if (target != null && shared.contains(target.name.text)) {
         fields[target.name.text] = target;
       } else {
         allCarried = false;

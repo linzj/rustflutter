@@ -532,6 +532,14 @@ augment class RustBackend {
     for (final f in _allFields(cls)) {
       if (f.name == name) return _inCell(f) ? f : null;
     }
+    // ..and a mixin's own fields, which the declaration no longer lists:
+    // `IrClass.appliedFields` holds them "for their cells only", and this
+    // is the one question that is about their cells. Without it a closure
+    // in a mixin captured the field's *value* through the plain accessor
+    // and then could not write it back (ws1056).
+    for (final f in cls.appliedFields) {
+      if (f.name == name) return _inCell(f) ? f : null;
+    }
     return null;
   }
 
