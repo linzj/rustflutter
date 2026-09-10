@@ -11,6 +11,41 @@
 #     --- dart: red/12|black/12
 #     AGREE
 #
+# **A panic is never a pass** (rule, 2026-09-11). Not a wrong answer, not a
+# right answer reached by aborting -- any panic at all, whatever the exit
+# status says. AGREE means the two ends computed the same thing the same way:
+# a Dart `throw` is a `Result` on this side, so a Rust panic means the
+# translation dropped a path Dart can still catch.
+#
+# The gate below fires on the exit status *and* on the run's stderr, because
+# passing the status alone was not enough:
+#
+#   * the fixture crates `bin/fx/build.py` writes have no `panic = "abort"`,
+#     so they unwind where the gallery's workspace aborts;
+#   * `run_callback` in the prelude wraps every event-loop callback in
+#     `catch_unwind`, reports the panic as `dart2rust: <what> panicked: ..`
+#     and lets the loop go on -- so a fixture could panic inside a microtask,
+#     print the right last line, exit 0 and read AGREE.
+#
+# What this rule asks for is larger than the gate. Measured 2026-09-11, the
+# gallery's own translation stands at 29,439 `.unwrap()` (Dart's `x!` lowers
+# to one, `expressions.dart:363`; `as` to `dart_cast_to(..).unwrap()`, 3,068
+# of them), plus 48 `panic!("uncaught Dart exception: ..")` between the
+# prelude and the generated code. `.unwrap_or*` -- 3,384 more -- is not in
+# that number and is not a panic; counting `\.unwrap()` as an ERE swallows
+# them, which is how this figure was first written down as 32,818.
+# Every one of those unwraps is a Dart-visible throw
+# -- `TypeError`, `Bad state`, `FormatException`, `ArgumentError` -- that
+# Dart code can catch and this program cannot. Closing them is a
+# whole-program analysis: each null-assert, cast and prelude throw becomes an
+# `Err` on a path that already carries `Result`, and the callers that do not
+# carry one have to start. That is the work; this line is the ruler for it.
+#
+# Legitimately still a panic, because it is a fact about *this translator*
+# rather than about the program: a stub, a refusal (`dart2rust: not
+# translated`), TFA-dead code (`unreachable!`), and a native the host did not
+# answer (`panic!("native ..")`).
+#
 # A fixture is a Dart *library* (no `main`) in `fx/` with a top-level
 # synchronous `use()` returning a String. The **source** is in the repository
 # and the build products are not: everything the run needs is built in
@@ -58,7 +93,10 @@ grep -q '^ok True' "$log" || { echo "TRANSLATE FAILED"; tail -25 "$log"; exit 1;
 #
 # `DART2RUST_FX_FORCE=1` compiles anyway.
 stamp=$work/$name.agreed
-now=$(cat "$work/pk_$name"/*.rs 2>/dev/null | md5sum | cut -d' ' -f1)
+# The rule's name is part of the stamp, so a stamp written under an older
+# rule does not match and the fixture is re-run once against the new one.
+# Every `.agreed` on disk before 2026-09-11 predates the panic gate.
+now="panicgate1 $(cat "$work/pk_$name"/*.rs 2>/dev/null | md5sum | cut -d' ' -f1)"
 if [ "${DART2RUST_FX_FORCE:-0}" != 1 ] && [ -s "$stamp" ] &&
         [ "$now" = "$(cat "$stamp")" ]; then
     echo "--- rust: $(cat "$work/$name.rust.out" 2>/dev/null)"
@@ -78,6 +116,12 @@ dart run --packages="$HOME/gallery_upstream/.dart_tool/package_config.json" \
 
 echo "--- rust: $(cat "$work/$name.rust.out")"
 echo "--- dart: $(cat "$work/$name.dart.out")"
+# A panic is never a pass -- see the rule at the top. Checked before the exit
+# status, because a panic `run_callback` swallowed leaves the status at 0.
+panics="thread '[^']*' panicked at|^dart2rust: .* panicked:"
+if grep -qE "$panics" "$work/$name.cargo.log"; then
+    echo PANICKED; grep -m3 -E "$panics" "$work/$name.cargo.log"; exit 1
+fi
 [ "$rc" -eq 0 ] || { echo "CARGO FAILED"; tail -30 "$work/$name.cargo.log"; exit 1; }
 if diff -q "$work/$name.rust.out" "$work/$name.dart.out" > /dev/null; then
     printf '%s\n' "$now" > "$stamp"

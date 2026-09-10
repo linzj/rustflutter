@@ -8,7 +8,17 @@
 #     ffistruct          error: could not compile `pk_ffistruct` ...
 #
 # One line per fixture in `fx/`: what `bin/fx.sh` said last. `AGREE` means the
-# translated Rust and the Dart VM printed the same thing. Two fixtures are
+# translated Rust and the Dart VM printed the same thing *and nothing
+# panicked* -- see the panic rule at the top of `bin/fx.sh`, which is the
+# criterion this sweep reports. `PANICKED` is its own verdict rather than one
+# of the `CARGO FAILED` lines, because a panic the program survived leaves
+# the exit status at 0 and used to read AGREE.
+#
+# The first sweep after that rule landed re-runs every fixture: the stamp
+# carries the rule's name, so every `.agreed` written before 2026-09-11 is
+# stale by construction.
+#
+# Two fixtures are
 # *deliberately* red and are expected to stay that way -- `ffistruct` and
 # `forinmut` (the acceptance test for the withdrawn `mut` rule, see 撤回与作废
 # in STATUS.md). Anything else red is a regression.
@@ -51,7 +61,7 @@ for path in "$src"/*.dart; do
             printf '%-18s AGREE\n' "$name"
         else
             printf '%-18s %s\n' "$name" \
-                "$(echo "$out" | grep -E '^(error|DISAGREE|BUILD FAILED|TRANSLATE FAILED|CARGO FAILED)' | tail -1)"
+                "$(echo "$out" | grep -E '^(error|DISAGREE|PANICKED|BUILD FAILED|TRANSLATE FAILED|CARGO FAILED)' | tail -1)"
         fi
     ) > "$results/$(printf '%04d' "$i").$name" &
     while [ "$(jobs -rp | wc -l)" -ge "$jobs" ]; do wait -n; done
