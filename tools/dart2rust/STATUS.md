@@ -378,7 +378,15 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 ## 撤回与作废(不要再试)
 
 - **给「TFA 判死的接收者」上的成员调用加个类型绑定——量出来逐字节相同,已撤回
-  (ws1009,2026-09-10)。** 三个桩同一个成因:TFA 在证明不可达的地方种一行
+  (ws1009,2026-09-10)。**
+  **更正(同日,提交信息里写错了):这一组是 2 个桩,不是 3 个。**
+  我当时按「detail 块里出现过那行 TFA 文本」分组,`_handle_entry_mode_toggle`
+  是被这么误收进来的——它体内别处有一行 TFA,但它自己的错是
+  `?` 作用在 `Option<DateTime>` 上,和这条无关。真正属于这一组的是
+  `_buildDayPicker`(`can't compare () with i64`)和
+  `_adjustSelectionIndexBasedOnSelectionGeometry`(`can't compare () with
+  SelectionStatus`)。**分组要按每个桩自己的首条 error 分,别按整块文本 grep。**
+  两个桩同一个成因:TFA 在证明不可达的地方种一行
   `throw "Attempt to execute code removed by Dart AOT compiler (TFA)"`,前端降成
   `unreachable!(..)`;它上面的成员读被 `calls.dart` 的 `if (_neverReturns(target))
   return expr(target!)` **整个丢掉**,剩一个没有类型的 `!`,Rust 的 never-type
@@ -673,7 +681,6 @@ Dart 的循环变量是同一个对象。加 `mut` 只是把「诚实地 panic �
 
 | 轮 | 规则 / 读数 | 数 |
 |---|---|---|
-| ws940 | **被树摇空了的增强枚举,现在照样发出它的变体**。原来的规则是:增强枚举(每个变体带自己的字段)如果那些字段的值从常量里读不回来,就整个发成空枚举——理由写着「不然就会把它当普通枚举发、把成员丢掉」。可是空枚举**把成员和名字一起丢了**,而且是悄悄地:`enum KeyboardLockMode {}`,于是 `KeyboardLockMode::NumLock` 指着一个不存在的变体、`Set<KeyboardLockMode>` 连 `DartEq` 都没有。变体发出来之后,只有真去读那份状态的成员编不过,而编不过就是一个桩——看得见,一个一个数得清。`valueFields` 仍旧是空的,所以那份状态不发 getter | stub **113 → 112**、拒绝 **33 → 32**(`KeyboardLockMode.findLockByLogicalKey` 从「拒绝」变成一个桩,`handle_key_event` 和 `_should_accept_num_lock` 两个桩清掉)、可达 69、0 error;run940 连采五次:707 行 / 类型差异 0 / 0 panic |
 | ws943 | **`a ?? b` 两边是同一个类、但类型实参不同时,左边的拼法只有在右边真放得进去的时候才算数**。`children ?? buttonItems` 一边是 `List<Widget>`、一边是 `List<ContextMenuButtonItem>`,Dart 说整个是 `List<Object>`;而 `lub` 的判定只比 `classNode`,两边都是 `List` 就取了左边,于是右边逐元素被抬成一个它并不实现的 `Widget`。判定改成「类不同**或者**右边不是左边的子类型」(`typeEnvironment.isSubtypeOf`)。夹具 `ifnulllub` 先红(3 个编译错)后绿 | stub **112 → 110**(逐条比新增 **0**,少了两个 `adaptive_text_selection_toolbar.rs` 的 `build`)、拒绝 32、可达 69、0 error;run943 连采五次:707 行 / 类型差异 0 / 0 panic |
 | ws947 | `String.fromCharCodes(codes)` 是前端手写的一条 prelude 调用,而它的实参**一个转换都没走**:`Uint8List` 是 `Vec<u8>`,prelude 收 `Vec<i64>`。手写的 prelude 调用得自己要那次加宽(`_widensNarrowElements` 给别的 `List<int>` 槽做的那次)| stub **110 → 109**(逐条比新增 **0**,少了 `crypto_below/src/digest.rs` 的 `_hex_encode`)、拒绝 32、可达 69、0 error;run947 连采五次:707 行 / 类型差异 0 / 0 panic |
 | ws948 | **促升过的类型参数没有拼法**。Kernel 在 `if (x == null) return;` 证明了一个 `T?` 非空之后,把那个位置写成 `IntersectionType(T% & Object)`,而 `_type` 没有这一条,整个成员被拒。促升改的是**知道什么**,不是**手里拿的是什么**:拼法就是这个参数自己的、非空的那个。(拼成促升到的那一侧会说 `Object`,而值是个 `T`。)夹具 `promotedparam` 先红(带着一模一样的拒绝信息 panic)后绿 | stub 109(不变)、拒绝 **32 → 31**(`UndoHistoryState._update` 现在翻得出来**而且编得过**,没有换成一个桩)、可达 69、0 error;run948 连采五次:707 行 / 类型差异 0 / 0 panic |
@@ -714,6 +721,7 @@ Dart 的循环变量是同一个对象。加 `mut` 只是把「诚实地 panic �
 | ws1005 | **`/tmp/work.md` 第二版第 2 步:手柄从 `Rc<dyn Object>` 换成 `Rc<dyn DartAny>`,第四次尝试,过了。**前三次都死在同一行上——`TypeId::of` 有**两种语义,长得一模一样**:`TypeId::of::<dyn Object>()` 是**裸手柄的键**(问的人还拿着旧拼法,必须留,并且要答);`TypeId::of::<Vec<Rc<dyn Object>>>()` 是**被问的目标**(问的人改口了,必须跟着换)。这次不在文本上分,而是**在发射端分**:后端两个常量 `dartHandle` / `objectKey`,值槽和错误位走前者,cast 键走后者并**配一条 `dyn DartAny` 的孪生臂**——两条臂不能合并,因为盒子里装的东西要和提问方将要 downcast 的类型一致。prelude 里 203 处、runtime 手写的 17 处一起换,5 处键保留并加孪生,2 处容器目标跟着提问方走。**代价小得出乎意料**:两处泛型界放宽(`JsonCodec::encode`、`JsonUtf8Encoder::convert`,`V: 生static` → `V: DartAny`——它们本来靠毯式 `Object` 撑着),四个 `dyn DartAny` 的协议 impl(Debug/Display/PartialEq/DartEq,`dyn DartAny` 和 `dyn Object` 是两个类型,旧 impl 够不着)。翻译 trait 早就是 `DartAny` 的子 trait,所以 `Rc<dyn Widget>` 直接 unsize 到新手柄,第一版里那 117 个 `impl Object for`、255 个枚举错误、2,319 个 E0061 **一个都没出现**。**顺手把下一层的工具装上**:`DART2RUST_TRACE_CAST=1` 把每次 `dart_cast_to` 落空按(问的什么,实际是什么)计数,和渲染树一起报——一趟跑出全表,不用一层一趟链子加一次构建 | **桩 71 逐字节相同**(gone 0 / new 0)、拒绝 29、可达 69、0 error;**八轮编译错误数和基线逐轮相同**:16/6/66/15/17/3/7/0;run1005 连采五次:707 行 / 类型差异 0 / 0 panic——**四次尝试里第一次渲染树没红**;夹具 49 个,48 AGREE + 1 个故意的红 |
 | ws1006 | **注册机制删干净了(`/tmp/work.md` 第二版第 3 步)。**四张 `thread_local!` 表(`DART_CASTS`/`DART_STRINGS`/`DART_EQS`/`DART_HASHES`)、四个 `fn` 类型、`dart_register` / `dart_register_fns`、`dart_object` 和 `dart_rc` 里的两处调用、`emit_members.dart` 那行发射——**全部删除**,`dart_register` 在整个工作区出现 **0 次**(此前 1,835 个调用点)。六处读表各自有 vtable 上的答案:`impl DartAny for dyn Object` 的 `dart_eq_any` 落到 `dart_any_eq`、`dart_cast` 直接答 `None`(裸 `dyn Object` 现在只剩闭包/元组/`i64` 那种毯式 impl 的东西,对它们「同一性 + 类名」本来就是表的 miss 分支给的答案);`dart_any_eq`/`dart_any_hash`/`dart_object_str_ref` 三个只拿得到 `&dyn Any` 的函数去掉查表,落到原有的核心值分支——翻译类自己的 `==`/`hashCode`/`toString` 不从这里走了,它们在手柄的 vtable 上。**这一步是 ws1005 换手柄的直接结果**:表存在的唯一理由是 `dyn Object` 的 vtable 只有三个方法 | **桩 71 逐字节相同**(gone 0 / new 0)、拒绝 29、可达 69、0 error;八轮编译错误数和基线逐轮相同 16/6/66/15/17/3/7/0;run1006 连采五次:707 行 / 类型差异 0 / 0 panic;夹具 49 个,48 AGREE + 1 个故意的红 |
 | ws1008 | **一个进到列表*元素类型*里的实参必须被 coerce 进去,而以前只有「比较元素」的三个成员做了这件事**。`{remove, indexOf, lastIndexOf}` 是**比**一个元素的;**放**一个进去的 `add`/`insert` 问的是同一个问题,漏了。写成集合表达不了,因为元素不总是第一个实参——`insert(index, element)` 在第二位,所以改成一张「哪个位置的实参是元素」的表 `listElementArgument`。**顺着挖出更深的一层**(是仪表打出来的,不是猜的):coercion 的闸门读 `lowered.rustType`,而**闭包在有槽给它类型之前没有自己的类型**,于是任何闭包到达一个已拼出的槽都**根本没被问过**——槽是函数类型时,那个槽就是答案(`coerceInto` 的 `!rc`)。闸门上方那个 `_untypedCensus` 一直在数这些漏网的。**`fillRange` 进过表又被量出来退掉了**:Dart 声明是 `fillRange(int, int, [E? fill])`,槽是「元素或 null」,prelude 里是 `Option<T>`;按 `E` 去 coerce 就是 `f64` 撞 `Option<f64>`,在 `SliverMasonryGrid.performLayout` 多出一个桩(ws1007 读数 71→71:掉 1 新增 1,不算数,退掉重跑) | stub **71 → 70**(掉的是 `cupertino_date_picker.rs build`,新增 **0**);拒绝 29、可达 69、0 error;run1008 连采五次:707 行 / 类型差异 0 / 0 panic;夹具 **50 个,49 AGREE + 1 个故意的红**。`listinsertfn` **验证过没有这条就是红的**,而且红法和 gallery 逐字节同形(expected `Rc<dyn Fn(i64) -> ..>`, found closure);它同时钉住两种 tear-off:实例方法捕获 `this` 是闭包,顶层函数是裸 `fn` item(`cupertino_route.rs` 那个) |
+| ws1010 | **和一行「AOT 判死的代码」比较时,死的那一边按活的那一边的类型拼出来**。TFA 在证明不可达处种一行 throw,前端降成 `unreachable!(..)`;它是个 `!`,而没有东西约束的 `!` 会被 never-type fallback 填成 `()`,于是 `A == B` 去要 `(): PartialEq<i64>`,没人实现——`_buildDayPicker` 里 `widget.minimumDate!.month == selectedMonth`(这个 gallery 从不给 `minimumDate` 赋值,所以那个 `!` 是死的)。绑一下就够了,`!` 在 `let` 上会 coerce。**只管比较,这不是留余地**:`&&`/`||` 两边各自是 `bool`,不需要统一,fallback 无害——全程序另外约 50 处发散操作数今天就是这么编过去的,一处没动;比较要 `A: PartialEq<B>`,不定的 `A` 才是问题本身。**先仪表后改**:一趟 translate 的 trace 直接点名发射点是 `_binary`(不是 ws1009 猜的 `_call`)、正好 **3 处 / 2 个桩**、而且两个操作数**本来就带着类型**(`IrBlockValue/Never` 对 `IrField/int`、`IrStatic/SelectionStatus`),所以改动只有五行,落点和预言一致 | stub **70 → 68**(掉的正是预言的那两个,新增 **0**);拒绝 29、可达 69、0 error;run1010 连采五次:707 行 / 类型差异 0 / 0 panic;夹具 51 个,50 AGREE + 1 个故意的红。**这一组的凭据比本轮其他组弱,写明**:`fx/tfadead.dart` 没有这条也是绿的——TFA 是在**整个程序**范围内得出 `minimumDate` 恒空的,单库夹具逼不出这个结论(ws1009 验过),所以判据只有链子的桩集差 + 渲染树,夹具只当回归网 |
 
 ## 下一步
 

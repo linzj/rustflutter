@@ -110,6 +110,36 @@ augment class RustBackend {
   /// An operator not listed and not passed through would be silently wrong, so
   /// anything unrecognised stops.
   String _binary(String op, IrExpr left, IrExpr right, [IrType? type]) {
+    // A comparison against a line Dart's AOT compiler proved dead: the dead
+    // side is spelled at the live side's type.
+    //
+    // `unreachable!(..)` is a `!`, and a `!` with nothing to constrain it
+    // falls back to `()` -- then `A == B` asks for `(): PartialEq<i64>`,
+    // which nobody implements ("can't compare `()` with `i64`",
+    // `_buildDayPicker`'s `widget.minimumDate!.month == selectedMonth`,
+    // where TFA proved `minimumDate` is never non-null in this program).
+    // Binding it is enough, because a `!` coerces to anything at a `let`.
+    //
+    // Only a comparison, and that is not a hedge: `&&` and `||` take each
+    // side as its own `bool`, so nothing has to unify and the fallback is
+    // harmless. A comparison needs `A: PartialEq<B>`, so an unconstrained
+    // `A` is the whole problem. Three sites, two stubs -- counted, with
+    // every other diverging operand in the program left alone.
+    const comparisons = {'==', '!=', '<', '>', '<=', '>='};
+    if (comparisons.contains(op)) {
+      final deadLeft = _neverReturns(left);
+      final deadRight = _neverReturns(right);
+      if (deadLeft != deadRight) {
+        final live = (deadLeft ? right : left).rustType;
+        if (live != null) {
+          final dead = expr(deadLeft ? left : right);
+          final bound = '{ let __never: ${this.type(live)} = $dead; __never }';
+          return deadLeft
+              ? '($bound $op ${expr(right)})'
+              : '(${expr(left)} $op $bound)';
+        }
+      }
+    }
     if (op == '+' && type?.name == 'String') {
       // `String + String` is not Rust. `format!` is, it needs no borrow worked
       // out at either end, and it is what Dart's `+` on two strings means.
