@@ -1464,6 +1464,25 @@ Dart 里它自己也是 `<T>` 的;擦掉的是**元素类自己**的 `T`,而这�
 这一族是擦除孪生(ws544 量过:把 Dart 的界带上是 **+252 桩**),
 `material_date` 的 `T extends DateTime` 也在里面——**不是一轮能做的**。
 
+### `FocusManager.notifyListeners` 的 `to_list()` 少一个实参:不在后端那条 `to_list` 分支上(2026-09-11)
+
+`self._listeners.toList()`,`_listeners` 是 `ObserverList<VoidCallback>`,
+它自己声明了 `toList({bool growable = true})`,翻出来是 `to_list(&self, growable: bool)`。
+调用发出来是 0 个实参。
+
+**排掉了两个想当然的猜测**:
+(1)**不是 ws1004 的路由**——`declaring` 是 `ObserverList`(package 类,不是 `dart:`),
+`_dartIterableCall` 第一条就返回 false;
+(2)**不是没填默认值**——`parameters.dart` 的 `_omitted` 会填具名默认值,前端填了。
+
+**也不是后端 `calls.dart` 那条 `to_list` 分支**(那条注释写着「`growable` 两边都丢掉」)。
+给它加了「接收者自己声明了 `toList` 就别丢」的判断,**逐字节相同**;
+trace 打出来全程序走到那条分支的接收者**全是 `List<..>` / `Set<..>`**,
+`ObserverList` 那处根本不经过它。已撤回。
+
+**下次从这里起**:先打印那个调用点用的是哪条发射路径(它的 `IrCall` 从哪儿构造),
+别再从 `to_list` 这个名字去找——丢实参的地方在别处。
+
 ## 桩尾还剩什么(2026-09-10,ws988 之后 74 个,逐条看过)
 
 `b09ac222` 说「一条通用规则一轮就掉一格的阶段基本走完了」,这次把剩下的 74 个又过了一遍,确认了,并且把**每一条卡在哪儿**记下来,省得下次重新翻:
