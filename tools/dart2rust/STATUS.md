@@ -1045,8 +1045,14 @@ E0308(upcast 失败)和 E0599(协议方法),不是「名字没了」。两个探
 拿夹具量了三种形状(闭包字面量、局部函数按名字传、局部函数捕获且用不止一次——最后一种
 和 gallery 的 `handleError` 一模一样),**三种发出来的都已经在 `Rc<dyn Fn(..)>` 手柄后面了**。
 只有 gallery 的 `ImageProvider.resolveStreamForKey` 那一处发的是 `Rc::new({闭包})`,没有手柄,
-**为什么不一样还没找到**。所以第 1 步该做的是**先找出那一处走的哪条路**,
-不是把本来就对的多数派改一遍。
+**为什么不一样还没找到**。**已经找到了:触发它的是 `Future.onError`,不是 `catchError`。**
+Dart 的 `catchError` 形参是**裸 `Function`**(没签名),走 `coerce.dart` 的 `slotObject` 分支、
+被 `_dynamicFunction` 做成函数对象;`onError<E>` 的形参**是有签名的函数类型**,
+`slotObject` 为假,于是既没做成函数对象也没进自己的手柄,直接 `Rc::new(闭包)` 进 `Rc<dyn Object>`——
+**只有毯式 impl 撑着**,而第二版正要把那个槽换成 `Rc<dyn DartAny>`。
+最小复现:`b.future.onError((Object e, StackTrace s) { return -1; })`,一分钟,不用跑链子。
+**第 1 步的判据应该问 prelude 那一侧的槽(`Rc<dyn Object>`),不是 Dart 形参的类型。**
+四个猜过的方向(闭包字面量 / 局部函数 tear-off / 捕获且用多次 / `async`)**都不是**,别再试。
 另:v1 那次「74 → 98」改的是 `coercion.dart` 的 `_widened` 排除,**不是** `coerce.dart:510-521`,两处别混。
 
 ## 拒绝归零要什么(2026-09-10,量出来的,不是估的)
