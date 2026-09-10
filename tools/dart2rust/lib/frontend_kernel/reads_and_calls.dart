@@ -179,6 +179,20 @@ augment class KernelFrontend {
     );
   }
 
+  /// Whether the callee takes a parameter whose declared type *is* its
+  /// `i`th type parameter -- the one shape where the value's spelling at
+  /// the edge and the type argument's have to agree (see the call above).
+  static bool _spelledAsParameter(FunctionNode? callee, int i) {
+    if (callee == null || i >= callee.typeParameters.length) return false;
+    final p = callee.typeParameters[i];
+    bool names(DartType t) =>
+        t is TypeParameterType &&
+        t.parameter == p &&
+        t.nullability != Nullability.nullable;
+    return callee.positionalParameters.any((v) => names(v.type)) ||
+        callee.namedParameters.any((v) => names(v.type));
+  }
+
   /// `dateTimeSymbols[k]`, `.containsKey(k)`, `.keys` on a `dynamic` slot
   /// with known types (see `dynamicSlots`): one arm per type, each giving
   /// the *same* Rust type -- what the Dart code does with the result is
@@ -1239,8 +1253,26 @@ augment class KernelFrontend {
               ),
         name,
         args,
+        // At the *edge*, as the arguments are -- but only where the two
+        // spellings actually meet: a callee parameter whose declared type
+        // *is* that type parameter. `complete<T>(T result)` called with
+        // `T?` takes the value projected (`<T as DartNullable>::Or`), so
+        // the turbofish has to say the same or the two disagree
+        // (`entry.complete::<Option<T>>(<T as DartNullable>::from_option
+        // (result))`, `NavigatorState.removeRoute`).
+        //
+        // Not otherwise. Where the type parameter only shapes the
+        // *return*, the projected spelling puts the nesting out by one:
+        // `resourcesFor<T>(..)` hands back a `T?`, and the caller flattens
+        // an `Option<Option<T>>` that an `Option<Or>` is not
+        // (`Localizations.of`, +1 stub when this was unconditional).
         typeArguments: withTypeArgs
-            ? [for (final t in node.arguments.types) _type(t)]
+            ? [
+                for (final (i, t) in node.arguments.types.indexed)
+                  _spelledAsParameter(calleeFunction, i)
+                      ? _edgeType(t)
+                      : _type(t),
+              ]
             : const [],
       ),
       node.interfaceTarget,
