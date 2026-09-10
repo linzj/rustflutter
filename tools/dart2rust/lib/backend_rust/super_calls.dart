@@ -275,6 +275,19 @@ augment class RustBackend {
     return bare is IrThis ? (_thisHandle() ?? expr(value)) : expr(value);
   }
 
+  /// The operand of an explicit upcast, cloned when it names a place.
+  ///
+  /// `x as Rc<dyn T>` *moves* `x`, and inside an `FnMut` closure a captured
+  /// handle cannot be moved: `Scaffold.hitTestableAtOrigin` compares
+  /// `entry.target == renderObject` inside `path.any(..)`, and the upcast
+  /// consumed the capture (E0507, two files). Cloning an `Rc` is a refcount
+  /// bump. Where the value is one the expression made -- a call's result, a
+  /// construction -- there is no place to protect and nothing to clone.
+  String _castOperand(IrExpr value) {
+    final spelled = _handleOf(value);
+    return _ownedWhenSpelled(value) ? spelled : '$spelled.clone()';
+  }
+
   String _fieldRead(
     IrExpr? target,
     String name, [

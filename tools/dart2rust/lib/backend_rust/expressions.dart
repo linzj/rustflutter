@@ -522,7 +522,7 @@ augment class RustBackend {
                         ?.counted ??
                     false)
             ? (explicit
-                  ? '(${_handleOf(value)} as ${this.type(type)})'
+                  ? '(${_castOperand(value)} as ${this.type(type)})'
                   : _handleOf(value))
             // ..an enum too, since `_emitEnumDartAny` (ws510): registered
             // as it is boxed, so `dart_object_str` finds its `X.value`.
