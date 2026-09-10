@@ -9,10 +9,16 @@
 #
 # One line per fixture in `fx/`: what `bin/fx.sh` said last. `AGREE` means the
 # translated Rust and the Dart VM printed the same thing. Two fixtures are
-# *deliberately* red and are expected to stay that way -- `ffistruct` (a
-# `dart:ffi` struct the translator refuses on purpose) and `forinmut` (the
-# acceptance test for the withdrawn `mut` rule, see 撤回与作废 in STATUS.md).
-# Anything else red is a regression.
+# *deliberately* red and are expected to stay that way -- `ffistruct` and
+# `forinmut` (the acceptance test for the withdrawn `mut` rule, see 撤回与作废
+# in STATUS.md). Anything else red is a regression.
+#
+# `ffistruct` changed how it is red at ws1015 and the line here changed with
+# it. It used to be "a `dart:ffi` struct the translator refuses on purpose",
+# which stopped being true when the read half landed: it now builds and
+# panics at its first *write*, where `_storeInt64` refuses. The write needs
+# the aliasing decision (a `Uint8List` is a value, so a store lands in a
+# copy). `ffistructread` is the green half.
 #
 # `cargo` runs here, so this must not run beside `bin/run_chain.sh` (see the
 # note there about two `cargo check`s taking the VM down).

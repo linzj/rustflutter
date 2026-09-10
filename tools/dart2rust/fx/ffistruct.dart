@@ -11,6 +11,17 @@
 /// base is a `Uint8List` the program owns, which is memory this compiler can
 /// have. The Windows windowing structs in the gallery take their base from
 /// `calloc`, and that path still dies where it should -- at the DLL call.
+///
+/// **This fixture is deliberately red, and since ws1015 it is red for a
+/// different reason.** It used to fail to compile, because the whole struct
+/// was refused. The reads translate now (see `fx/ffistructread.dart`), so it
+/// builds and reaches its first *write*, where `_storeInt64` refuses at
+/// runtime with the message that says so.
+///
+/// The write cannot be written while a `Uint8List` is a value here: the
+/// store would land in a copy and the next load would not see it. That is
+/// the aliasing decision, not an oversight, so this stays red until that is
+/// made -- and it is the acceptance test for the boundary.
 library;
 
 import 'dart:ffi';

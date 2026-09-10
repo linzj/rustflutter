@@ -136,10 +136,35 @@ augment class KernelFrontend {
       ? _topLevelSetterName(member.name.text)
       : _topLevelName(member.name.text);
 
-  /// `dart:async`'s `StreamView`, the one prelude base a class extends.
-  static bool _isStreamView(Class c) =>
-      c.name == 'StreamView' &&
-      c.enclosingLibrary.importUri.toString() == 'dart:async';
+  /// The `dart:` bases this compiler represents as something with no struct
+  /// to flatten, by library and name.
+  ///
+  /// A subclass of one of these carries the fields it would have inherited
+  /// and gets no Rust superclass, because there is nothing above it to hold
+  /// them. `dart:async`'s `StreamView` is a type alias for `Stream` here;
+  /// `dart:ffi`'s `Struct` is the base the CFE leaves behind when it flattens
+  /// a native struct into accessors over a typed-data base.
+  static const _flatBases = {
+    'dart:async': {'StreamView'},
+    'dart:ffi': {'Struct'},
+  };
+
+  static bool _isFlatBase(Class c) =>
+      _flatBases[c.enclosingLibrary.importUri.toString()]?.contains(c.name) ??
+      false;
+
+  /// The fields such a subclass has to carry: every field declared anywhere
+  /// up the base's own chain.
+  ///
+  /// Not `base.fields` -- that finds nothing for `Struct`, which declares
+  /// none. What `_WindowsMessage` needs lives two levels up, in `_Compound`:
+  /// `chain=[Struct:[], _Compound:[_typedDataBase, _offsetInBytes],
+  /// Object:[]]`, read off the dill rather than assumed.
+  static Iterable<Field> _carriedFields(Class base) sync* {
+    for (Class? c = base; c != null && c.name != 'Object'; c = c.superclass) {
+      yield* c.fields.where((f) => !f.isStatic);
+    }
+  }
 
   /// A refused method or function, kept as its signature over a body that
   /// says so at runtime: `panic!("dart2rust: not translated: <why>")`.
@@ -672,7 +697,7 @@ augment class KernelFrontend {
           node.isEnum ||
               base == null ||
               base.name == 'Object' ||
-              _isStreamView(base)
+              _isFlatBase(base)
           ? null
           : base.name,
       // An enum's mixins too: `enum WidgetState with WidgetStatesConstraint`
@@ -715,20 +740,22 @@ augment class KernelFrontend {
           : const {},
     )..enumElementsDeclared = node.fields.any((f) => f.isEnumElement);
     final refused = <String>[];
-    if (base != null && _isStreamView(base)) {
-      cls.fields.add(
-        IrFieldDecl(
-          '_stream',
-          IrType(
-            'Stream',
-            arguments: [
-              for (final t in superType?.typeArguments ?? const <DartType>[])
-                _type(t),
-            ],
-          ),
-          isFinal: true,
-        ),
-      );
+    if (base != null && _isFlatBase(base)) {
+      // The fields the base would have held, at the instantiation this
+      // subclass extends it with: `ByteStream extends StreamView<List<int>>`
+      // carries `_stream` as a `Stream<List<int>>`, and a `dart:ffi` struct
+      // carries `_Compound`'s `_typedDataBase` and `_offsetInBytes`.
+      final substitution = superType == null
+          ? null
+          : Substitution.fromSupertype(superType);
+      for (final field in _carriedFields(base)) {
+        final declared = substitution == null
+            ? field.type
+            : substitution.substituteType(field.type);
+        cls.fields.add(
+          IrFieldDecl(field.name.text, _type(declared), isFinal: true),
+        );
+      }
     }
 
     // Each refusal names its member; with `DART2RUST_TRACE=<class>` the
@@ -1130,15 +1157,32 @@ augment class KernelFrontend {
               _sample(init),
             );
           }
-          // `super(stream)` into `StreamView`: the stream goes into the
-          // `_stream` field the subclass carries (see `lowerClass`).
-          if (_isStreamView(base) && init.arguments.positional.length == 1) {
-            final stream = init.arguments.positional.single;
-            inits['_stream'] = _widened(
-              stream,
-              init.target.function.positionalParameters.single.type,
-              expression(stream),
-            );
+          // `super(..)` into a base with no struct: the arguments go into
+          // the fields the subclass carries (see `lowerClass`), in order.
+          // `super(stream)` into `StreamView` fills `_stream`;
+          // `super(typedDataBase, offsetInBytes)` into `dart:ffi`'s `Struct`
+          // fills `_Compound`'s two. Both counts agree -- traced, not
+          // assumed -- and a disagreement refuses rather than guesses.
+          final carried = _isFlatBase(base)
+              ? _carriedFields(base).toList()
+              : const <Field>[];
+          if (carried.isNotEmpty) {
+            final given = init.arguments.positional;
+            if (given.length != carried.length) {
+              throw Unsupported(
+                'super constructor call into `${base.name}` with '
+                '${given.length} argument(s) for ${carried.length} '
+                'carried field(s)',
+                _sample(init),
+              );
+            }
+            for (var i = 0; i < given.length; i++) {
+              inits[carried[i].name.text] = _widened(
+                given[i],
+                init.target.function.positionalParameters[i].type,
+                expression(given[i]),
+              );
+            }
             continue;
           }
           superBase = base.name;

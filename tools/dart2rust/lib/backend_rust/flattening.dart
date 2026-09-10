@@ -224,6 +224,13 @@ augment class RustBackend {
     'dart_shr',
     'dart_ushr',
     'vec_of_nulls',
+    // `dart:ffi`'s load primitives, left behind by the CFE's flattening of
+    // a native struct (`_WindowsMessage.viewId`). Spelled as Dart names
+    // because this check runs before `snake` does -- the emitted call is
+    // `snake(name)`, which is what the prelude declares.
+    '_loadInt32',
+    '_loadInt64',
+    '_loadPointer',
     // `math.max`/`math.min` as values (`_mathValueNames`).
     'dart_max_of',
     'dart_min_of',

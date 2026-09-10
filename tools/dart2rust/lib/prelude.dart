@@ -5840,6 +5840,53 @@ pub fn _abi() -> i64 {
     }
 }
 
+/// `dart:ffi`'s load primitives, which the CFE leaves behind when it
+/// flattens a native struct.
+///
+/// A `Struct` subclass becomes two carried fields and a set of accessors
+/// reading `_loadIntNN(this._typedDataBase, X#offsetOf + this._offsetInBytes)`
+/// (`_WindowsMessage.viewId` and its four neighbours). The typed-data base
+/// is a `Uint8List`, which is a `Vec<u8>` here, so a load is a little-endian
+/// read at the offset -- the layout `dart:ffi` specifies.
+///
+/// Reads only. The matching `_storeIntNN` cannot be written while a
+/// `Uint8List` is a value: the store would land in a copy and the next load
+/// would not see it. See STATUS, ffi.
+fn dart_ffi_bytes(base: &std::rc::Rc<dyn DartAny>) -> Vec<u8> {
+    match base.dart_any_ref().downcast_ref::<Vec<u8>>() {
+        Some(bytes) => bytes.clone(),
+        None => Vec::new(),
+    }
+}
+
+fn dart_ffi_load(base: &std::rc::Rc<dyn DartAny>, offset: i64, width: usize) -> i64 {
+    let bytes = dart_ffi_bytes(base);
+    let at = offset as usize;
+    if at + width > bytes.len() {
+        return 0;
+    }
+    let mut value: u64 = 0;
+    for i in (0..width).rev() {
+        value = (value << 8) | bytes[at + i] as u64;
+    }
+    match width {
+        4 => value as u32 as i32 as i64,
+        _ => value as i64,
+    }
+}
+
+pub fn _load_int32(base: std::rc::Rc<dyn DartAny>, offset: i64) -> i64 {
+    dart_ffi_load(&base, offset, 4)
+}
+
+pub fn _load_int64(base: std::rc::Rc<dyn DartAny>, offset: i64) -> i64 {
+    dart_ffi_load(&base, offset, 8)
+}
+
+pub fn _load_pointer<T>(base: std::rc::Rc<dyn DartAny>, offset: i64) -> Pointer<T> {
+    Pointer::from_address(dart_ffi_load(&base, offset, 8))
+}
+
 pub struct Pointer<T>(pub usize, std::marker::PhantomData<T>);
 
 impl<T> Pointer<T> {
