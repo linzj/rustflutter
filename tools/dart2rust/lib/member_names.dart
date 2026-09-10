@@ -133,6 +133,16 @@ const mutatingListNames = {...mutatingSequenceNames, 'length'};
 /// prelude. Coercing it into `E` made a `f64` where `Option<f64>` was taken
 /// and cost a stub in `SliverMasonryGrid.performLayout` -- measured, not
 /// reasoned: it was in the table for one chain and came straight back out.
+/// A `String` member taking a `Pattern`, and the `RegExp` method that is the
+/// same member when the pattern is a regular expression.
+///
+/// Dart's `Pattern` is a `String` or a `RegExp`, and `dart:core` dispatches
+/// on which one arrived. Rust has no such union, so the member has two
+/// implementations here -- `DartString`'s, taking a string, and the
+/// `RegExp`'s own -- and the call site picks by the argument's static type,
+/// with the string handed over as the first argument.
+const regexpPatternMember = <String, String>{'replaceAll': 'replace_all_in'};
+
 const listElementArgument = <String, int>{
   'add': 0,
   'insert': 1,

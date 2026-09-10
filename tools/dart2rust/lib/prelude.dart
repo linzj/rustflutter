@@ -8829,6 +8829,35 @@ impl RegExp {
         out
     }
 
+    /// `s.replaceAll(pattern, to)` where the pattern is a `RegExp`.
+    ///
+    /// Dart's `replaceAll` takes a `Pattern`, which is a `String` or a
+    /// `RegExp`; `DartString::replace_all` answers the first and this the
+    /// second. Written over `all_matches` so the two agree on what a match
+    /// is (`DateFormat._patchQuotes`, whose pattern is
+    /// `_twoEscapedQuotes`).
+    ///
+    /// The spans come back in order and do not overlap, so the pieces
+    /// between them are copied and each match is replaced. Indices are
+    /// UTF-16 code units, as everything else here is.
+    pub fn replace_all_in(&self, input: String, to: String) -> String {
+        let units: Vec<u16> = input.encode_utf16().collect();
+        let mut out = String::new();
+        let mut at: usize = 0;
+        for found in self.all_matches(input.clone(), 0) {
+            let start = found.start as usize;
+            let end = found.end as usize;
+            if start < at || end > units.len() {
+                continue;
+            }
+            out.push_str(&String::from_utf16_lossy(&units[at..start]));
+            out.push_str(&to);
+            at = end;
+        }
+        out.push_str(&String::from_utf16_lossy(&units[at..]));
+        out
+    }
+
     /// `RegExp.escape(text)`: every metacharacter backslashed.
     pub fn escape(text: String) -> String {
         let mut out = String::new();

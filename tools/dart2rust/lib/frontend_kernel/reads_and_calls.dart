@@ -685,6 +685,22 @@ augment class KernelFrontend {
         _intoElement(args.single, node.arguments.positional.single, listType),
       ]);
     }
+    // A `String` member whose `Pattern` arrived as a `RegExp`: the member
+    // is the regular expression's, with the string as its first argument.
+    // Only the *static* type of the argument tells the two apart, and only
+    // here is it known -- by the time the call reaches the backend the
+    // pattern is an expression with no Dart type on it
+    // (`_DateFormatQuotedField._patchQuotes`).
+    final patternMember = regexpPatternMember[name];
+    if (owner == 'String' && patternMember != null && args.isNotEmpty) {
+      final pattern = _staticType(node.arguments.positional.first);
+      if (pattern is InterfaceType && pattern.classNode.name == 'RegExp') {
+        return IrCall(args.first, patternMember, [
+          _receiver(node.receiver),
+          ...args.skip(1),
+        ]);
+      }
+    }
     if (owner == 'String' && name == '[]' && args.length == 1) {
       return IrCall(_listReceiver(node.receiver), 'char_at', args);
     }
