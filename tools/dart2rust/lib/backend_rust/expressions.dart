@@ -386,13 +386,19 @@ augment class RustBackend {
       // .inputDecorationTheme` and `DatePickerThemeData`'s, ws965).
       IrCastTo(:final target) when _neverReturns(target) => expr(target),
       IrDowncast(:final target) when _neverReturns(target) => expr(target),
+      // A failing `as` is an `Err`, not a panic: Dart throws `TypeError`
+      // there and Dart code catches it (`dart_cast_failed`). `_propagate` is
+      // `?` inside a function that carries the error channel -- which four
+      // in five of them do -- and `.unwrap()` where there is none, which is
+      // the same panic as before and belongs to the callers that still have
+      // no channel.
       IrCastTo(:final target, :final type) when _isTypeParam(type.name) =>
         '${expr(target)}.dart_cast_any::<${type.name}>()'
-            '${type.nullable ? "" : ".unwrap()"}',
+            '${type.nullable ? "" : '.ok_or_else(|| dart_cast_failed("${type.name}"))$_propagate'}',
       // A nullable target keeps the `Option` the cast hands back.
       IrCastTo(:final target, :final type) =>
         '${expr(target)}.dart_cast_to::<${_dynOf(type)}>()'
-            '${type.nullable ? "" : ".unwrap()"}',
+            '${type.nullable ? "" : '.ok_or_else(|| dart_cast_failed("${type.name}"))$_propagate'}',
       IrSuperDispatch(
         :final receiver,
         :final base,
@@ -432,17 +438,22 @@ augment class RustBackend {
       // (`dart_cast_any` at `Rc<Self>`), not a copy of the struct.
       IrDowncast(:final target, :final type, :final arguments)
           when (library[type]?.counted ?? false) =>
-        '${expr(target)}.dart_cast_any::<std::rc::Rc<$type${arguments.isEmpty ? '' : '<${arguments.map(this.type).join(', ')}>'}>>().unwrap()',
+        '${expr(target)}.dart_cast_any::<std::rc::Rc<$type${arguments.isEmpty ? '' : '<${arguments.map(this.type).join(', ')}>'}>>()'
+            '.ok_or_else(|| dart_cast_failed("$type"))$_propagate',
       // A prelude exception class: through the prelude's hierarchy, as
       // `is` asks (`_isTest`), so a subtype's value reads as it.
       IrDowncast(:final target, :final type, :final arguments)
           when arguments.isEmpty &&
               library[type] == null &&
               _preludeClasses.contains(type) =>
-        '<$type as DartCoreAs>::dart_core_as(&${_optionRead(target) ?? expr(target)}).unwrap()',
+        '<$type as DartCoreAs>::dart_core_as(&${_optionRead(target) ?? expr(target)})'
+            '.ok_or_else(|| dart_cast_failed("$type"))$_propagate',
+      // The three `IrDowncast` arms are Dart's `as` as much as `IrCastTo` is,
+      // and a failing one throws `TypeError` there too (`dart_cast_failed`).
       IrDowncast(:final target, :final type, :final arguments) =>
         '${_asAny(target)}.downcast_ref::<${_downcastNames[type] ?? type}'
-            '${_downcastArguments(type, arguments)}>().unwrap()',
+            '${_downcastArguments(type, arguments)}>()'
+            '.ok_or_else(|| dart_cast_failed("$type"))$_propagate',
       IrDynamicDispatch(:final receiver, :final arms) => _dispatch(
         receiver,
         arms,

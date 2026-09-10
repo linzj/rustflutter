@@ -5772,6 +5772,25 @@ pub fn dart_identical_opt_value<T, U>(a: &Option<T>, b: &Option<U>) -> bool {
     }
 }
 
+/// What Dart's `as` throws when the value is not of the type asked for.
+///
+/// A `TypeError`, and a `TypeError` is catchable: `on TypeError catch (e)`
+/// is ordinary Dart, and `try { x as Foo } on TypeError { .. }` is a shape
+/// real programs use. Until this existed the cast was an `Option::unwrap`,
+/// which is a panic -- so the translation dropped a path the program still
+/// had.
+///
+/// The message names the type asked for but not the type found: the value is
+/// behind the `Option` by the time this is called, and binding it to name it
+/// would evaluate the operand twice. Dart's own wording is "type 'X' is not a
+/// subtype of type 'Y' in type cast"; this says the half it knows.
+pub fn dart_cast_failed(to: &str) -> DartError {
+    std::rc::Rc::new(TypeError::new(format!(
+        "type is not a subtype of type '{}' in type cast",
+        to
+    ))) as DartError
+}
+
 /// `identical(a, b)` where at least one side is a value this compiler copies.
 ///
 /// Three cases, and the third is the one worth reading twice. Two tokens

@@ -301,6 +301,8 @@ augment class RustBackend {
     // ..and the error a dynamic member access raises when nothing answers
     // (`_dynamicMemberCall`).
     'dart_no_such_method',
+    // ..and the `TypeError` a failing `as` raises.
+    'dart_cast_failed',
   };
 
   /// The prelude's classes that `is` can ask about and a `throw` boxes.
