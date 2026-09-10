@@ -377,6 +377,24 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 
 ## 撤回与作废(不要再试)
 
+- **给「TFA 判死的接收者」上的成员调用加个类型绑定——量出来逐字节相同,已撤回
+  (ws1009,2026-09-10)。** 三个桩同一个成因:TFA 在证明不可达的地方种一行
+  `throw "Attempt to execute code removed by Dart AOT compiler (TFA)"`,前端降成
+  `unreachable!(..)`;它上面的成员读被 `calls.dart` 的 `if (_neverReturns(target))
+  return expr(target!)` **整个丢掉**,剩一个没有类型的 `!`,Rust 的 never-type
+  fallback 填成 `()`,于是 `widget.minimumDate!.month == selectedMonth` 变成
+  `{ unreachable!(..) } == i64`,报 "can't compare `()` with `i64`"。
+  改法是在那里按调用本该产生的类型绑一下(`{ let __never: T = ..; __never }`,
+  `!` 在 `let` 上会 coerce)。**发射了 5 处,桩集逐字节相同 70/gone 0/new 0**——
+  那 5 处本来就编得过,而**出错的 3 处根本不是带 `resultType` 的 `_call`**
+  (`.month` 那种大概是 getter/字段读那条路)。下次要动先把出错那 3 处**是哪个发射点**
+  打出来,别再从 `_call` 猜。
+  **另外:这条的形状钉不进夹具。** `fx/tfadead.dart` 写了(手写 TFA 那句 throw、
+  表达式位置的 throw、`?:` 里的、以及 `x?.a == b && x!.a > c` 这种空断言),
+  **第一次跑就是绿的**——真正的成因是 TFA 在**整个程序**范围内证明 `minimumDate`
+  永远为空,单库夹具里 TFA 不会下这个结论,验过确实不会。夹具留着当回归网
+  (那三种形状将来必须继续编得过),但这一组的判据只能是链子的桩集差。
+
 - **Object 协议:把注册表换成 vtable,第 2 步(拿掉毯式 impl)——渲染树红,已撤回
   (2026-09-10,work.md 那份计划的主体)。**
   **注**(2026-09-10 晚):作废的是**这条路**——「拿掉毯式 `impl<T: 'static> Object for T`、
