@@ -462,7 +462,14 @@ augment class RustBackend {
     // `?` in a literal's constructor) has no `Result` to leave through
     // inside an `and_then` returning `Option` (30 E0277 at ws441).
     if (name == '!map_get_opt' && args.length == 1) {
-      return '{ let __m = $receiver; ${expr(args.single)}.as_ref().and_then(|__k| __m.get(__k).cloned()${_flattenedValue(target)}) }';
+      // Borrowed, not moved. `get` needs only a reference and `cloned()`
+      // hands back an owned value, so binding the map by value consumed it:
+      // inside a loop that is "use of moved value ... in previous iteration
+      // of loop" (E0382, `_updateChildren`'s `oldKeyedElements` and
+      // `Table.update`'s `oldKeyedRows`). A `let` binding a borrow extends
+      // the temporary to the end of the block, so a receiver that is itself
+      // a call still lives long enough.
+      return '{ let __m = &$receiver; ${expr(args.single)}.as_ref().and_then(|__k| __m.get(__k).cloned()${_flattenedValue(target)}) }';
     }
     if (name == '!map_remove' && args.length == 1) {
       return '$receiver.remove(&${_borrowed(args.single)})';
