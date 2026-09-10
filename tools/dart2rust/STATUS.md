@@ -396,14 +396,18 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 否则没有 `PartialEq`(E0369,`DropdownButton.==` 与 `_WindowingOwner.==`)。改成用
 上面十行处就有的 `_comparableType` 来判,**量出来 82 → 82,桩的集合逐字节相同**。
 
-**为什么没触发**(探针一跑就看见了,`DART2RUST_TRACE_EQ`):
+**为什么没触发**:探针跑的是 `DropdownButton`,而报错的 `eq` 根本不是它的——
 
     EQ DropdownButton.items type=Option<Vec<DropdownMenuItem<T>>> comparable=true
 
-`_comparableType` **认为它可比**——`DropdownMenuItem<T>` 确实 derive 了 `PartialEq`。
-真正的毛病在 `_comparableType` 里面:那个 derive 带着 `where` 界,而 `DropdownButton`
-在这个实例化上没给出来。**要重做需要什么**:别去改挑字段的那一步,去改
-`_comparableType`——它对「泛型翻译类的 derive 带界」这件事是瞎的。
+报错说的是 `Option<DropdownMenuItem<T>>`(没有 `Vec`),是 **`_MenuItem<T>`** 的 `eq`。
+
+**这条记录原本写错了。** 当初写的是「毛病在 `_comparableType` 里面,它对带界的 derive
+是瞎的」——**不对**:`DropdownButton` 和 `DropdownMenuItem` 两个 impl 的 `where` 子句
+一模一样,没有谁不满足谁。我在**探错了类**之后又靠推理下了结论,而且是在刚说完「规则不
+触发就打印节点、别再推」之后。**真正的成因见 ws979**:`_MenuItem<T>` 的 `where` 只有
+`T: PartialEq`,少了 `<T as DartNullable>::Or: PartialEq`——因为那句子句是按**本类自己**
+的投影字段拼的,而 `_MenuItem` 只是**装着**一个需要它的 `DropdownMenuItem<T>`。
 
 **(2026-09-10,ws971 试过两次都撤回)** 同一件事按在 `coerceInto` 里,两次都不对。
 第一次按 `slot.projected && have0.name == 'Null'`:**89 → 89,桩的集合一模一样**,

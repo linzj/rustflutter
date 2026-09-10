@@ -194,14 +194,20 @@ augment class RustBackend {
       _line('}');
     }
     if (byIdentity.isNotEmpty || (identityEq && comparable)) {
-      final projected = {
-        for (final f in _allFields(cls))
-          if (f.type.projected)
-            type(IrType(f.type.name, arguments: f.type.arguments)),
-      };
+      // The projected bound for *every* parameter, not only the ones this
+      // class holds projected itself. A field can merely *hold* a generic
+      // class whose own `PartialEq` asks for it: `_MenuItem<T>` holds an
+      // `Option<DropdownMenuItem<T>>`, and `DropdownMenuItem<T>: PartialEq`
+      // requires `<T as DartNullable>::Or: PartialEq`, which `_MenuItem`'s
+      // clause never asked for because none of *its* fields is projected
+      // ("binary operation `==` cannot be applied", E0369, ws979).
+      //
+      // Harmless where nothing needs it: `Or` is an associated type every
+      // `DartNullable` has, so the clause is satisfiable wherever the
+      // parameter's own `PartialEq` is.
       final bounds = cls.typeParameters.isEmpty
           ? ''
-          : ' where ${[for (final p in cls.typeParameters) '$p: PartialEq', for (final p in projected) '<$p as DartNullable>::Or: PartialEq'].join(', ')}';
+          : ' where ${[for (final p in cls.typeParameters) '$p: PartialEq', for (final p in cls.typeParameters) '<$p as DartNullable>::Or: PartialEq'].join(', ')}';
       _line(
         'impl${_implGenerics(cls)} PartialEq for ${cls.name}${_generics(cls)}$bounds {',
       );
