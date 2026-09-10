@@ -824,6 +824,36 @@ augment class RustBackend {
       final chosen = _accessorQualifier(name);
       if (chosen != null && library.isAbstract(chosen)) qualifier = chosen;
     }
+    // A class may override a mixin's member and *add* an optional named
+    // parameter, which Dart allows: `SemanticsNode.toDiagnosticsNode`
+    // takes `childOrder` beside the `name` and `style` that
+    // `DiagnosticableTree` declares. The mixin's body is emitted into the
+    // class -- `impl SemanticsNode` -- so `self.to_diagnostics_node(name,
+    // style)` resolves to the class's own three-argument method and is one
+    // argument short. The trait's is the one the call means, and the
+    // forwarding impl beside it already fills the default
+    // (`SemanticsNode::to_diagnostics_node(.., TraversalOrder)`).
+    //
+    // By the *count*, which is the whole disagreement: a name whose
+    // arities agree resolves inherently as before.
+    if (qualifier == null && (target == null || target is IrThis)) {
+      final own = cls.methods
+          .where((m) => m.name == name && !m.isStatic && !m.isSetter)
+          .firstOrNull;
+      if (own != null && own.params.length != args.length) {
+        for (final t in _supertypesOf(cls)) {
+          if (!library.isAbstract(t.name)) continue;
+          final theirs = [
+            ...t.methods.where((m) => !m.isStatic && !m.isSetter),
+            ...t.abstractMethods.where((m) => !m.isSetter),
+          ].where((m) => m.name == name).firstOrNull;
+          if (theirs != null && theirs.params.length == args.length) {
+            qualifier = t.name;
+            break;
+          }
+        }
+      }
+    }
     // A trait with one of the prelude's above it declares a name the
     // supertrait declares too -- `CharacterRange.moveNext([count])` over
     // `Iterator`'s `moveNext()` -- and a call through the object names
