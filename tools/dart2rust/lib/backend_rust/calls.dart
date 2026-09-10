@@ -188,7 +188,24 @@ augment class RustBackend {
     // written `({ let __r = ..borrow().clone(); __r })` to begin with.
     final borrowedRead = _borrowedRead(target, name, args);
     if (borrowedRead != null) return borrowedRead;
-    final cellPlace = _mutatesInPlace(name) ? _mutPlace(target) : null;
+    // ..and only where the receiver really *is* a collection. A handle's
+    // method that merely shares a mutator's name is not a mutation of a
+    // place: `entry!.remove()` on a `LocalHistoryEntry` took this path
+    // because `remove` is what a `List` does, and asked a closure's
+    // captured binding for a `&mut` it was never given ("cannot borrow
+    // `entry` as mutable", E0596: `ScaffoldState._buildBottomSheet`,
+    // ws974). The same lesson as ws509 one line below, which learned it
+    // for a *field* and left the general case here alone.
+    //
+    // Unknown type: the path stands, as it did before. Guessing "not a
+    // collection" where nothing is recorded would silently move a real
+    // mutation onto a clone, which is what ws944 cost.
+    final receiverType = target?.rustType;
+    final mutatesACollection =
+        receiverType == null || _isMutableCollection(type(receiverType));
+    final cellPlace = _mutatesInPlace(name) && mutatesACollection
+        ? _mutPlace(target)
+        : null;
     // The arguments first, bound: the receiver's `borrow_mut()` is taken
     // before the arguments are evaluated, and an argument reading the same
     // cell panicked ("already mutably borrowed": `counts['x'] = (counts['x']
