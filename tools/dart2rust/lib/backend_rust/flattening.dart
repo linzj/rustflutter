@@ -293,6 +293,11 @@ augment class RustBackend {
     // `dart:ffi`'s `_abi()`, which every `#sizeOf`/`#offsetOf` the CFE
     // writes is indexed by.
     '_abi',
+    // `dart:async`'s `runZonedGuarded`, which `dart:ui`'s `_invoke1WithReturn`
+    // runs a platform callback under, and `dart:_internal`'s `_nativeEffect`,
+    // whose whole contract is that the VM removes the call.
+    'runZonedGuarded',
+    '_nativeEffect',
   };
 
   /// The prelude's classes that `is` can ask about and a `throw` boxes.

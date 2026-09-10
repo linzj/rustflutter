@@ -1002,7 +1002,15 @@ augment class RustBackend {
   }
 
   /// ..and its static functions.
-  static const _preludeFailingStatics = {'generate', '_invoke1_with_return'};
+  /// `runZonedGuarded` under both spellings: this set is asked with the
+  /// Dart name at a top-level call and with the snake one elsewhere, and
+  /// `_invoke1_with_return` beside it is already the snake spelling.
+  static const _preludeFailingStatics = {
+    'generate',
+    '_invoke1_with_return',
+    'runZonedGuarded',
+    'run_zoned_guarded',
+  };
 
   /// `?` when a function surrounds the expression, `.unwrap()` otherwise.
   String get _propagate => _failure != null ? '?' : '.unwrap()';

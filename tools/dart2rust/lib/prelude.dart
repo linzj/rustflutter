@@ -5892,6 +5892,20 @@ pub fn _load_pointer<T>(base: std::rc::Rc<dyn DartAny>, offset: i64) -> Pointer<
     Pointer::from_address(dart_ffi_load(&base, offset, 8))
 }
 
+/// `dart:_internal`'s `_nativeEffect`, which `package:ffi`'s allocator calls
+/// so the VM's flow graph knows a native side effect happened there.
+///
+/// A no-op is not a shortcut here, it is the specification. The SDK declares
+/// it `@pragma("external-effect") external void _nativeEffect(Object? object)`
+/// and says of it: "The function call and it's argument are removed in flow
+/// graph construction." There is nothing to run, and nothing this compiler
+/// could run instead.
+///
+/// Generic in the argument because the pragma removes the argument too: the
+/// call sites pass whatever the effect is about (`_CallocAllocator.new` passes
+/// its own new object), and none of them looks at a result.
+pub fn _native_effect<T>(_object: T) {}
+
 pub struct Pointer<T>(pub usize, std::marker::PhantomData<T>);
 
 impl<T> Pointer<T> {
@@ -7208,6 +7222,58 @@ impl Zone {
 
     pub fn register_callback<T>(&self, body: impl Fn() -> Result<T, DartError>) -> impl Fn() -> Result<T, DartError> {
         body
+    }
+
+    /// `handleUncaughtError(error, stack)`: what a zone does with an error
+    /// nobody caught. The root zone -- the only zone there is here -- has no
+    /// handler above it, so the error stops the isolate, and this prelude
+    /// says "the program threw and nothing caught it" the one way it says it
+    /// everywhere else.
+    pub fn handle_uncaught_error(&self, error: std::rc::Rc<dyn DartAny>, stack: StackTrace) -> Result<(), DartError> {
+        panic!("uncaught Dart exception: {}\n{}", error.dart_to_string(), stack)
+    }
+}
+
+/// `runZonedGuarded(body, onError)`: run `body`, and hand an error it throws
+/// to `onError` instead of letting it out.
+///
+/// With one zone the *zone* half is nothing -- `Zone::run` already calls the
+/// callback directly -- so what is left is the guard, and the guard is real:
+/// Dart returns `body()`'s value when it completes and `null` when it threw,
+/// after calling `onError` with the error and the stack.
+///
+/// The return is `R::Or` rather than `Option<R>` because the Dart signature
+/// returns `R?`, and a caller whose own `R` is a type parameter spells that
+/// `<R as DartNullable>::Or`. `dart:ui`'s `_invoke1WithReturn` is exactly
+/// that caller: `Option<R>` would be the wrong type there the moment `R` is
+/// itself nullable.
+///
+/// The boundary that buys: `R` has to be inferable *forwards*, from the body
+/// closure's own return type, because rustc will not run a projection
+/// backwards from `R::Or`. A Dart body that only throws gives the closure no
+/// return type at all, and such a call needs a turbofish the front end does
+/// not spell for a prelude top-level (`_keptTypeArguments` gives a prelude
+/// callee none). Every call in the gallery has a returning path, so this is
+/// written down rather than worked around.
+///
+/// The two named parameters are taken and ignored, because the backend passes
+/// every named parameter positionally and a call that names neither still
+/// arrives as four arguments. They are `Option<Rc<dyn DartAny>>` so that the
+/// `None` at such a call site infers; a call that actually *had* a
+/// `zoneValues` map or a `ZoneSpecification` would not type against this, and
+/// that is the honest answer -- neither is a thing this compiler has.
+pub fn run_zoned_guarded<R: DartNullable>(
+    body: std::rc::Rc<dyn Fn() -> Result<R, DartError>>,
+    on_error: std::rc::Rc<dyn Fn(std::rc::Rc<dyn DartAny>, StackTrace) -> Result<(), DartError>>,
+    _zone_values: Option<std::rc::Rc<dyn DartAny>>,
+    _zone_specification: Option<std::rc::Rc<dyn DartAny>>,
+) -> Result<R::Or, DartError> {
+    match body() {
+        Ok(value) => Ok(R::from_option(Some(value))),
+        Err(error) => {
+            on_error(error, StackTrace::current())?;
+            Ok(R::from_option(None))
+        }
     }
 }
 
