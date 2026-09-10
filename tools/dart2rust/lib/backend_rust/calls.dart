@@ -349,7 +349,20 @@ augment class RustBackend {
       return '$receiver.unwrap_or_else(|| std::rc::Rc::new(Null) as ${dartHandle})';
     }
     // The other way: a `dynamic` as an `Option`, `None` for the `Null` object.
-    if (name == '!nullable' && args.isEmpty) return 'dart_nullable($receiver)';
+    //
+    // The handle goes *in* and comes back inside the `Option`, so a bare
+    // local is moved by it and a body that reads the same local again is
+    // E0382. `_MasterDetailScaffold.build` writes `value ?? ..` twice in one
+    // expression and was a stub for it. Cloned the way an argument is
+    // (`passed`), which for an `Rc` clones the handle; the sibling shape in
+    // `IrIsNull` has cloned here all along.
+    if (name == '!nullable' && args.isEmpty) {
+      final held =
+          target is IrLocal &&
+          !_cellLocals.containsKey(target.name) &&
+          !_closureCaptured.contains(target.name);
+      return 'dart_nullable($receiver${held ? '.clone()' : ''})';
+    }
     if (name == '!widen_object' && args.isEmpty) {
       // `iter().cloned()`: the receiver may be the `&Vec` a null-aware
       // `as_ref().map(|it| ..)` binds, and `into_iter` on that yields

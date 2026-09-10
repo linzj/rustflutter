@@ -79,7 +79,14 @@ augment class RustBackend {
           'Some(__value) => __value, '
           'None => ${expr(node.right)} }';
     }
-    final right = expr(node.right);
+    // The right side by clone too, for the reason the left already is: an
+    // arm that yields a local moves out of it, and the place lives on. Two
+    // `??`s over one fallback in a single expression -- `'${value ?? f}:${value
+    // ?? f}'`, which is what `_MasterDetailScaffold.build` writes -- moved `f`
+    // into the first and read it in the second (ws1057).
+    final right = node.right is IrLocal
+        ? '${expr(node.right)}.clone()'
+        : expr(node.right);
     // The lazy side as a `match`, not an `or_else(|| ..)`: a closure is its
     // own function, and an `.await` inside one -- `a ?? await b()` -- is
     // "await outside async". `match` keeps the laziness and stays in the
