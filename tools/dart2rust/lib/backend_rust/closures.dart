@@ -55,6 +55,18 @@ augment class RustBackend {
       ),
       ...node.locals.map((l) => 'let ${snake(l)} = ${snake(l)}.clone();'),
     ].join(' ');
+    // ..and the body's own locals are `mut` by its own reckoning, as a
+    // method body's are (`_reassigned` is set per member in
+    // `emit_members`). Without this a local declared *and* assigned inside
+    // a closure was judged by whatever set the enclosing member left
+    // behind: `Widget dialog = themes?.wrap(..) ?? pageChild;` followed by
+    // `dialog = SafeArea(child: dialog)` in `_DialogRoute`'s `pageBuilder`
+    // came out `let dialog` and would not compile (E0384).
+    //
+    // Unioned rather than replaced: the closure still reads and writes the
+    // locals it captured, and those were decided outside.
+    final savedReassigned = _reassigned;
+    _reassigned = {..._reassigned, ...assigned};
     // Which of them are cells, for the body that is about to be written.
     final savedCells = _cellLocals;
     _cellLocals = {
@@ -191,6 +203,7 @@ augment class RustBackend {
               : '${owns ? 'move ' : ''}|$params| -> Result<_, $_error> { $again let _ = $spawned; Ok(()) }')
         : '${owns ? 'move ' : ''}|$params|${_resultModel ? ' -> Result<${_closureReturnSpelled(node.returns)}, $_error>' : ''} { $body }';
     _cellLocals = savedCells;
+    _reassigned = savedReassigned;
     _lateCellLocals = savedLateCells;
     final whole = owns ? '{ $bindings $closure }' : closure;
     if (!node.boxed) return whole;
