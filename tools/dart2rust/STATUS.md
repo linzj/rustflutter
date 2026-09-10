@@ -377,6 +377,20 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 
 ## 撤回与作废(不要再试)
 
+- **Object 协议:把注册表换成 vtable,第 2 步(拿掉毯式 impl)——渲染树红,已撤回
+  (2026-09-10,work.md 那份计划的主体)。** 第 0 步(证明够得着)和第 1 步(翻译 trait 走 vtable)
+  都落地了(`ddca1520`、`81752f94`);**第 2 步撤回,读数写在 `/tmp/work.md` 第五节**。
+  **渲染树 707/0/0 → 501 行 / 1 panic / 类型差异 229**(连采五次一模一样),而 §6 写着渲染树是**唯一**的正确性判据。
+  **那个 panic 就是多出来的那一个桩**(74 → 75):`ImageProvider.obtainKey` 打了桩,
+  跑到图片加载那条路上撞上,一下子带走 206 个节点——**所以那一个桩是拦路的,不是可以记成后续的**。
+  反过来讲,**vtable 本身没被证伪,只是那个桩还在路上时没法验**。
+  值得留下的量:prelude 那半边**单独编过、0 error**,代价是 **117 个 `impl Object for`**(§7.1 那个「最大的未知」在 prelude 侧变成了一张单子);
+  后端有**三条**发射路径不是一条(结构体、**枚举**、闭包进 `Object` 槽),漏掉枚举那条 = **可达 crate 69 → 18**;
+  以及一个坑:**prelude 新加的自由函数和翻译类的 Dart 名字共用命名空间**,
+  `object_runtime_type` 已经被一个翻译出来的同名函数占了,glob import 打不过本文件的定义,**2,319 个 E0061**。
+  卡住的点:`catchError` 的裸 `Function` 槽收闭包,以前靠毯式 impl 让闭包自己是 `Object`;
+  把 `coercion.dart` 那条排除去掉试过,**74 → 98**,已撤回。
+
 - **`super.==` / `super.hashCode` 进 `Object` 改成同一性——量出来是**把一个对的拒绝换成一个错答案**,已撤回
   (ws985,2026-09-10)。** Flutter 的 `Widget` 写的就是 `operator ==(Object other) => super == other;`
   和 `int get hashCode => super.hashCode;`,这两条是 29 条拒绝里的 2 条。prelude 现成就有非虚的同一性
