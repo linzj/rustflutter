@@ -50,6 +50,24 @@ if ! FX_MAIN="print(fx.use());" FX_AOT=${FX_AOT:-1} \
 fi
 grep -q '^ok True' "$log" || { echo "TRANSLATE FAILED"; tail -25 "$log"; exit 1; }
 
+# Translating is dart and costs no cargo; building and running is the whole
+# cost of a sweep. The crate's Rust -- the fixture's module, the prelude,
+# `lib.rs` -- is exactly what cargo would compile, so when it comes out
+# byte-identical to the last run that AGREED, the answer is the same answer
+# and there is nothing to learn from compiling it again.
+#
+# `DART2RUST_FX_FORCE=1` compiles anyway.
+stamp=$work/$name.agreed
+now=$(cat "$work/pk_$name"/*.rs 2>/dev/null | md5sum | cut -d' ' -f1)
+if [ "${DART2RUST_FX_FORCE:-0}" != 1 ] && [ -s "$stamp" ] &&
+        [ "$now" = "$(cat "$stamp")" ]; then
+    echo "--- rust: $(cat "$work/$name.rust.out" 2>/dev/null)"
+    echo "--- dart: $(cat "$work/$name.dart.out" 2>/dev/null)"
+    echo AGREE
+    exit 0
+fi
+rm -f "$stamp"
+
 ( cd "$work/pk_$name" && cargo run -q -j "${DART2RUST_JOBS:-2}" --bin run ) \
     2> "$work/$name.cargo.log" | tail -1 > "$work/$name.rust.out"
 rc=${PIPESTATUS[0]}
@@ -62,6 +80,7 @@ echo "--- rust: $(cat "$work/$name.rust.out")"
 echo "--- dart: $(cat "$work/$name.dart.out")"
 [ "$rc" -eq 0 ] || { echo "CARGO FAILED"; tail -30 "$work/$name.cargo.log"; exit 1; }
 if diff -q "$work/$name.rust.out" "$work/$name.dart.out" > /dev/null; then
+    printf '%s\n' "$now" > "$stamp"
     echo AGREE
 else
     echo DISAGREE; exit 1
