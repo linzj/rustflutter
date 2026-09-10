@@ -198,7 +198,17 @@ augment class RustBackend {
         // borrow, as `IrIndexSet` binds it.
         final place = _readPlace(target);
         if (place != null) {
-          return '{ let __i = ${expr(index)} as usize; $place[__i].clone() }';
+          // ..and the clone bound before the block ends (`let __r`), so the
+          // `Ref` the borrow made is dropped here rather than living to the
+          // end of the enclosing statement. A block's tail temporaries are
+          // extended to that statement, and where the cell is a local of a
+          // shorter scope -- a closure prologue's `let _available_products =
+          // ..` -- the borrow outlived the thing borrowed
+          // (`AppStateModel.subtotalCost`, E0597). The map read standing next
+          // to it in that same expression has been written this way all
+          // along.
+          return '{ let __i = ${expr(index)} as usize; '
+              'let __r = $place[__i].clone(); __r }';
         }
         final t = expr(target);
         final wrapped = t.startsWith('{') ? '($t)' : t;
