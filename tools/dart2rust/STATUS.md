@@ -1414,6 +1414,22 @@ tear-off 记下来的函数类型和槽的函数类型不一致(名字都印成 
 
 其余 15 处不是成员访问(动态派发、数值 downcast、字符串转换等),不在这一族里。
 
+### `navigator` 那个 E0631 量过了:机制没坏,是 `dynamic?` 两边塌缩不一样(2026-09-11)
+
+`poppedRoute._disposeCompleter.future.then((dynamic result) async {..})`,
+报 expected `fn(Option<Rc<_>>)`,found `fn(Rc<_>)`。
+
+**先怀疑「闭包形参没按槽的类型拼」,量过之后不是**:`_closureParamType` 第 521 行
+`if (declared is DynamicType) return wanted;` 本来就覆盖这一形,而且 trace 打出来
+**全程序只有 2 处** `expected == null` 且形参是 `dynamic` 的闭包,两处都是 `Sync`——
+这一处是 `async`,所以机制**发火了**。
+
+真正的差别在别处:`Completer<T?>`,`T` 是 `dynamic`。Dart 把 `dynamic?` 塌成 `dynamic`,
+Rust 这边不塌,仍是 `Option<Rc<dyn DartAny>>`。闭包形参按 Dart 的类型拼出来是
+`Rc<dyn DartAny>`,槽是 `Option<..>`,于是对不上。
+**这是投影/可空那一族**(ws957 记的「投影的 `T?` 每过一道边界都要换一次拼法」),
+不是闭包形参那一族——下次别再从 `_expectedFunction` 那边查。
+
 ## 桩尾还剩什么(2026-09-10,ws988 之后 74 个,逐条看过)
 
 `b09ac222` 说「一条通用规则一轮就掉一格的阶段基本走完了」,这次把剩下的 74 个又过了一遍,确认了,并且把**每一条卡在哪儿**记下来,省得下次重新翻:
