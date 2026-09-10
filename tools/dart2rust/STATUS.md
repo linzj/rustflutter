@@ -1081,8 +1081,13 @@ CFE 把一个 `Struct` 子类摊成:两个字段(`_Compound._typedDataBase`、`_
   `Board` 的 `owner` 是 `Board`,一条都不匹配,于是落进通用调用,发出 `self.element_at(..)`,而结构体上没有这个方法。
   **判据是现成的**:`node.interfaceTarget.enclosingClass` 就是 `dart:core` 的 `Iterable`,
   接收者的静态类型又是一个翻译过的、`_iterableElement` 答得出来的类。
-  **没做的原因**:要改的是 `_instanceInvocation`,前端最热的那条路,
-  在一个已经很长的会话末尾动它不合算(ws979 就是这么来的)。下次从这里起。
+  **但光有判据不够——试过一次,73 → 77,已撤回(ws991)。**
+  照着上面那条 `StreamView` 的形状加了个分支,把接收者换成 `_listReceiver(...)`、成员名**原样**传下去,
+  结果发出 `self._history.__to_list().r#where(..)`——**`Vec` 上没有 `r#where`**。
+  `_listReceiver` 现有的几处接线是**一个成员一个成员**写的(`cast_to`、`!map_remove`、`!contains`、`char_at`),
+  原因就在这儿:**换了接收者,成员的拼法也得跟着换成 prelude 在 `Vec` 上给的那个**,不是自动的。
+  而且那 2 个目标桩**一个都没掉**,纯赔 4 个。
+  下次要做,得先把「`Iterable` 的成员在 `Vec` 上各叫什么」这张表弄出来,再谈换接收者。
 
 - **类型参数丢了 Dart 那边的界**(3 个桩:`CalendarDelegate<T extends DateTime>` 的 `year` ×2、
   `binarySearch` 的 `compare_to`)。**别再直接把界搬过去**——ws544 量过,**+252 个桩**:
