@@ -417,7 +417,7 @@ augment class RustBackend {
           when arguments.isEmpty && _isTypeParam(type) =>
         // The handle cloned first: the `as` consumes it, and a local read
         // twice (`m is T && m.supports(..)`) was moved (E0382).
-        '<$type as FromDynamic>::from_dynamic(&(${expr(target)}.clone() as std::rc::Rc<dyn Object>)).unwrap()',
+        '<$type as FromDynamic>::from_dynamic(&(${expr(target)}.clone() as ${dartHandle})).unwrap()',
       // A counted class out of a `dynamic`: the object's own handle
       // (`dart_cast_any` at `Rc<Self>`), not a copy of the struct.
       IrDowncast(:final target, :final type, :final arguments)

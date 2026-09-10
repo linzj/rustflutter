@@ -214,9 +214,7 @@ augment class RustBackend {
     }
     _line('${_erasedSignature(method)} {');
     _indent++;
-    final erased = method.typeParameters
-        .map((_) => 'std::rc::Rc<dyn Object>')
-        .join(', ');
+    final erased = method.typeParameters.map((_) => dartHandle).join(', ');
     final dyn = _superTakesDyn(cls, method);
     final spelled = dyn
         ? '::<${[...cls.typeParameters, erased].join(', ')}>'
@@ -237,9 +235,7 @@ augment class RustBackend {
     if (need.typeParameters.isEmpty || need.isStatic) return;
     _line('${_erasedSignature(need)} {');
     _indent++;
-    final erased = need.typeParameters
-        .map((_) => 'std::rc::Rc<dyn Object>')
-        .join(', ');
+    final erased = need.typeParameters.map((_) => dartHandle).join(', ');
     _line(
       '<Self as $trait${_traitArgsOf(trait)}>::${_methodName(need)}::<$erased>'
       '(${['self', ...need.params.map((p) => snake(p.name))].join(', ')})',

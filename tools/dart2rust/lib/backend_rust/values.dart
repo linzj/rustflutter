@@ -633,7 +633,7 @@ augment class RustBackend {
       String asObject(IrExpr e) => objectTyped(e)
           ? '(${expr(e)}).clone()'
           : _handleLike(e)
-          ? '(${expr(e)}.clone() as std::rc::Rc<dyn Object>)'
+          ? '(${expr(e)}.clone() as ${dartHandle})'
           : expr(
               IrUpcast(e, IrType('Object'), handle: false, explicit: true)
                 ..rustType = const IrType('Object'),
@@ -837,7 +837,7 @@ augment class RustBackend {
     // behind a handle, which `dyn Object` accepts (`_RenderObjectSemantics`,
     // 119 callers of a constructor refused for this).
     if (t.name == 'Object' && args.isEmpty) {
-      return '(std::rc::Rc::new(()) as std::rc::Rc<dyn Object>)';
+      return '(std::rc::Rc::new(()) as ${dartHandle})';
     }
     if (library.isAbstractType(t)) {
       throw Unsupported(

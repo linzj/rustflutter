@@ -167,7 +167,9 @@ augment class RustBackend {
     // A `dynamic` (a `Function` slot's callback, `RestorableBool.value =
     // ..` inside one, `_AnimatedHomePageState.build`, run675): Dart's
     // null, the `Null` object.
-    if (rendered == 'std::rc::Rc<dyn Object>') return 'dart_null_object()';
+    if (rendered == dartHandle || rendered == objectKey) {
+      return 'dart_null_object()';
+    }
     if (rendered.startsWith('FutureOr<') && rendered.endsWith('>')) {
       final inner = _fallsOffValue(
         rendered.substring('FutureOr<'.length, rendered.length - 1),
@@ -302,7 +304,7 @@ augment class RustBackend {
         // not take the `?` of a callee inside it (`TextSpan.build` around
         // `builder.addText`, stubbed, run683). The arm below asks the
         // error whether it is the caught type and hands the rest back on.
-        final failure = _failure ?? 'std::rc::Rc<dyn Object>';
+        final failure = _failure ?? dartHandle;
         // The closure catches `?`, and it would catch a `return` too: written
         // plainly, `return x` in the body returns from the *closure* and the
         // method carries on, which compiles and is wrong. So when the body
@@ -663,8 +665,8 @@ augment class RustBackend {
           // A `dynamic` cell starts as Dart's null, the `Null` object.
           final inner = init != null
               ? expr(init)
-              : rust == 'std::rc::Rc<dyn Object>'
-              ? 'std::rc::Rc::new(Null) as std::rc::Rc<dyn Object>'
+              : rust == dartHandle
+              ? 'std::rc::Rc::new(Null) as $dartHandle'
               : rust != null && rust.startsWith('Option<')
               ? 'None'
               : 'Default::default()';

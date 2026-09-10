@@ -174,9 +174,7 @@ augment class RustBackend {
       'impl${_generics(cls, static: true, clone: true)} FromDynamic for $own {',
     );
     _indent++;
-    _line(
-      'fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> { $body }',
-    );
+    _line('fn from_dynamic(value: &${dartHandle}) -> Option<Self> { $body }');
     if (_cloneable(cls)) {
       _line(
         'fn from_same(value: &Self) -> Option<Self> { Some(value.clone()) }',
@@ -255,7 +253,7 @@ augment class RustBackend {
     );
     _indent++;
     _line(
-      'fn from_answer(answer: std::rc::Rc<dyn Object>, symbol: &str) -> Self { '
+      'fn from_answer(answer: ${dartHandle}, symbol: &str) -> Self { '
       'match answer.dart_cast_any::<Self>() { Some(value) => value, '
       'None => panic!("native `{}` answered {:?} where ${cls.name} was declared", symbol, answer) } }',
     );
@@ -331,7 +329,10 @@ augment class RustBackend {
     // `as T` is `dart_cast_any::<Rc<dyn Object>>()` (the gentrait
     // fixture's `found as T` through `get__erased`).
     _line(
-      'if __t == std::any::TypeId::of::<dyn Object>() || __t == std::any::TypeId::of::<std::rc::Rc<dyn Object>>() { return Some(std::boxed::Box::new(std::rc::Rc::new(self.clone()) as std::rc::Rc<dyn Object>)); }',
+      'if __t == std::any::TypeId::of::<dyn DartAny>() || __t == std::any::TypeId::of::<std::rc::Rc<dyn DartAny>>() { return Some(std::boxed::Box::new(std::rc::Rc::new(self.clone()) as ${dartHandle})); }',
+    );
+    _line(
+      'if __t == std::any::TypeId::of::<dyn Object>() || __t == std::any::TypeId::of::<${objectKey}>() { return Some(std::boxed::Box::new(std::rc::Rc::new(self.clone()) as ${objectKey})); }',
     );
     _line('None');
     _indent--;

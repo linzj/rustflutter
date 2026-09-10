@@ -33,7 +33,7 @@ augment class RustBackend {
   /// all members -- return `Result` once that has spread, which is what made
   /// the uniform model affordable.
   static const _resultModel = true;
-  static const _error = 'std::rc::Rc<dyn Object>';
+  static const _error = dartHandle;
 
   /// Whether a statement returns from the method it is written in.
   ///

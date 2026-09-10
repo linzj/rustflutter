@@ -88,6 +88,12 @@ pub fn report() {
     if !copies.is_empty() {
         eprint!("{}", copies);
     }
+    // `DART2RUST_TRACE_CAST=1`: every `dart_cast_to` that answered nothing,
+    // with what it was asked for and what the object was. Empty when off.
+    let misses = dart_prelude::cast_miss_report();
+    if !misses.is_empty() {
+        eprint!("{}", misses);
+    }
     let frames = FRAMES.with(|f| *f.borrow());
     let panicked = FRAME_PANICS.with(|f| *f.borrow());
     let messages = MESSAGES.with(|m| m.borrow().clone());
@@ -151,16 +157,16 @@ fn announce_view() -> Result<(), DartError> {
     Ok(())
 }
 
-fn int(value: i64) -> Rc<dyn Object> {
-    Rc::new(value) as Rc<dyn Object>
+fn int(value: i64) -> Rc<dyn DartAny> {
+    Rc::new(value) as Rc<dyn DartAny>
 }
 
-fn string(value: &str) -> Rc<dyn Object> {
-    Rc::new(value.to_string()) as Rc<dyn Object>
+fn string(value: &str) -> Rc<dyn DartAny> {
+    Rc::new(value.to_string()) as Rc<dyn DartAny>
 }
 
-fn null() -> Rc<dyn Object> {
-    Rc::new(Null) as Rc<dyn Object>
+fn null() -> Rc<dyn DartAny> {
+    Rc::new(Null) as Rc<dyn DartAny>
 }
 
 /// Under `panic = "abort"` (the workspace's profile: unwind landing pads
@@ -255,7 +261,7 @@ type MessageCallback = Rc<dyn Fn(Option<ByteData>) -> Result<(), DartError>>;
 /// The reply callback a platform message came with: the typed closure, or
 /// Dart's `Function` object (a closure handed across a `dynamic` slot goes
 /// behind one), called through the prelude's dynamic call.
-fn message_callback(object: &Rc<dyn Object>) -> Option<MessageCallback> {
+fn message_callback(object: &Rc<dyn DartAny>) -> Option<MessageCallback> {
     let any = object.as_any();
     if let Some(callback) = any.downcast_ref::<MessageCallback>() {
         return Some(callback.clone());
@@ -266,8 +272,8 @@ fn message_callback(object: &Rc<dyn Object>) -> Option<MessageCallback> {
     if any.downcast_ref::<DartFunction>().is_some() {
         let function = object.clone();
         return Some(Rc::new(move |bytes: Option<ByteData>| {
-            let reply: Rc<dyn Object> = match bytes {
-                Some(bytes) => Rc::new(bytes) as Rc<dyn Object>,
+            let reply: Rc<dyn DartAny> = match bytes {
+                Some(bytes) => Rc::new(bytes) as Rc<dyn DartAny>,
                 None => dart_null_object(),
             };
             dart_call_function(function.clone(), vec![reply]).map(|_| ())
@@ -279,7 +285,7 @@ fn message_callback(object: &Rc<dyn Object>) -> Option<MessageCallback> {
 /// A platform message: answered by the plugin this runtime hosts for the
 /// channel, else by Dart's null ("no plugin"), delivered on the next turn
 /// as the engine's would be.
-fn send_platform_message(args: &[Rc<dyn Object>]) {
+fn send_platform_message(args: &[Rc<dyn DartAny>]) {
     let name = args
         .get(0)
         .and_then(|a| a.as_any().downcast_ref::<String>().cloned())
@@ -363,9 +369,9 @@ fn plugin_reply(channel: &str, data: Option<ByteData>) -> Result<Option<ByteData
         )),
         "flutter/keyboard" => {
             // `getKeyboardState`: no key is down.
-            let state: Map<Rc<dyn Object>, Rc<dyn Object>> = Map::new();
+            let state: Map<Rc<dyn DartAny>, Rc<dyn DartAny>> = Map::new();
             Ok(Some(standard_codec().encode_success_envelope(
-                Rc::new(state) as Rc<dyn Object>,
+                Rc::new(state) as Rc<dyn DartAny>,
             )?))
         }
         "flutter/menu"
@@ -417,7 +423,7 @@ fn plugin_reply(channel: &str, data: Option<ByteData>) -> Result<Option<ByteData
             // The envelope's `Object?` result is a `dynamic` here, whose
             // null is the `Null` object.
             let result = match directory {
-                Some(path) => Rc::new(path) as Rc<dyn Object>,
+                Some(path) => Rc::new(path) as Rc<dyn DartAny>,
                 None => dart_null_object(),
             };
             Ok(Some(codec.encode_success_envelope(result)?))
@@ -539,12 +545,12 @@ fn temp_dir() -> String {
     path.to_string_lossy().into_owned()
 }
 
-fn answer(symbol: &str, args: Vec<Rc<dyn Object>>) -> Result<Option<Rc<dyn Object>>, DartError> {
+fn answer(symbol: &str, args: Vec<Rc<dyn DartAny>>) -> Result<Option<Rc<dyn DartAny>>, DartError> {
     // `DART2RUST_TRACE_HOST=1`: every native the program reaches, by symbol.
     if std::env::var_os("DART2RUST_TRACE_HOST").is_some() {
         eprintln!("dart2rust host: native {}", symbol);
     }
-    let answer: Option<Rc<dyn Object>> = match symbol {
+    let answer: Option<Rc<dyn DartAny>> = match symbol {
         "PlatformConfigurationNativeApi::GetRootIsolateToken" => Some(int(1)),
         "PlatformConfigurationNativeApi::DefaultRouteName" => Some(string("/")),
         "PlatformConfigurationNativeApi::GetPersistentIsolateData" => Some(null()),

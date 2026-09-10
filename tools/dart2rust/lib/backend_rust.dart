@@ -67,6 +67,33 @@ part 'backend_rust/walk_self.dart';
 /// make. Dart's `double` is IEEE-754 double precision; the language says so.
 /// Where a translated value has to meet the engine's `f32`, the cast belongs
 /// at that boundary, not in the meaning of the type.
+/// The handle every dynamic value takes on the Rust side.
+///
+/// `dyn DartAny`, not `dyn Object`. The two differ in what the *handle
+/// itself* can answer: `Object` declares three methods (`as_any`,
+/// `runtime_type`, `no_such_method`) because a blanket `impl<T: 'static>
+/// Object for T` has to be able to write them for every type, so `==`,
+/// `hashCode`, `toString` and `as T` through a bare `Rc<dyn Object>` could
+/// only be found by hashing the value's `TypeId` in a side table filled at
+/// construction (`dart_register`, four `thread_local!` maps). `DartAny:
+/// Object` carries all nine in one vtable, so the handle answers for itself
+/// and the tables have nothing left to do.
+///
+/// The blanket impl stays: closures, tuples and `i64` are still `Object`,
+/// and removing it is the coherence cliff a previous attempt fell off.
+const dartHandle = 'std::rc::Rc<dyn DartAny>';
+
+/// The *key* a `dart_cast` is asked by, which is not the same thing and
+/// looks identical.
+///
+/// `TypeId::of::<dyn Object>()` in a cast arm is what a caller holding a
+/// bare handle asks with, so it has to stay `Object` -- and answer for the
+/// new spelling as well. `TypeId::of::<Map<Rc<dyn Object>, ..>>()` is a
+/// *target being asked for*, and the asker has changed, so that one must
+/// move. Three attempts at the handle change died on treating these two as
+/// one: swapped all of them once, kept all of them once.
+const objectKey = 'std::rc::Rc<dyn Object>';
+
 const _primitives = {
   // `f64`, not `f32`. Dart's `double` is IEEE-754 **double** precision -- the
   // language specifies it -- and this compiler mapped it to `f32` from its
@@ -85,7 +112,7 @@ const _primitives = {
   // Dart's bare `Function` type: a callable of unknown shape. Held, not
   // called -- `Map<Function, CallbackHandle>` keys it -- so the widest
   // owned thing there is. A call through one would not compile, and says so.
-  'Function': 'std::rc::Rc<dyn Object>',
+  'Function': dartHandle,
   // Dart's `Never` has two spellings in stable Rust: `!` as a function's bare
   // return type, and `std::convert::Infallible` everywhere else -- a type
   // argument, a `Result<Never, E>`, a `PopupMenuEntry<Never>`. The first
@@ -532,11 +559,15 @@ class RustBackend {
     // Dart's `dynamic` is "anything", which is what the prelude's `Object`
     // trait is here. Emitted as the bare word it was a type nothing declares,
     // 259 times.
-    if (t.name == 'dynamic') {
+    // ..and so is Dart's `Object`, which reaches here as an *abstract type*:
+    // `Object` is a class, and the branch below spells any abstract class
+    // `Rc<dyn Name>`. A flip that changed only this branch left 947 errors
+    // standing, all of them that one.
+    if (t.name == 'dynamic' || (t.name == 'Object' && t.arguments.isEmpty)) {
       // Shared, like an abstract class below: a `Box` could not be cloned
       // out of a field (`SourceSpanException.source`), and a borrow could
       // not be kept.
-      const anything = 'std::rc::Rc<dyn Object>';
+      const anything = dartHandle;
       return t.nullable ? 'Option<$anything>' : anything;
     }
     if (library.isAbstractType(t)) {

@@ -370,14 +370,23 @@ augment class RustBackend {
     // a box around a handle.
     if (cls.counted) {
       _line(
-        'if __t == std::any::TypeId::of::<dyn Object>() || __t == std::any::TypeId::of::<std::rc::Rc<dyn Object>>() { return Some(std::boxed::Box::new(self.dart_self_ref().get() as std::rc::Rc<dyn Object>)); }',
+        'if __t == std::any::TypeId::of::<dyn DartAny>() || __t == std::any::TypeId::of::<std::rc::Rc<dyn DartAny>>() { return Some(std::boxed::Box::new(self.dart_self_ref().get() as ${dartHandle})); }',
+      );
+      // ..and by the bare handle's own id, which is what a caller still
+      // holding one asks with. Two arms, not one: the box has to hold what
+      // the asker will downcast it to, and those are different types.
+      _line(
+        'if __t == std::any::TypeId::of::<dyn Object>() || __t == std::any::TypeId::of::<${objectKey}>() { return Some(std::boxed::Box::new(self.dart_self_ref().get() as ${objectKey})); }',
       );
     } else if (own != null) {
       // A value struct behind a fresh handle: an erased twin's `as T` is
       // `dart_cast_any::<Rc<dyn Object>>()` (`found as T` through
       // `get__erased`, the gentrait fixture).
       _line(
-        'if __t == std::any::TypeId::of::<dyn Object>() || __t == std::any::TypeId::of::<std::rc::Rc<dyn Object>>() { return Some(std::boxed::Box::new($own as std::rc::Rc<dyn Object>)); }',
+        'if __t == std::any::TypeId::of::<dyn DartAny>() || __t == std::any::TypeId::of::<std::rc::Rc<dyn DartAny>>() { return Some(std::boxed::Box::new($own as ${dartHandle})); }',
+      );
+      _line(
+        'if __t == std::any::TypeId::of::<dyn Object>() || __t == std::any::TypeId::of::<${objectKey}>() { return Some(std::boxed::Box::new($own as ${objectKey})); }',
       );
     }
     for (final above in _abstractAncestors(cls)) {
@@ -547,7 +556,7 @@ augment class RustBackend {
         for (var k = 0; k + 1 < methods.length; k += 2) {
           final signature = methods[k].replaceAll(
             '__A0',
-            args.isEmpty ? 'std::rc::Rc<dyn Object>' : args[0],
+            args.isEmpty ? dartHandle : args[0],
           );
           _line('fn $signature {');
           _indent++;
@@ -651,7 +660,7 @@ augment class RustBackend {
       _indent++;
       _line(
         'match self.then$turbofish(std::rc::Rc::new('
-        '|__v: ${type(arg)}| -> Result<_, std::rc::Rc<dyn Object>> '
+        '|__v: ${type(arg)}| -> Result<_, ${dartHandle}> '
         '{ Ok(future_or_value(__v)) })'
         '${rest.isEmpty ? '' : ', ${rest.join(', ')}'}) {',
       );

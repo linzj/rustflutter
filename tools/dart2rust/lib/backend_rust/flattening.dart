@@ -159,7 +159,9 @@ augment class RustBackend {
     // (`Exception::new(..)` is a static call, not an `IrNew`; 29 at ws325).
     const preludeExceptions = _preludeClasses;
     final boxed =
-        (_failure == 'Object' || _failure == 'std::rc::Rc<dyn Object>') &&
+        (_failure == 'Object' ||
+            _failure == dartHandle ||
+            _failure == objectKey) &&
         ((value is IrLiteral && value.type.name == 'String') ||
             value is IrNew ||
             value is IrConstInstance ||
@@ -170,7 +172,7 @@ augment class RustBackend {
     // no signature to infer from, and `Rc<Exception>` was the block's
     // whole error type (`initServiceExtensions`, ws479).
     final asError =
-        _failure == 'Object' || _failure == 'std::rc::Rc<dyn Object>';
+        _failure == 'Object' || _failure == dartHandle || _failure == objectKey;
     if (boxed) {
       // Through `dart_boxed`, not a bare `Rc::new`: the handle is the same
       // one either way, and the registration behind it is what lets the
@@ -196,7 +198,7 @@ augment class RustBackend {
       final handle = counted || abstract
           ? _handleOf(value)
           : 'dart_object(${_handleOf(value)})';
-      return '($handle as std::rc::Rc<dyn Object>)';
+      return '($handle as $dartHandle)';
     }
     return thrown;
   }

@@ -346,7 +346,7 @@ augment class RustBackend {
     }
     // An `Option<Rc<dyn Object>>` into a `dynamic` slot: absent is `Null`.
     if (name == '!or_null' && args.isEmpty) {
-      return '$receiver.unwrap_or_else(|| std::rc::Rc::new(Null) as std::rc::Rc<dyn Object>)';
+      return '$receiver.unwrap_or_else(|| std::rc::Rc::new(Null) as ${dartHandle})';
     }
     // The other way: a `dynamic` as an `Option`, `None` for the `Null` object.
     if (name == '!nullable' && args.isEmpty) return 'dart_nullable($receiver)';
@@ -354,7 +354,7 @@ augment class RustBackend {
       // `iter().cloned()`: the receiver may be the `&Vec` a null-aware
       // `as_ref().map(|it| ..)` binds, and `into_iter` on that yields
       // references (E0282 in `ColorFilter.hashCode`).
-      return '$receiver.iter().cloned().map(|v| Some(std::rc::Rc::new(v) as std::rc::Rc<dyn Object>)).collect::<Vec<_>>()';
+      return '$receiver.iter().cloned().map(|v| Some(std::rc::Rc::new(v) as ${dartHandle})).collect::<Vec<_>>()';
     }
     if (name == '!widen' && args.isEmpty) {
       return '$receiver.into_iter().map(|v| v as i64).collect::<Vec<i64>>()';
@@ -398,16 +398,16 @@ augment class RustBackend {
         // `Rc::new(this_.clone())` boxed a reference (the last 20 lifetime
         // errors at ws335).
         if (_fieldsAreAccessors || _selfName == 'this_') {
-          return '($_selfName.dart_self_${snakeRaw(cls.name)}() as std::rc::Rc<dyn Object>)';
+          return '($_selfName.dart_self_${snakeRaw(cls.name)}() as ${dartHandle})';
         }
         if (cls.counted) {
-          return '($_selfName.dart_self_ref().get() as std::rc::Rc<dyn Object>)';
+          return '($_selfName.dart_self_ref().get() as ${dartHandle})';
         }
         return _selfIsHandle
-            ? '($_selfName.clone() as std::rc::Rc<dyn Object>)'
-            : '(std::rc::Rc::new($_selfName.clone()) as std::rc::Rc<dyn Object>)';
+            ? '($_selfName.clone() as ${dartHandle})'
+            : '(std::rc::Rc::new($_selfName.clone()) as ${dartHandle})';
       }
-      return '($receiver as std::rc::Rc<dyn Object>)';
+      return '($receiver as ${dartHandle})';
     }
     if (name == '!rc_object' && args.isEmpty) {
       // `this` shared as an `Object` is behind `&self`: a handle is cloned,
@@ -420,18 +420,18 @@ augment class RustBackend {
       // `Rc::new(self.clone())`, 82 `Rc::new(this_)` at ws292).
       if (target == null || target is IrThis) {
         if (_fieldsAreAccessors) {
-          return '($_selfName.dart_self_${snakeRaw(cls.name)}() as std::rc::Rc<dyn Object>)';
+          return '($_selfName.dart_self_${snakeRaw(cls.name)}() as ${dartHandle})';
         }
         if (cls.counted) {
-          return '($_selfName.dart_self_ref().get() as std::rc::Rc<dyn Object>)';
+          return '($_selfName.dart_self_ref().get() as ${dartHandle})';
         }
         if (_selfName == 'self') {
           return _selfIsHandle
-              ? '(self.clone() as std::rc::Rc<dyn Object>)'
-              : '(std::rc::Rc::new(self.clone()) as std::rc::Rc<dyn Object>)';
+              ? '(self.clone() as ${dartHandle})'
+              : '(std::rc::Rc::new(self.clone()) as ${dartHandle})';
         }
       }
-      return '(std::rc::Rc::new($receiver) as std::rc::Rc<dyn Object>)';
+      return '(std::rc::Rc::new($receiver) as ${dartHandle})';
     }
     if (name == '!dart_eq' && args.length == 1) {
       return '$receiver.dart_eq(&${_borrowed(args.single)})';
