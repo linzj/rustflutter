@@ -829,10 +829,10 @@ Map<Class, List<String>> enumValuesIn(Component component) =>
 /// need a payload per variant to say the same thing. It would not: the values
 /// are **constants of the variant**, so the Rust for them is a `match` in a
 /// method. The constants carry them, and this is where they are picked up.
-(Map<Class, List<String>>, Map<Class, Map<String, Map<String, String>>>)
+(Map<Class, List<String>>, Map<Class, Map<String, Map<String, Constant>>>)
 enumsIn(Component component) {
   final byIndex = <Class, Map<int, String>>{};
-  final fields = <Class, Map<String, Map<String, String>>>{};
+  final fields = <Class, Map<String, Map<String, Constant>>>{};
   final finder = _EnumConstantFinder(byIndex, fields);
   for (final library in component.libraries) {
     library.accept(finder);
@@ -853,29 +853,19 @@ class _EnumConstantFinder extends RecursiveVisitor {
 
   final Map<Class, Map<int, String>> byIndex;
 
-  /// Class -> variant name -> field name -> the Rust literal for it.
+  /// Class -> variant name -> field name -> the constant it holds.
   ///
-  /// Only literals. A variant carrying a `List` or another object is state
-  /// this cannot write as a `match` arm, and the enum stays refused rather
-  /// than half-translated.
-  final Map<Class, Map<String, Map<String, String>>> fields;
+  /// The *constant*, not a rendering of it. This used to keep only the four
+  /// literal shapes, on the grounds that anything else is state a `match`
+  /// arm cannot write -- but the constant lowering writes constants for a
+  /// living (`_constant`), and what it makes of `LogicalKeyboardKey.numLock`
+  /// is the same `LogicalKeyboardKey::new(..)` it makes anywhere else. So
+  /// the value is carried here as it arrived and lowered where there is a
+  /// front end to lower it (`declarations`), which is also where a constant
+  /// it cannot build goes back to being unrecovered state.
+  final Map<Class, Map<String, Map<String, Constant>>> fields;
 
   static const _implicit = {'index', '_name', 'hashCode'};
-
-  static String? _literal(Constant value) => switch (value) {
-    IntConstant(:final value) => '$value',
-    DoubleConstant(:final value) => '$value',
-    BoolConstant(:final value) => '$value',
-    // `replaceAll(r'\', r'\\')`. It was written once as `replaceAll(r'', ..)`
-    // -- replacing the *empty* string, which inserts a backslash before every
-    // character -- and `Variant.monochrome` came out as `"\m\o\n\o..."`, which
-    // stops the whole crate at the lexer. The analyzer side had it right, so
-    // the two front ends disagreed and no fixture noticed, because no fixture
-    // had an enum variant carrying a string. One does now.
-    StringConstant(:final value) =>
-      '"${value.replaceAll(r'\', r'\\').replaceAll('"', r'\"')}".to_string()',
-    _ => null,
-  };
 
   final _seen = <Constant>{};
 
@@ -915,15 +905,13 @@ class _EnumConstantFinder extends RecursiveVisitor {
     }
     if (index == null || name == null) return;
     (byIndex[constant.classNode] ??= <int, String>{})[index] = name;
-    final own = <String, String>{};
+    final own = <String, Constant>{};
     for (final entry in constant.fieldValues.entries) {
       final field = entry.key.asField.name.text;
       if (_implicit.contains(field)) continue;
-      final literal = _literal(entry.value);
-      if (literal == null) return;
-      own[field] = literal;
+      own[field] = entry.value;
     }
-    (fields[constant.classNode] ??= <String, Map<String, String>>{})[name] =
+    (fields[constant.classNode] ??= <String, Map<String, Constant>>{})[name] =
         own;
   }
 

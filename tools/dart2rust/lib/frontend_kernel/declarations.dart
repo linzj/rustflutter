@@ -578,7 +578,7 @@ augment class KernelFrontend {
     // translates; when one does not -- a variant holding a list, say -- it
     // stays refused rather than half-translated.
     final carriedValues =
-        enumFields[node] ?? const <String, Map<String, String>>{};
+        enumFields[node] ?? const <String, Map<String, Constant>>{};
     final names = enumValues[node] ?? const <String>[];
     // A variant is a static const field **whose type is the enum itself**.
     // This used to read "every static const field except `values`", and an
@@ -637,6 +637,32 @@ augment class KernelFrontend {
     // empty, so no getter is written for the state (`the_class`).
     final values = !node.isEnum ? const <String>[] : declared;
     final recovered = values.isNotEmpty || !node.isEnum ? values : names;
+    // Each carried value lowered as the constant it is: the four literal
+    // shapes come out as literals, and a variant holding an object comes out
+    // as whatever the constant lowering makes of it anywhere else
+    // (`KeyboardLockMode.numLock._(LogicalKeyboardKey.numLock)` is the
+    // `LogicalKeyboardKey::new(..)` a `const` field of that type gets).
+    //
+    // All of them or none, as before: a constant this cannot build leaves
+    // the enum with its variants and without its state, and the members
+    // that read the state fail one stub each (ws939).
+    Map<String, Map<String, IrExpr>> carriedState = const {};
+    if (stateRecovered) {
+      try {
+        carriedState = {
+          for (final v in recovered)
+            v: {
+              for (final e in carriedValues[v]!.entries)
+                e.key: _constant(
+                  e.value,
+                  ConstantExpression(e.value, _constantStaticType(e.value)),
+                ),
+            },
+        };
+      } on Unsupported {
+        carriedState = const {};
+      }
+    }
     _kernelClasses[node.name] = node;
     // A supertype clause instantiates its base as much as a slot does
     // (`_census`): `CBuilder<C extends Constraints> extends Builder<C>` is
@@ -735,9 +761,7 @@ augment class KernelFrontend {
       isAbstract: node.isAbstract || _isOpen(node),
       isEnum: node.isEnum,
       values: recovered,
-      valueFields: stateRecovered
-          ? {for (final v in recovered) v: carriedValues[v]!}
-          : const {},
+      valueFields: carriedState,
     )..enumElementsDeclared = node.fields.any((f) => f.isEnumElement);
     final refused = <String>[];
     if (base != null && _isFlatBase(base)) {
@@ -1015,7 +1039,22 @@ augment class KernelFrontend {
     IrType fieldIrType() => _edgeType(type);
     // An enum's own members are its variants and the CFE's bookkeeping; neither
     // becomes a field or a constant on the Rust side.
-    if (cls.isEnum) return;
+    //
+    // ..its *variants* and its bookkeeping, that is. A Dart enum may declare
+    // a static of its own beside them -- `KeyboardLockMode._knownLockModes`
+    // is a `Map<int, KeyboardLockMode>` built from the values -- and that is
+    // a constant like any other class's. A variant is what `_isVariantOf`
+    // says it is (a static const field typed by the enum itself), and
+    // `values` is the CFE's list, which no `const` can hold here.
+    if (cls.isEnum) {
+      final owner = field.enclosingClass;
+      if (!field.isStatic ||
+          owner == null ||
+          field.name.text == 'values' ||
+          _isVariantOf(owner, field)) {
+        return;
+      }
+    }
     if (field.isStatic) {
       final init = field.initializer;
       if (init == null) throw Unsupported('static without initialiser', name);

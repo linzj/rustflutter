@@ -917,5 +917,5 @@ class KernelFrontend implements TypeWorld {
   final Map<Class, List<String>> enumValues;
 
   /// What each enum variant carries. See `enumsIn`.
-  final Map<Class, Map<String, Map<String, String>>> enumFields;
+  final Map<Class, Map<String, Map<String, Constant>>> enumFields;
 }

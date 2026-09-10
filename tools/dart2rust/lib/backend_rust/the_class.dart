@@ -251,9 +251,13 @@ augment class RustBackend {
       _indent++;
       for (final field in carried) {
         final declared = cls.fields.where((f) => f.name == field).firstOrNull;
+        final first = cls.valueFields[cls.values.first]![field]!;
+        final held = first.rustType;
         final rust = declared != null
             ? type(declared.type)
-            : _literalType(cls.valueFields[cls.values.first]![field]!);
+            : held != null
+            ? type(held)
+            : _literalType(expr(first));
         _line('${_vis(field)}fn ${snake(field)}(&self) -> $rust {');
         _indent++;
         _line('match self {');
@@ -261,7 +265,7 @@ augment class RustBackend {
         for (final value in cls.values) {
           _line(
             '${cls.name}::${variants[value]} => '
-            '${cls.valueFields[value]![field]},',
+            '${expr(cls.valueFields[value]![field]!)},',
           );
         }
         _indent--;
@@ -280,6 +284,10 @@ augment class RustBackend {
       _indent--;
       _line('}');
     }
+    // The enum's own statics, as any class's: outside the impl, because
+    // Rust has no associated `static`, and named with the class in front.
+    _emitConstants(prefix: cls.name);
+    _emitLazyStatics();
     // An enum implementing an interface -- `WidgetState` is a
     // `WidgetStatesConstraint` -- gets the impl a struct would, forwarding
     // to the enhanced enum's own methods (20 "trait bound not satisfied").

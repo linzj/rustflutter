@@ -355,7 +355,14 @@ augment class KernelFrontend {
     return IrStatic(
       enclosing.name,
       target.name.text,
-      isEnumValue: enclosing.isEnum,
+      // A *variant*, not merely a static of an enum: a Dart enum may
+      // declare a static of its own, and spelling that as a variant
+      // (`KeyboardLockMode::_knownLockModes`) named something the Rust enum
+      // has never had.
+      isEnumValue:
+          enclosing.isEnum &&
+          target is Field &&
+          _isVariantOf(enclosing, target),
     );
   }
 

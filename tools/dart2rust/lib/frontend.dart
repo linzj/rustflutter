@@ -1702,17 +1702,19 @@ class Frontend {
         if (member is FieldDeclaration && !member.isStatic)
           for (final v in member.fields.variables) v.name.lexeme,
     ];
-    final valueFields = <String, Map<String, String>>{};
+    final valueFields = <String, Map<String, IrExpr>>{};
     var stateful = carried.isNotEmpty;
     if (stateful) {
       for (final constant in node.body.constants) {
         final args = constant.arguments?.argumentList.arguments ?? const [];
         if (args.length != carried.length) break;
-        final own = <String, String>{};
+        final own = <String, IrExpr>{};
         for (var i = 0; i < args.length; i++) {
           final literal = _enumLiteral(args[i]);
           if (literal == null) break;
-          own[carried[i]] = literal;
+          // Untyped: this front end recovers the *text* of a literal, and
+          // the backend reads its type back off that (`_literalType`).
+          own[carried[i]] = IrLiteral(literal, const IrType('raw'));
         }
         if (own.length != carried.length) break;
         valueFields[constant.name.lexeme] = own;

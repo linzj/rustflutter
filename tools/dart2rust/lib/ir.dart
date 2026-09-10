@@ -1853,7 +1853,7 @@ class IrClass {
   ///
   /// Constants of the variant, not runtime state, so the Rust is a `match` in
   /// a method rather than a payload on the enum.
-  final Map<String, Map<String, String>> valueFields;
+  final Map<String, Map<String, IrExpr>> valueFields;
 
   final String? doc;
   final List<IrFieldDecl> fields = [];
