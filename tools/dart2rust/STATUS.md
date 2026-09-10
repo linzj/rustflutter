@@ -1053,6 +1053,11 @@ Dart 的 `catchError` 形参是**裸 `Function`**(没签名),走 `coerce.dart` �
 最小复现:`b.future.onError((Object e, StackTrace s) { return -1; })`,一分钟,不用跑链子。
 **第 1 步的判据应该问 prelude 那一侧的槽(`Rc<dyn Object>`),不是 Dart 形参的类型。**
 四个猜过的方向(闭包字面量 / 局部函数 tear-off / 捕获且用多次 / `async`)**都不是**,别再试。
+**改在哪一层也查过了**:前端**不知道** prelude 的 Rust 槽——`_ownParameterSlots` 只管
+「形参是类型参数」那种,`coerce.dart` 靠 `_bareFunctionType` 当代理,而 `onError` 正是代理失效处。
+**后端知道**(它发这个调用,手上就是 prelude 签名),所以按**真实的 Rust 槽**判最直接。
+真要放前端,照 ws955 的 `_genericPreludeTypes`——**读 `lib/prelude.dart` 源码**得出来,
+**不许手列一张 `{'onError'}` 的表**。
 另:v1 那次「74 → 98」改的是 `coercion.dart` 的 `_widened` 排除,**不是** `coerce.dart:510-521`,两处别混。
 
 ## 拒绝归零要什么(2026-09-10,量出来的,不是估的)
