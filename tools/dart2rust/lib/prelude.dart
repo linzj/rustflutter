@@ -1049,27 +1049,49 @@ thread_local! {
         std::cell::RefCell::new(std::collections::HashMap::new());
 }
 
-pub fn dart_register<T: DartAny>() {
+/// The four table writes, with no type parameter of their own.
+///
+/// `dart_register::<T>()` is emitted once per non-`const` constructor, so
+/// every type it is instantiated at gets its own copy of whatever it
+/// inlines -- and `LocalKey::with` is four calls of about 524 bytes.
+/// Measured on the release binary: **17,068 instances, 8.94 MB**, of which
+/// 469 of every 524 bytes are identical between them.
+///
+/// The four *closures* below still monomorphise, and have to: they are the
+/// values the tables hold, one per type by construction. What stops
+/// monomorphising is the shell around them, which is all this is.
+///
+/// Nothing moves semantically: same tables, same keys, same values, same
+/// `or_insert` (first registration wins). A size change only.
+fn dart_register_fns(
+    id: std::any::TypeId,
+    cast: DartCastFn,
+    to_string: DartStrFn,
+    eq: DartEqFn,
+    hash: DartHashFn,
+) {
     DART_CASTS.with(|c| {
-        c.borrow_mut()
-            .entry(std::any::TypeId::of::<T>())
-            .or_insert(|any, t| any.downcast_ref::<T>().and_then(|v| v.dart_cast(t)));
+        c.borrow_mut().entry(id).or_insert(cast);
     });
     DART_STRINGS.with(|c| {
-        c.borrow_mut()
-            .entry(std::any::TypeId::of::<T>())
-            .or_insert(|any| any.downcast_ref::<T>().map(|v| v.dart_to_string()));
+        c.borrow_mut().entry(id).or_insert(to_string);
     });
     DART_EQS.with(|c| {
-        c.borrow_mut()
-            .entry(std::any::TypeId::of::<T>())
-            .or_insert(|a, b| a.downcast_ref::<T>().map(|v| v.dart_eq_any(b)));
+        c.borrow_mut().entry(id).or_insert(eq);
     });
     DART_HASHES.with(|c| {
-        c.borrow_mut()
-            .entry(std::any::TypeId::of::<T>())
-            .or_insert(|a| a.downcast_ref::<T>().map(|v| v.dart_hash_any()));
+        c.borrow_mut().entry(id).or_insert(hash);
     });
+}
+
+pub fn dart_register<T: DartAny>() {
+    dart_register_fns(
+        std::any::TypeId::of::<T>(),
+        |any, t| any.downcast_ref::<T>().and_then(|v| v.dart_cast(t)),
+        |any| any.downcast_ref::<T>().map(|v| v.dart_to_string()),
+        |a, b| a.downcast_ref::<T>().map(|v| v.dart_eq_any(b)),
+        |a| a.downcast_ref::<T>().map(|v| v.dart_hash_any()),
+    );
 }
 
 /// `hashCode` of an object reached through `dyn Object`: its own, by the
