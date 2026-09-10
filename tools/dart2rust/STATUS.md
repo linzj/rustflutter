@@ -1081,13 +1081,24 @@ CFE 把一个 `Struct` 子类摊成:两个字段(`_Compound._typedDataBase`、`_
   `Board` 的 `owner` 是 `Board`,一条都不匹配,于是落进通用调用,发出 `self.element_at(..)`,而结构体上没有这个方法。
   **判据是现成的**:`node.interfaceTarget.enclosingClass` 就是 `dart:core` 的 `Iterable`,
   接收者的静态类型又是一个翻译过的、`_iterableElement` 答得出来的类。
-  **但光有判据不够——试过一次,73 → 77,已撤回(ws991)。**
-  照着上面那条 `StreamView` 的形状加了个分支,把接收者换成 `_listReceiver(...)`、成员名**原样**传下去,
-  结果发出 `self._history.__to_list().r#where(..)`——**`Vec` 上没有 `r#where`**。
-  `_listReceiver` 现有的几处接线是**一个成员一个成员**写的(`cast_to`、`!map_remove`、`!contains`、`char_at`),
-  原因就在这儿:**换了接收者,成员的拼法也得跟着换成 prelude 在 `Vec` 上给的那个**,不是自动的。
-  而且那 2 个目标桩**一个都没掉**,纯赔 4 个。
-  下次要做,得先把「`Iterable` 的成员在 `Vec` 上各叫什么」这张表弄出来,再谈换接收者。
+  **试过三次,全撤回了,三次的诊断都不对,记在这儿省得再走一遍:**
+
+  1. **ws991(73 → 77)**:照 `StreamView` 那条的形状,在 `_instanceInvocation` 前面加分支,
+     把接收者换成 `_listReceiver(..)`、成员名原样传。发出 `__to_list().r#where(..)`,而 `Vec` 上没有 `r#where`。
+     **我当时把这条写成「换接收者就得换成员拼法」——那句话是错的,已改。**
+     真相是:`iterStepNames` 早就把 `where` 映成 `filter`,而且**链子的降级本来就在调 `_listReceiver`**
+     (`reads_and_calls.dart` 那个 `iterStepNames` 分支)。我的分支坐在它前面,**把它截胡了**,
+     `r#where` 是我自己造出来的,不是缺一张表。
+  2. **ws992(73 → 73,逐字节相同)**:以为 owner 是 `IterableMixin`,把它加进 `owner == 'List' || 'Iterable'` 那道闸。
+     **一处都没触发。**
+  3. **ws992b(73 → 73,逐字节相同)**:改成问「declaring 类是不是 `dart:` 下的 `Iterable` 子类型」。
+     **还是一处都没触发。**
+
+  **探针给的事实**(`node.interfaceTarget.enclosingClass`):
+  `_MixinApplication386&Object&IterableMixin`,库是 **`dart:mixin_deduplication`**——
+  和 ws953 踩的是同一个坑。但**光知道这个还不够**:按子类型问也没用,说明**根本没走到那道闸**,
+  或者走到了也不改变结果。**下次先在那道闸上打一行 stderr,确认它到底触没触发,再动手改**——
+  这三次都是先改后量,量出来 byte-identical 才发现连触发都没触发。
 
 - **类型参数丢了 Dart 那边的界**(3 个桩:`CalendarDelegate<T extends DateTime>` 的 `year` ×2、
   `binarySearch` 的 `compare_to`)。**别再直接把界搬过去**——ws544 量过,**+252 个桩**:
