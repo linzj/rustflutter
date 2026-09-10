@@ -1450,9 +1450,15 @@ augment class KernelFrontend {
     var hops = 0;
     while (static is TypeParameterType && hops++ < 8) {
       final bound = static.parameter.bound;
+      // ..and to a *prelude value type*, which Rust cannot spell as a
+      // bound either: `CalendarDelegate<T extends DateTime>` reads
+      // `dateA.year` off a `T` that names no trait and carries no member.
+      // Every one of these has a `FromDynamic` (`preludeValueTypes`), so
+      // the object can be asked for it, which is what the coercion does.
       if (bound is InterfaceType &&
           !(_translatedClass(bound.classNode) &&
-              _abstractLike(bound.classNode))) {
+              _abstractLike(bound.classNode)) &&
+          !preludeValueTypes.contains(bound.classNode.name)) {
         if (Platform.environment['DART2RUST_TRACE_NARROW'] == '1') {
           stderr.writeln(
             'TRACE_NARROW declined ${static.parameter.name} bound=${bound.classNode.name} '

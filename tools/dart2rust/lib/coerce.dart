@@ -945,6 +945,39 @@ IrExpr coerceInto(
   // ..only into a type the world can name: a type parameter of another
   // declaration (a super constructor's `T`, `DiagnosticsDebugCreator`,
   // ws516) is nothing to convert into.
+  // A type parameter's value into a *prelude value type's* slot. The mirror
+  // of the two rules below: Rust cannot spell `T: DateTime` as a bound, so
+  // a `T` carries none of `DateTime`'s members, and the object is asked for
+  // the bound Dart promised (`CalendarDelegate<T extends DateTime>
+  // .isSameDay`, whose `dateA.year` found no `year` on a `T`).
+  //
+  // The prelude's value types and no others. Reaching a *translated* struct
+  // or enum this way cost two stubs at ws1048: `SlottedContainerRenderObject
+  // Mixin<SlotType>` holds a `Map<SlotType, ..>` whose key slot is spelled
+  // by the one instantiation there is (`_ChipSlot`), and converting the
+  // `SlotType` into it handed the map an argument of the wrong type.
+  if (world.isTypeParameter(have.name) &&
+      have.arguments.isEmpty &&
+      !have.isFunction &&
+      !isNullable(have) &&
+      !isNullable(slot) &&
+      !slotObject &&
+      !slot.isFunction &&
+      !world.isTypeParameter(slot.name) &&
+      preludeValueTypes.contains(slot.name)) {
+    final boxed = coerceInto(
+      value,
+      const IrType('Object'),
+      world,
+      inClosure: inClosure,
+    );
+    return IrStaticCall(
+      null,
+      'dart_from_dynamic',
+      [boxed],
+      typeArguments: [slot],
+    )..rustType = slot;
+  }
   // A trait handle into a *type parameter's* slot: the mirror of the rule
   // below it. The value goes to `Object` first -- a handle unsizes -- and
   // the type parameter's own `FromDynamic` (in every bound) takes it back.

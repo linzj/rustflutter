@@ -197,6 +197,21 @@ augment class RustBackend {
   /// `i64` suffix, anything else as it is.
   String _boxedLiteral(IrExpr value) {
     final text = expr(value);
+    // A null-aware binding, and a chain step's element (`_refLocals`), are
+    // bound by *reference*, and `DartAny` is implemented for the value and
+    // not for `&T`: the box takes a clone. `dateA?.year` on a `T extends
+    // DateTime` lowers to `.as_ref().map(|it| ..)`, and boxing `it` to ask
+    // the object for its bound said "the trait `DartAny` is not implemented
+    // for `&T`" (`CalendarDelegate.isSameMonth`). A clone of a value is a
+    // value, so this is right whichever way the binding came.
+    // ..and a *read* of a local or a parameter is cloned whether or not it
+    // is a reference: boxing takes the value, so `show(T a)` with
+    // `'${a.year}-${a.month}-${a.day}'` moved `a` into the first box and
+    // used it twice more (the valuebound fixture found this, the gallery's
+    // three did not have it).
+    if (value is IrBound || value is IrLocal) {
+      return '$text.clone()';
+    }
     if (value is IrLiteral &&
         value.type.name == 'int' &&
         RegExp(r'^-?[0-9]+$').hasMatch(text)) {
