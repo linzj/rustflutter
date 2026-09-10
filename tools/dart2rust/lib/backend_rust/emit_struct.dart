@@ -488,8 +488,37 @@ augment class RustBackend {
       if (extra.any((p) => p.defaultValue == null)) continue;
       return '$name(${[for (final a in given) a, for (final p in extra) expr(p.defaultValue!)].join(', ')})';
     }
+    // ..or a *field* of that name, where the interface's member is a
+    // getter. Dart lets a field satisfy one -- `_BoardIterator implements
+    // Iterator<BoardPoint?>` writes `BoardPoint? current;` -- and asking
+    // only for methods withheld the whole `impl DartIterator`, so `Board`
+    // was not iterable and the demo's `paint` went with it (3 stubs).
+    // Read the way the field is held: a counted class keeps its mutable
+    // fields in a cell, and `current` is what `moveNext` writes.
+    if (given.isEmpty) {
+      final field = _allFields(cls)
+          .where((f) => snake(f.name) == name)
+          .firstOrNull;
+      if (field != null) {
+        final held = _heldType(field);
+        return _plainRead(
+          !_inCell(field)
+              ? '${snake(field.name)}.clone()'
+              : _isCopy(held)
+              ? '${snake(field.name)}.get()'
+              : '${snake(field.name)}.borrow().clone()',
+        );
+      }
+    }
     return null;
   }
+
+  /// A forwarding read that is *not* a call into this class's own method,
+  /// so the `Result` model's `.unwrap()` must not be appended to it.
+  /// Marked rather than tracked beside the map: the emitter reads one
+  /// string per member and this keeps that shape.
+  static const _plainMark = '\u0000plain:';
+  static String _plainRead(String text) => '$_plainMark$text';
 
   void _emitPreludeInterfaces() {
     for (final i in _preludeInterfacesOf(cls)) {
@@ -523,8 +552,14 @@ augment class RustBackend {
           _line('fn $signature {');
           _indent++;
           // The class's own method returns `Result`; the prelude trait's
-          // signature is fixed.
-          _line('self.${calls[k + 1]}${_resultModel ? '.unwrap()' : ''}');
+          // signature is fixed. A field read is not a call and has no
+          // `Result` to unwrap.
+          final forward = calls[k + 1]!;
+          _line(
+            forward.startsWith(_plainMark)
+                ? 'self.${forward.substring(_plainMark.length)}'
+                : 'self.$forward${_resultModel ? '.unwrap()' : ''}',
+          );
           _indent--;
           _line('}');
         }
