@@ -258,6 +258,21 @@ Future<void> main(List<String> args) async {
   /// makes every use of them ambiguous. 800 `E0659`s from ten names.
   final definedIn = <String, Set<String>>{};
   final dynamicSlots = dynamicSlotsIn(inPackage, typeEnvironment);
+  // The census behind a dynamic member access, printed rather than used
+  // while its shape is being decided: how many names a program really asks
+  // of a `dynamic`, and how many classes would have to answer each.
+  final dynamicMembers = dynamicMembersIn(component.libraries);
+  if (Platform.environment['DART2RUST_TRACE_DYNMEMBER'] == '1') {
+    final rows = dynamicMembers.entries.toList()
+      ..sort((a, b) => b.value.length.compareTo(a.value.length));
+    stderr.writeln('TRACE_DYNMEMBER names=${rows.length}');
+    for (final row in rows) {
+      stderr.writeln(
+        'TRACE_DYNMEMBER ${row.key} classes=${row.value.length} '
+        '${row.value.take(6).map((c) => c.name).join(",")}',
+      );
+    }
+  }
   // The closed world's instantiations of generic traits, gathered while
   // every library is lowered and read back for the wider impls
   // (`KernelFrontend.addWiderImpls`).
@@ -348,6 +363,7 @@ Future<void> main(List<String> args) async {
       collidingClassNames: collidingClassNames,
       typeEnvironment: typeEnvironment,
       dynamicSlots: dynamicSlots,
+      dynamicMembers: dynamicMembers,
       open: openClasses,
       erase: Platform.environment['DART2RUST_ERASE'] != '0',
       eraseObjectBounded: Platform.environment['DART2RUST_ERASE_OBJECT'] == '1',

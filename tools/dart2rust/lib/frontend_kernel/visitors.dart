@@ -758,6 +758,74 @@ Map<Field, List<InterfaceType>> dynamicSlotsIn(
   return slots;
 }
 
+/// Every `dynamic` member access in the libraries given, by name, with the
+/// classes that declare a member of that name.
+///
+/// The census behind a dynamic dispatch: `demo.slug` on a `dynamic` cannot
+/// name a struct, so the only thing that can answer is the object itself,
+/// and the only names worth putting in its vtable are the ones some program
+/// actually asks for. The names already answered elsewhere are left out --
+/// the number operators and methods (`_rawEqualityOrDynamic` reads them off
+/// an `f64`), the four a `dynamic` *slot* answers (`_dynamicSlotCall`), and
+/// the ones `DartAny` already has.
+Map<String, Set<Class>> dynamicMembersIn(Iterable<Library> libraries) {
+  const answered = {
+    // `_rawEqualityOrDynamic`'s numbers.
+    '+', '-', '*', '/', '%', '<', '>', '<=', '>=', '~/',
+    'round', 'floor', 'ceil', 'truncate', 'toInt', 'toDouble', 'abs',
+    'isNegative', 'isFinite', 'isNaN', 'isInfinite', 'sign', 'clamp',
+    'toStringAsFixed', 'compareTo', 'remainder',
+    // `_dynamicSlotCall`'s four.
+    '[]', '[]=', 'containsKey', 'keys',
+    // `DartAny`'s own, and calling a `dynamic` as a function.
+    'toString', 'hashCode', '==', 'runtimeType', 'noSuchMethod', 'call',
+  };
+  final asked = <String>{};
+  final finder = _DynamicMembers(asked, answered);
+  for (final library in libraries) {
+    library.accept(finder);
+  }
+  final declaring = <String, Set<Class>>{for (final n in asked) n: <Class>{}};
+  for (final library in libraries) {
+    for (final cls in library.classes) {
+      for (final m in cls.members) {
+        if (m.isAbstract || (m is Procedure && m.isStatic)) continue;
+        final set = declaring[m.name.text];
+        if (set != null) set.add(cls);
+      }
+    }
+  }
+  return declaring;
+}
+
+class _DynamicMembers extends RecursiveVisitor {
+  _DynamicMembers(this.asked, this.answered);
+  final Set<String> asked;
+  final Set<String> answered;
+
+  void _saw(String name) {
+    if (!answered.contains(name)) asked.add(name);
+  }
+
+  @override
+  void visitDynamicGet(DynamicGet node) {
+    _saw(node.name.text);
+    super.visitDynamicGet(node);
+  }
+
+  @override
+  void visitDynamicSet(DynamicSet node) {
+    _saw(node.name.text);
+    super.visitDynamicSet(node);
+  }
+
+  @override
+  void visitDynamicInvocation(DynamicInvocation node) {
+    _saw(node.name.text);
+    super.visitDynamicInvocation(node);
+  }
+}
+
 class _SlotStores extends RecursiveVisitor {
   _SlotStores(this.slots, this.env);
   final Map<Field, List<InterfaceType>> slots;

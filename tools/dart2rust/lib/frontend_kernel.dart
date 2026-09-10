@@ -137,6 +137,7 @@ class KernelFrontend implements TypeWorld {
     this.elsewhere = const {},
     this.typeEnvironment,
     this.dynamicSlots = const {},
+    this.dynamicMembers = const {},
     this.open = const {},
     this.erase = false,
     this.eraseObjectBounded = false,
@@ -776,6 +777,18 @@ class KernelFrontend implements TypeWorld {
   /// `dateTimeSymbols` holds an `UninitializedLocaleData` and then a `Map`.
   /// A call on such a slot dispatches by downcast (`IrDynamicDispatch`).
   final Map<Field, List<InterfaceType>> dynamicSlots;
+
+  /// The member names some part of the program reads or calls through a
+  /// `dynamic`, with the classes that declare a member of that name
+  /// (`dynamicMembersIn`).
+  ///
+  /// `demo.slug` on a `dynamic` names no struct, so nothing but the object
+  /// itself can answer -- and the set of things it could *be* is the closed
+  /// world's answer to "who declares `slug`". That is two classes here, and
+  /// the dispatch is the same one a `dynamic` *slot* gets
+  /// (`IrDynamicDispatch`), with the candidates found by member name rather
+  /// than by which slot the value came out of.
+  final Map<String, Set<Class>> dynamicMembers;
 
   /// The whole program's types, for `getStaticType`. Built once by the
   /// driver; null in the tools that lower a single library on its own, which

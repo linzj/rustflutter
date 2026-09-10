@@ -1725,7 +1725,7 @@ dart_any_display!(
     u32 => "int", i32 => "int", u64 => "int", usize => "int", isize => "int",
     f32 => "double", char => "String",
     Duration => "Duration", Symbol => "Symbol", StackTrace => "StackTrace", Uri => "Uri", Exception => "Exception", FormatException => "FormatException", ArgumentError => "ArgumentError", UnimplementedError => "UnimplementedError", IndexError => "IndexError", RangeError => "RangeError", FileSystemException => "FileSystemException", SocketException => "SocketException", HttpException => "HttpException", AssertionError => "AssertionError",
-    StateError => "StateError", TypeError => "TypeError", Error => "Error", UnsupportedError => "UnsupportedError", ConcurrentModificationError => "ConcurrentModificationError",
+    StateError => "StateError", TypeError => "TypeError", NoSuchMethodError => "NoSuchMethodError", Error => "Error", UnsupportedError => "UnsupportedError", ConcurrentModificationError => "ConcurrentModificationError",
 );
 
 dart_any_generic!(
@@ -8139,6 +8139,7 @@ pub fn dart_error_text(error: &std::rc::Rc<dyn DartAny>) -> String {
     }
     try_display!(
         StateError,
+        NoSuchMethodError,
         ArgumentError,
         RangeError,
         AssertionError,
@@ -9168,6 +9169,28 @@ impl fmt::Display for Exception {
 
 /// A `dynamic message` as `Exception.toString` prints it: nothing for null,
 /// a string as itself, anything else by its own text.
+/// The error a member access on a `dynamic` raises when the object declares
+/// no member of that name.
+///
+/// Dart names the class and the member, and so does this: the whole value of
+/// the message is that it says which object was asked and for what.
+///
+/// By value and by `String`, because that is how a call site hands them over:
+/// the dispatch's `__d` is cloned into every argument (`_clonedWhenPassed`)
+/// and a Dart string literal arrives as an owned `String`.
+/// Boxed here rather than at the `throw`: `_boxedThrow` boxes a `new` and a
+/// const instance, and this is neither -- it is a prelude call, and a prelude
+/// call that returns the error already made is the shape that types.
+/// The concrete type survives the boxing, which is what lets `on
+/// NoSuchMethodError catch` downcast back to it.
+pub fn dart_no_such_method(object: std::rc::Rc<dyn DartAny>, name: String) -> DartError {
+    std::rc::Rc::new(NoSuchMethodError::new(format!(
+        "Class '{}' has no instance member '{}'",
+        object.dart_runtime_type().name,
+        name
+    ))) as DartError
+}
+
 pub fn dart_message(message: &std::rc::Rc<dyn DartAny>) -> String {
     let object: &dyn Object = message.as_ref();
     if object.as_any().is::<Null>() {
@@ -9180,6 +9203,12 @@ pub fn dart_message(message: &std::rc::Rc<dyn DartAny>) -> String {
 }
 dart_error!(StateError, "Bad state");
 dart_error!(TypeError, "TypeError");
+/// What a member access on a `dynamic` throws when the object turns out
+/// to declare no member of that name (`_dynamicMemberCall`). Dart throws
+/// it, and Dart programs catch it -- `package:get` catches one around
+/// `toJson` -- so it has to be a value that a `catch` can hold, not a
+/// panic.
+dart_error!(NoSuchMethodError, "NoSuchMethodError");
 /// `Error`, the root of dart:core's errors: as `dart_error!` writes one,
 /// with the text of a subtype's value read as an `Error` (see `Exception`).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -9262,11 +9291,13 @@ dart_core_as!(UnimplementedError);
 dart_core_as!(ConcurrentModificationError);
 dart_core_as!(HttpException);
 dart_core_as!(SocketException);
+dart_core_as!(NoSuchMethodError);
 dart_core_as!(
     Error,
     ArgumentError => |e| Error { message: format!("{}", e), rendered: Some(format!("{}", e)) },
     RangeError => |e| Error { message: format!("{}", e), rendered: Some(format!("{}", e)) },
     StateError => |e| Error { message: format!("{}", e), rendered: Some(format!("{}", e)) },
+    NoSuchMethodError => |e| Error { message: format!("{}", e), rendered: Some(format!("{}", e)) },
     TypeError => |e| Error { message: format!("{}", e), rendered: Some(format!("{}", e)) },
     AssertionError => |e| Error { message: format!("{}", e), rendered: Some(format!("{}", e)) },
     UnsupportedError => |e| Error { message: format!("{}", e), rendered: Some(format!("{}", e)) },

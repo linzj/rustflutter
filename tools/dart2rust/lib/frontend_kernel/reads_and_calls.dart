@@ -201,6 +201,137 @@ augment class KernelFrontend {
         callee.namedParameters.any((v) => names(v.type));
   }
 
+  /// `demo.slug`, `x.toJson()`, `completer.completeError(e)` on a `dynamic`
+  /// that came from anywhere at all.
+  ///
+  /// `_dynamicSlotCall` answers when the value's *slot* is known and its
+  /// types with it. This answers the other case, and it is the same answer
+  /// with the candidates found the other way round: nothing here knows what
+  /// the object is, but the closed world knows every class that declares a
+  /// member of that name (`dynamicMembersIn`), and that list is short --
+  /// two classes declare `slug`, one declares `completeError`. One
+  /// downcast arm per candidate, and a `NoSuchMethodError` for an object
+  /// that is none of them, which is what Dart does.
+  ///
+  /// Every arm's value is boxed to the `Object` a `dynamic` holds. The arms
+  /// have to agree on one Rust type and their Dart return types do not --
+  /// seventeen classes declare `toJson` and no two of them promise the same
+  /// map -- so the type they agree on is the one the *slot* has: `dynamic`.
+  IrExpr? _dynamicMemberCall(Expression node) {
+    final Expression receiver;
+    final String name;
+    final List<Expression> positional;
+    if (node is DynamicInvocation) {
+      receiver = node.receiver;
+      name = node.name.text;
+      positional = node.arguments.positional;
+      // Named arguments would each need a slot in the arm's call, and the
+      // arms are found by name alone -- nothing here knows which callee's
+      // names they are. Refused rather than dropped.
+      if (node.arguments.named.isNotEmpty) return null;
+    } else if (node is DynamicGet) {
+      receiver = node.receiver;
+      name = node.name.text;
+      positional = const [];
+    } else {
+      return null;
+    }
+    final declaring = dynamicMembers[name];
+    if (declaring == null || declaring.isEmpty) return null;
+    // Only the ones this compiler writes: a candidate it refused, or one
+    // the prelude owns, is a downcast to a struct that is not there.
+    final candidates = [
+      for (final c in declaring)
+        if (_translatedClass(c) && !c.isEnum) c,
+    ];
+    if (candidates.isEmpty) return null;
+    // The member each candidate declares, and how many arguments it takes:
+    // an arm whose arity disagrees with the call is not the member being
+    // asked for, and calling it would be a guess.
+    final members = <Class, Member>{};
+    for (final c in candidates) {
+      for (final m in c.members) {
+        if (m.name.text != name || m.isAbstract) continue;
+        if (m is Procedure && m.isStatic) continue;
+        if (m is Field) {
+          if (positional.isEmpty) members[c] = m;
+        } else if (m is Procedure) {
+          final fn = m.function;
+          final wanted = node is DynamicGet
+              ? m.isGetter
+              : !m.isGetter &&
+                    positional.length >= fn.requiredParameterCount &&
+                    positional.length <= fn.positionalParameters.length;
+          if (wanted) members[c] = m;
+        }
+      }
+    }
+    if (members.isEmpty) return null;
+    final core = typeEnvironment?.coreTypes;
+    if (core == null) return null;
+    final args = [
+      for (final e in positional)
+        () {
+          final lowered = expression(e);
+          return lowered is IrLocal
+              ? (IrCall(lowered, 'clone', const [])
+                  ..rustType = lowered.rustType)
+              : lowered;
+        }(),
+    ];
+    final slot = IrLocal('__d');
+    final arms = <(IrType?, IrExpr)>[];
+    for (final entry in members.entries) {
+      final own = entry.key.getThisType(core, Nullability.nonNullable);
+      _injected(own);
+      final member = entry.value;
+      final read = member is Field
+          ? (IrField(slot, name, owner: entry.key.name) as IrExpr)
+          : IrCall(slot, name, args, fails: true);
+      // As the `Object` a `dynamic` slot holds -- and which of the three
+      // ways in is decided by the **lowered** type, not by Dart's
+      // nullability. `dynamic toJson()` is a nullable Dart type whose Rust
+      // value is already the object, and wrapping that in
+      // `dart_option_object` asked an `Rc<dyn DartAny>` to be an `Option`
+      // (the one stub this rule cost when it read Dart's answer instead).
+      final declared = member is Field
+          ? member.type
+          : (member as Procedure).function.returnType;
+      final lowered = _type(declared);
+      arms.add((
+        _type(own),
+        lowered.name == 'dynamic' || lowered.name == 'Object'
+            ? read
+            : lowered.nullable
+            ? IrStaticCall(null, 'dart_option_object', [read])
+            : (IrUpcast(
+                read,
+                const IrType('Object'),
+                handle: false,
+                explicit: true,
+              )..rustType = const IrType('Object')),
+      ));
+    }
+    // ..and the object that is none of them. Dart raises
+    // `NoSuchMethodError`, and a Dart program catches it -- `package:get`
+    // wraps its `toJson` in a `try` -- so this is a value a `catch` can
+    // hold, not the panic `_dispatch` writes for a slot that held something
+    // unexpected. The two are different questions: a slot with an
+    // unaccounted-for type is a fact about this compiler's census, and a
+    // member nobody declares is a fact about the program.
+    arms.add((
+      null,
+      IrThrowValue(
+        IrStaticCall(null, 'dart_no_such_method', [
+          slot,
+          IrLiteral(name, const IrType('String')),
+        ]),
+      ),
+    ));
+    return IrDynamicDispatch(expression(receiver), arms)
+      ..rustType = const IrType('dynamic');
+  }
+
   /// `dateTimeSymbols[k]`, `.containsKey(k)`, `.keys` on a `dynamic` slot
   /// with known types (see `dynamicSlots`): one arm per type, each giving
   /// the *same* Rust type -- what the Dart code does with the result is

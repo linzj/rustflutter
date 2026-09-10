@@ -21,6 +21,11 @@ augment class KernelFrontend {
       _rawWrite(node) ??
       _rawCast(node) ??
       _rawTearOff(node) ??
+      // Last, on purpose: a `dynamic` access every other run has declined
+      // is the one that has nothing but the object to ask (see
+      // `_dynamicMemberCall`). Ahead of any of them it would take the
+      // number arithmetic and the slot dispatch with it.
+      _dynamicMemberCall(node) ??
       (throw Unsupported('expression ${node.runtimeType}', _sample(node)));
 
   /// Literals and `this`.

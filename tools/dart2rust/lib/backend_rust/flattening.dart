@@ -298,6 +298,9 @@ augment class RustBackend {
     // whose whole contract is that the VM removes the call.
     'runZonedGuarded',
     '_nativeEffect',
+    // ..and the error a dynamic member access raises when nothing answers
+    // (`_dynamicMemberCall`).
+    'dart_no_such_method',
   };
 
   /// The prelude's classes that `is` can ask about and a `throw` boxes.
@@ -326,6 +329,7 @@ augment class RustBackend {
     'Exception',
     'FormatException',
     'StateError',
+    'NoSuchMethodError',
     'ArgumentError',
     'RangeError',
     'UnsupportedError',
