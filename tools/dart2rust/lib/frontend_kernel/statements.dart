@@ -72,6 +72,15 @@ augment class KernelFrontend {
       if (returnsFuture) {
         return IrReturn(IrAwait(expression(value)));
       }
+      if (Platform.environment['DART2RUST_TRACE_RETURN'] ==
+          (_member?.name.text ?? '')) {
+        final lowered = expression(value!);
+        stderr.writeln(
+          'TRACE_RETURN ${_member?.name.text} have=${lowered.rustType} '
+          'slot=$_returnsType edge=$_edgeReturn '
+          'widened=${_widened(value, _returnsType, lowered).rustType}',
+        );
+      }
       return IrReturn(
         _acrossEdge(
           _widened(value, _returnsType, expression(value)),

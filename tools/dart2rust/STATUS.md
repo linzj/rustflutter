@@ -377,6 +377,18 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 
 ## 撤回与作废(不要再试)
 
+- **给 `DartFuture<Object>` 加 `dart_cast_future`、在 `coerce` 里把它转成 `Future<T>`
+  (想清掉 `scheduleTask` 那两个桩)——**逐字节相同,规则一次都没触发**,已撤回
+  (ws1042,2026-09-11)。**规则没错,是那条边上根本看不见这个差**:`DART2RUST_TRACE_RETURN`
+  打出来是 `have=Future<T> slot=Future<T>`——IR 两边**本来就一致**。
+  错配只存在于**发出来的 Rust** 里:`_TaskEntry<T>` 被擦成了非泛型,
+  `completer` 是 `Completer<Rc<dyn DartAny>>`,而 `entry.completer.future` 的类型是
+  `_memberRustType` 按**接收者的 Dart 静态类型**算的——Dart 的静态类型不知道擦除这回事。
+  **要动就得动那里**:成员读的类型应当跟着**降下来的接收者的 `rustType`** 走,
+  而不是跟着 Dart 静态类型走;那是每一次成员读都经过的路,不是一轮能量完的改动。
+  夹具复现不出来:同样形状的 `Entry<T>` 在夹具里**没被判成协变**,于是没擦除,
+  两边一致(`fx/futurecast.dart`,留着当这条线索的起点)。
+
 - **往 `_preludeInterfaces` 里加 `Sink`(想给 `DigestSink implements Sink<Digest>` 补上
   `impl DartSink`)——**可达 crate 69 → 65**,两趟都没救回来,已撤回(ws1033/1034,2026-09-11)。**
   **往那张表里加一项不是局部动作**:`the_class.dart` 只在「prelude 有这个 trait」时
