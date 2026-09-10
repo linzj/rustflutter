@@ -378,7 +378,12 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 ## 撤回与作废(不要再试)
 
 - **Object 协议:把注册表换成 vtable,第 2 步(拿掉毯式 impl)——渲染树红,已撤回
-  (2026-09-10,work.md 那份计划的主体)。** 第 0 步(证明够得着)和第 1 步(翻译 trait 走 vtable)
+  (2026-09-10,work.md 那份计划的主体)。**
+  **注**(2026-09-10 晚):作废的是**这条路**——「拿掉毯式 `impl<T: 'static> Object for T`、
+  把协议方法搬到 `Object` 上」。目的地本身在 `ws1005`/`ws1006` 到了,走的是另一条:
+  **不动毯式,改手柄的类型**(`Rc<dyn Object>` → `Rc<dyn DartAny>`)。
+  下面这一整段的代价——117 个 `impl Object for`、255 个枚举错误、2,319 个 E0061——
+  **一个都没出现**,因为那条路一个 `impl Object for` 都不加、一个自由函数都不加。 第 0 步(证明够得着)和第 1 步(翻译 trait 走 vtable)
   都落地了(`ddca1520`、`81752f94`);**第 2 步撤回,读数写在 `/tmp/work.md` 第五节**。
   **渲染树 707/0/0 → 501 行 / 1 panic / 类型差异 229**(连采五次一模一样),而 §6 写着渲染树是**唯一**的正确性判据。
   **那个 panic 就是多出来的那一个桩**(74 → 75):`ImageProvider.obtainKey` 打了桩,
@@ -650,7 +655,6 @@ Dart 的循环变量是同一个对象。加 `mut` 只是把「诚实地 panic �
 
 | 轮 | 规则 / 读数 | 数 |
 |---|---|---|
-| ws937 | **`late` 字段的格子里装的是 `Option`,而「赋值当表达式用」那一路没有包 `Some`**。语句那一路早就包了(`IrAssignField` 里那句注释写着「这是唯一发生这件事的地方」——在表达式那一路也需要它之前是真的)。Dart 里 `x = v` 的**值是 `v`**,存进去的才是 `Some(v)`,所以只包存的那一侧,`__set` 照旧是裸的:`_opacityAnimation = CurvedAnimation(parent: _opacityController = AnimationController(..), ..)` 是这个形状 | stub **122 → 119**(逐条比新增 **0**,少了 `material_data_table.rs` 的 `init_state`、`painting_text_painter.rs` 的 `_compute_caret_metrics`、`rendering_animated_size.rs` 的 `perform_layout`)、拒绝 33、可达 69、0 error;run937 连采五次:707 行 / 类型差异 0 / 0 panic |
 | ws938/939 | **同一条继承链上参数不一致时,方向应该是「都擦」而不是「都不擦」——但只在两边都担得起的时候**。`_InheritedProviderScopeElement<T> implements InheritedContext<T>`:下面被真实流点标了(`element = this` 落进 `_InheritedProviderScopeElement<T?>` 的槽),上面没标,原规则把两边一起丢掉,于是 provider 六个成员手里是 `X<T>`、声明写的是 `X<T?>`。先试「一律往上抬」(ws938):清掉那 6 个,却因为把 `Animatable.T` 也擦了而**新增 7 个**(`Tween.lerp`、滑块 demo 的 `paint`……),净 +1,**撤回**。加一道闸再来(ws939):**只在这个位置上每一个传自己参数进来的子类都已经标了的时候才抬**——`InheritedContext` 只有一个子类且已标,`Animatable` 有 `TweenSequence`/`_ChainedEvaluation` 没标,于是只抬前者。`DART2RUST_RAISE=0` 退回原来的丢弃 | stub **119 → 113**(逐条比新增 **0**,少的正是 provider 的 `build`/`mount`/`unmount`/`update` 那一族六个)、拒绝 33、可达 69、0 error;run939 连采五次:707 行 / 类型差异 0 / 0 panic |
 | ws940 | **被树摇空了的增强枚举,现在照样发出它的变体**。原来的规则是:增强枚举(每个变体带自己的字段)如果那些字段的值从常量里读不回来,就整个发成空枚举——理由写着「不然就会把它当普通枚举发、把成员丢掉」。可是空枚举**把成员和名字一起丢了**,而且是悄悄地:`enum KeyboardLockMode {}`,于是 `KeyboardLockMode::NumLock` 指着一个不存在的变体、`Set<KeyboardLockMode>` 连 `DartEq` 都没有。变体发出来之后,只有真去读那份状态的成员编不过,而编不过就是一个桩——看得见,一个一个数得清。`valueFields` 仍旧是空的,所以那份状态不发 getter | stub **113 → 112**、拒绝 **33 → 32**(`KeyboardLockMode.findLockByLogicalKey` 从「拒绝」变成一个桩,`handle_key_event` 和 `_should_accept_num_lock` 两个桩清掉)、可达 69、0 error;run940 连采五次:707 行 / 类型差异 0 / 0 panic |
 | ws943 | **`a ?? b` 两边是同一个类、但类型实参不同时,左边的拼法只有在右边真放得进去的时候才算数**。`children ?? buttonItems` 一边是 `List<Widget>`、一边是 `List<ContextMenuButtonItem>`,Dart 说整个是 `List<Object>`;而 `lub` 的判定只比 `classNode`,两边都是 `List` 就取了左边,于是右边逐元素被抬成一个它并不实现的 `Widget`。判定改成「类不同**或者**右边不是左边的子类型」(`typeEnvironment.isSubtypeOf`)。夹具 `ifnulllub` 先红(3 个编译错)后绿 | stub **112 → 110**(逐条比新增 **0**,少了两个 `adaptive_text_selection_toolbar.rs` 的 `build`)、拒绝 32、可达 69、0 error;run943 连采五次:707 行 / 类型差异 0 / 0 panic |
@@ -691,6 +695,7 @@ Dart 的循环变量是同一个对象。加 `mut` 只是把「诚实地 panic �
 | ws993 | **拼成 `Object` 的槽,和裸 `Function` 是一回事**(`/tmp/work.md` 第二版第 1 步)。`Future.onError` 的处理函数以前直接 `Rc::new(闭包)` 塞进 `Rc<dyn Object>`——**全靠毯式 `impl<T: 生static> Object for T` 撑着**,而第二版正要把那个槽换掉。`catchError` 从来没这毛病:它的 Dart 形参**是**裸 `Function`,于是 `translated` 保持为真、`coerceInto` 跑得到、`_dynamicFunction` 把闭包做成函数对象。`onError` 的形参**有签名**,`_widened` 那条排除因此把 `translated` 置假,**整个 coercion 都没跑**。两半:(1)`onError` 的降级(CFE 把它降成 `FutureExtensions|onError` 静态调用)告诉下游它的处理函数落在**对象槽**里——那是 prelude `catch_error(on_error: Rc<dyn Object>)` 的实情;(2)排除那条**改成也认显式的 `Object` 槽**,因为两者在 prelude 签名里是同一个 `Rc<dyn Object>`。**差点手列一张 `{onError}` 的表**,那正是「不许硬编码」挡的东西;通用的说法反而更短。**之前猜错四次**(闭包字面量 / 局部函数 tear-off / 捕获且用多次 / `async`),全都已经走手柄了,真正的分水岭是**调的是 `onError` 还是 `catchError`**——一开始读错了文件(`image_provider.dart` 而不是 `image_resolution.dart`)| stub **73,集合逐字节相同**(这一步的门槛就是它)、拒绝 29、可达 69、0 error;run993 连采五次:707 行 / 类型差异 0 / 0 panic;夹具 47 AGREE + 1 个故意的红。`ImageResolution.obtainKey` 现在发的是 `catch_error({ let mut __f: Rc<dyn Fn(..)> = ..; .. })`,**最后一处靠毯式撑着的构造没了**——那正是第二步上一次死掉的地方 |
 | ws1004 | **一个类可以靠 *mixin* 变成 `Iterable`,而它那样拿到的成员,声明在谁也看不见的地方**。前端把 `Iterable` 的成员接到 prelude 的列表上,判据是「调用的声明类叫 `List` 还是 `Iterable`」。`class Board extends Object with IterableMixin<BoardPoint?>` 把 `elementAt` 和 `forEach` 声明在 `dart:mixin_deduplication` 的 `_MixinApplication386&Object&IterableMixin` 上,**任何名字判据都抓不到**,于是两个都掉进了普通方法调用:`board.element_at(i)` 谁也不是,`board.for_each(f)` 要求 `Board` 是 Rust 的 `Iterator`。**接收端本来就是通的**——一个「自己是 `Iterable<E>`」的翻译类,`_listReceiver` 早就读成它的列表(`__to_list`,ws499),缺的只是入口。判据要问三件事,少一件就错:(1)成员**声明在** `dart:` 类上;(2)**是 `Iterable` 自己声明的成员**——只问(1)时 `_History extends Iterable with ChangeNotifier` 的 `notifyListeners` 也在一个 `dart:` 的 Iterable 上,`ObserverList.add` 同形,**拒绝 29 → 58**;(3)**接收者是翻译类**——`Set`/`Queue`/`ListQueue`/`LinkedList` 都是 `dart:` 里的 `Iterable`,它们在下面有自己的分支,路由过来就是 `Set.difference`/`ListQueue.addLast` 被当成 `List.x` 拒掉。**入口的判据必须和接收者被读的方式配对**,这是这条规则的形。先加 `DART2RUST_TRACE_ITER` 打了一行、确认判据真的到得了、`dartIterable` 真的是 true,再动代码——之前 ws991/992 在这个目标上空转两轮,就是没先证实 | stub **73 → 71**(掉的正是 `transformations_demo.paint` 和 `Board.copy_with_board_point_color` 两个,新增 0);拒绝 29、可达 69、0 error;run1004 连采五次:707 行 / 类型差异 0 / 0 panic;夹具 **49 个,48 AGREE + 1 个故意的红**。`mixiniterable` **验证过没有这条就是红的**(3 个 E0599),并且钉住另一半:`Rungs.count()` 是类自己的成员,不能被读成它列表的成员 |
 | ws1005 | **`/tmp/work.md` 第二版第 2 步:手柄从 `Rc<dyn Object>` 换成 `Rc<dyn DartAny>`,第四次尝试,过了。**前三次都死在同一行上——`TypeId::of` 有**两种语义,长得一模一样**:`TypeId::of::<dyn Object>()` 是**裸手柄的键**(问的人还拿着旧拼法,必须留,并且要答);`TypeId::of::<Vec<Rc<dyn Object>>>()` 是**被问的目标**(问的人改口了,必须跟着换)。这次不在文本上分,而是**在发射端分**:后端两个常量 `dartHandle` / `objectKey`,值槽和错误位走前者,cast 键走后者并**配一条 `dyn DartAny` 的孪生臂**——两条臂不能合并,因为盒子里装的东西要和提问方将要 downcast 的类型一致。prelude 里 203 处、runtime 手写的 17 处一起换,5 处键保留并加孪生,2 处容器目标跟着提问方走。**代价小得出乎意料**:两处泛型界放宽(`JsonCodec::encode`、`JsonUtf8Encoder::convert`,`V: 生static` → `V: DartAny`——它们本来靠毯式 `Object` 撑着),四个 `dyn DartAny` 的协议 impl(Debug/Display/PartialEq/DartEq,`dyn DartAny` 和 `dyn Object` 是两个类型,旧 impl 够不着)。翻译 trait 早就是 `DartAny` 的子 trait,所以 `Rc<dyn Widget>` 直接 unsize 到新手柄,第一版里那 117 个 `impl Object for`、255 个枚举错误、2,319 个 E0061 **一个都没出现**。**顺手把下一层的工具装上**:`DART2RUST_TRACE_CAST=1` 把每次 `dart_cast_to` 落空按(问的什么,实际是什么)计数,和渲染树一起报——一趟跑出全表,不用一层一趟链子加一次构建 | **桩 71 逐字节相同**(gone 0 / new 0)、拒绝 29、可达 69、0 error;**八轮编译错误数和基线逐轮相同**:16/6/66/15/17/3/7/0;run1005 连采五次:707 行 / 类型差异 0 / 0 panic——**四次尝试里第一次渲染树没红**;夹具 49 个,48 AGREE + 1 个故意的红 |
+| ws1006 | **注册机制删干净了(`/tmp/work.md` 第二版第 3 步)。**四张 `thread_local!` 表(`DART_CASTS`/`DART_STRINGS`/`DART_EQS`/`DART_HASHES`)、四个 `fn` 类型、`dart_register` / `dart_register_fns`、`dart_object` 和 `dart_rc` 里的两处调用、`emit_members.dart` 那行发射——**全部删除**,`dart_register` 在整个工作区出现 **0 次**(此前 1,835 个调用点)。六处读表各自有 vtable 上的答案:`impl DartAny for dyn Object` 的 `dart_eq_any` 落到 `dart_any_eq`、`dart_cast` 直接答 `None`(裸 `dyn Object` 现在只剩闭包/元组/`i64` 那种毯式 impl 的东西,对它们「同一性 + 类名」本来就是表的 miss 分支给的答案);`dart_any_eq`/`dart_any_hash`/`dart_object_str_ref` 三个只拿得到 `&dyn Any` 的函数去掉查表,落到原有的核心值分支——翻译类自己的 `==`/`hashCode`/`toString` 不从这里走了,它们在手柄的 vtable 上。**这一步是 ws1005 换手柄的直接结果**:表存在的唯一理由是 `dyn Object` 的 vtable 只有三个方法 | **桩 71 逐字节相同**(gone 0 / new 0)、拒绝 29、可达 69、0 error;八轮编译错误数和基线逐轮相同 16/6/66/15/17/3/7/0;run1006 连采五次:707 行 / 类型差异 0 / 0 panic;夹具 49 个,48 AGREE + 1 个故意的红 |
 
 ## 下一步
 
@@ -1175,7 +1180,7 @@ Dart 的 `catchError` 形参是**裸 `Function`**(没签名),走 `coerce.dart` �
 **不许手列一张 `{'onError'}` 的表**。
 另:v1 那次「74 → 98」改的是 `coercion.dart` 的 `_widened` 排除,**不是** `coerce.dart:510-521`,两处别混。
 
-## 注册机制:去单态化落地了,表还在(2026-09-10)
+## 注册机制:删掉了(2026-09-10,ws1005 + ws1006)
 
 **做掉的那一半(`30d0d4ad`):** `dart_register::<T>()` 是每个非 `const` 构造器发一次的,
 于是它内联的东西按 T 单态化——四个 `LocalKey::with`,每个约 524 字节。
@@ -1195,12 +1200,25 @@ work.md §9 估 −8.5 MB,实测 **−8.57 MB**。二进制比 `.text` 掉得多
 `.symtab`/`.strtab` 跟着瘦。**语义零变化**:同一张表、同一个键、同一个值、同样的 `or_insert`。
 尺子:stub 73 逐字节相同、拒绝 29、可达 69、run1000 连采五次 707 行 / 0 panic / 类型差异 0。
 
-**没做掉的那一半:四张表还在。**
-`DART_EQS` / `DART_HASHES` / `DART_STRINGS` 加起来**只剩 6 个读者**(2 + 2 + 4,
-`dart_object_str` 那 4,787 处是 `T: DartAny`,静态派发,不查表),这三张跟着就能删。
-**`DART_CASTS` 删不掉**——它要等手柄变成 `Rc<dyn DartAny>`,而那次尝试
-(`ff941317`)编译侧到了 73 逐字节相同、渲染树到了 361/707,卡在
+**另一半也做掉了(`ws1005` 换手柄 + `ws1006` 删表)。**
+上面那段写的时候还卡着:`DART_CASTS` 要等手柄变成 `Rc<dyn DartAny>`,而第三次尝试
+(`ff941317`)编译侧到了 73 逐字节相同、渲染树只到 361/707,停在
 `material_switch.rs:829` 的一次 `dart_cast_to::<dyn Color>()` 落空。
+
+第四次过了,**没有回撤**。分界点是同一行:`TypeId::of` 有两种语义。
+`TypeId::of::<dyn Object>()` 是**裸手柄的键**(留,并且要答);
+`TypeId::of::<Vec<Rc<dyn Object>>>()` 是**被问的目标**(问的人改口了,必须跟着换)。
+这次不在文本上分,而是**在发射端**分成两个常量(`dartHandle` / `objectKey`),
+每条键臂加一条 `dyn DartAny` 的孪生臂——两条不能合并,盒子里装的东西
+要和提问方将要 downcast 的类型一致。
+
+`dart_register` 在整个工作区从 1,835 个调用点变成 **0 个**;四张表、四个 `fn` 类型、
+`dart_register_fns` 全删。六处读表各自落到 vtable 或原有的核心值分支上。
+两轮的尺子都是:桩 71 逐字节相同、拒绝 29、可达 69、0 error、渲染树连采五次 707/0/0。
+
+**顺带装上的工具**:`DART2RUST_TRACE_CAST=1` 把每次 `dart_cast_to` 落空按
+(问的什么、实际是什么)计数,和渲染树一起报——这轮没用上,但下一次运行期
+落空可以一趟跑出全表,不必一层一趟链子加一次构建。
 
 ## 拒绝归零要什么(2026-09-10,量出来的,不是估的)
 

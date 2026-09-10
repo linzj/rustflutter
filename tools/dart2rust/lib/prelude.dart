@@ -399,15 +399,10 @@ pub fn dart_any_eq(a: &dyn std::any::Any, b: &dyn std::any::Any) -> bool {
             (None, None) => None,
         }
     }
-    // The object's own answer where it is registered (`DART_EQS`: every
-    // translated value made, the core values boxed); the core values below
-    // for what was never registered, and identity for what is neither --
-    // which is what a trait object answered before this dispatched.
-    let id = std::any::Any::type_id(a);
-    let f = DART_EQS.with(|c| c.borrow().get(&id).copied());
-    if let Some(answer) = f.and_then(|f| f(a, b)) {
-        return answer;
-    }
+    // The core values, then identity. A translated object's own `==` is not
+    // reached from here and does not need to be: it is on the handle's
+    // vtable (`dart_eq_any`), and this is only ever asked about an `Any`,
+    // which has no vtable to ask.
     same::<String>(a, b)
         .or_else(|| same::<i64>(a, b))
         .or_else(|| same::<f64>(a, b))
@@ -1094,90 +1089,8 @@ impl<S: DartAny + ?Sized> DartCastExt for S {
 // `x is Foo` where `x` is a `Foo?` asks the value inside, and `null is
 // Foo` is false.
 
-/// The cast table for objects reached through `dyn Object`, whose blanket
-/// impl cannot know their type: `TypeId` of the struct to the function that
-/// asks it `dart_cast`. Filled as objects are made -- `dart_rc`,
-/// `dart_object`, and every constructor that is not `const` -- which in a
-/// closed world is every object an `is Trait` can ever meet.
-type DartCastFn =
-    fn(&dyn std::any::Any, std::any::TypeId) -> Option<Box<dyn std::any::Any>>;
-
-thread_local! {
-    static DART_CASTS: std::cell::RefCell<std::collections::HashMap<std::any::TypeId, DartCastFn>> =
-        std::cell::RefCell::new(std::collections::HashMap::new());
-}
-
-/// `toString` for objects reached through `dyn Object`, by the same key.
-type DartStrFn = fn(&dyn std::any::Any) -> Option<String>;
-
-thread_local! {
-    static DART_STRINGS: std::cell::RefCell<std::collections::HashMap<std::any::TypeId, DartStrFn>> =
-        std::cell::RefCell::new(std::collections::HashMap::new());
-}
-
-/// `==` for objects reached through `dyn Object`, by the same key.
-type DartEqFn = fn(&dyn std::any::Any, &dyn std::any::Any) -> Option<bool>;
-
-thread_local! {
-    static DART_EQS: std::cell::RefCell<std::collections::HashMap<std::any::TypeId, DartEqFn>> =
-        std::cell::RefCell::new(std::collections::HashMap::new());
-}
-
-/// `hashCode` for objects reached through `dyn Object`, by the same key.
-type DartHashFn = fn(&dyn std::any::Any) -> Option<i64>;
-
-thread_local! {
-    static DART_HASHES: std::cell::RefCell<std::collections::HashMap<std::any::TypeId, DartHashFn>> =
-        std::cell::RefCell::new(std::collections::HashMap::new());
-}
-
-/// The four table writes, with no type parameter of their own.
-///
-/// `dart_register::<T>()` is emitted once per non-`const` constructor, so
-/// every type it is instantiated at gets its own copy of whatever it
-/// inlines -- and `LocalKey::with` is four calls of about 524 bytes.
-/// Measured on the release binary: **17,068 instances, 8.94 MB**, of which
-/// 469 of every 524 bytes are identical between them.
-///
-/// The four *closures* below still monomorphise, and have to: they are the
-/// values the tables hold, one per type by construction. What stops
-/// monomorphising is the shell around them, which is all this is.
-///
-/// Nothing moves semantically: same tables, same keys, same values, same
-/// `or_insert` (first registration wins). A size change only.
-fn dart_register_fns(
-    id: std::any::TypeId,
-    cast: DartCastFn,
-    to_string: DartStrFn,
-    eq: DartEqFn,
-    hash: DartHashFn,
-) {
-    DART_CASTS.with(|c| {
-        c.borrow_mut().entry(id).or_insert(cast);
-    });
-    DART_STRINGS.with(|c| {
-        c.borrow_mut().entry(id).or_insert(to_string);
-    });
-    DART_EQS.with(|c| {
-        c.borrow_mut().entry(id).or_insert(eq);
-    });
-    DART_HASHES.with(|c| {
-        c.borrow_mut().entry(id).or_insert(hash);
-    });
-}
-
-pub fn dart_register<T: DartAny>() {
-    dart_register_fns(
-        std::any::TypeId::of::<T>(),
-        |any, t| any.downcast_ref::<T>().and_then(|v| v.dart_cast(t)),
-        |any| any.downcast_ref::<T>().map(|v| v.dart_to_string()),
-        |a, b| a.downcast_ref::<T>().map(|v| v.dart_eq_any(b)),
-        |a| a.downcast_ref::<T>().map(|v| v.dart_hash_any()),
-    );
-}
-
-/// `hashCode` of an object reached through `dyn Object`: its own, by the
-/// registry; identity of the box for what was never registered.
+/// `hashCode` of an object reached through a bare `dyn Object`: the core
+/// values by value, anything else by the identity of the box.
 pub fn dart_object_hash(value: &dyn Object) -> i64 {
     dart_any_hash(value.as_any())
 }
@@ -1185,11 +1098,8 @@ pub fn dart_object_hash(value: &dyn Object) -> i64 {
 /// The same through a value's `Any`, for a trait object's `DartEq` (see
 /// `dart_any_eq`): equal objects must hash alike, so the two go together.
 pub fn dart_any_hash(any: &dyn std::any::Any) -> i64 {
-    let id = std::any::Any::type_id(any);
-    let f = DART_HASHES.with(|c| c.borrow().get(&id).copied());
-    match f.and_then(|f| f(any)) {
-        Some(hash) => hash,
-        None => {
+    {
+        {
             if let Some(s) = any.downcast_ref::<String>() {
                 return dart_std_hash(s);
             }
@@ -1272,17 +1182,11 @@ pub fn dart_object_str_ref(value: &dyn Object) -> String {
             None => "null".to_string(),
         };
     }
-    let id = std::any::Any::type_id(any);
-    let f = DART_STRINGS.with(|c| c.borrow().get(&id).copied());
-    if let Some(text) = f.and_then(|f| f(any)) {
-        return text;
-    }
     format!("Instance of '{}'", value.runtime_type().name)
 }
 
-/// `Rc::new` for a value shared as an object: registered on the way.
+/// `Rc::new` for a value shared as an object.
 pub fn dart_object<T: DartAny>(value: T) -> std::rc::Rc<T> {
-    dart_register::<T>();
     std::rc::Rc::new(value)
 }
 
@@ -1308,8 +1212,17 @@ pub fn dart_boxed<T: DartAny>(value: T) -> std::rc::Rc<dyn DartAny> {
     }
 }
 
-/// The Object protocol of a `dyn Object`: what the object behind it
-/// answers, found by the registry (`DART_CASTS`, `DART_STRINGS`).
+/// The Object protocol of a bare `dyn Object`.
+///
+/// This is what the registry existed for. A `dyn Object` has three methods
+/// in its vtable, so asking one for `==` or `as T` meant throwing the
+/// vtable away (`as_any`), hashing the value's `TypeId`, and looking the
+/// implementation back up in a table filled at construction. Every value
+/// slot is a `Rc<dyn DartAny>` now and answers from its own vtable, so
+/// nothing reaches this by that route -- what is left here is a
+/// `dyn Object` that is not one of ours (a closure, a tuple, an `i64`
+/// behind the blanket impl), and for those identity and the class name are
+/// the right answers, which is what the table's miss path already said.
 impl DartAny for dyn Object {
     fn dart_runtime_type(&self) -> Type {
         self.runtime_type()
@@ -1319,12 +1232,7 @@ impl DartAny for dyn Object {
     }
     fn dart_eq_any(&self, other: &dyn std::any::Any) -> bool {
         let any = self.as_any();
-        let id = std::any::Any::type_id(any);
-        let f = DART_EQS.with(|c| c.borrow().get(&id).copied());
-        match f.and_then(|f| f(any, other)) {
-            Some(answer) => answer,
-            None => std::ptr::addr_eq(any as *const dyn std::any::Any as *const u8, other as *const dyn std::any::Any as *const u8),
-        }
+        dart_any_eq(any, other)
     }
     fn dart_hash_any(&self) -> i64 {
         dart_object_hash(self)
@@ -1332,11 +1240,8 @@ impl DartAny for dyn Object {
     fn dart_any_ref(&self) -> &dyn std::any::Any {
         self.as_any()
     }
-    fn dart_cast(&self, target: std::any::TypeId) -> Option<Box<dyn std::any::Any>> {
-        let any = self.as_any();
-        let id = std::any::Any::type_id(any);
-        let f = DART_CASTS.with(|c| c.borrow().get(&id).copied());
-        f.and_then(|f| f(any, target))
+    fn dart_cast(&self, _target: std::any::TypeId) -> Option<Box<dyn std::any::Any>> {
+        None
     }
 }
 
@@ -2629,7 +2534,6 @@ pub trait DartSelfRef {
 
 /// `std::rc::Rc::new` for a counted object: the handle is made and remembered.
 pub fn dart_rc<T: DartSelfRef + DartAny>(value: T) -> std::rc::Rc<T> {
-    dart_register::<T>();
     let rc = std::rc::Rc::new(value);
     rc.dart_self_ref().set(&rc);
     rc

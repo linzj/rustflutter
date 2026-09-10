@@ -62,9 +62,6 @@ augment class RustBackend {
       '${cls.counted ? '' : constness}fn $name($params) -> ${_wrapped(produces)} {',
     );
     _indent++;
-    // A value class registers its cast function as it is first made
-    // (`dart_register`); a counted one does so in `dart_rc`.
-    if (!cls.counted && constness.isEmpty) _line('dart_register::<Self>();');
     // A constructor fails like any function: its body's value is `Ok`.
     _failure = _resultModel ? _error : null;
     if (ctor.redirectTo == null) _line('Ok({');
