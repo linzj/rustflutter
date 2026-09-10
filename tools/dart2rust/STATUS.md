@@ -377,6 +377,17 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 
 ## 撤回与作废(不要再试)
 
+- **把 `super.==` / `super.hashCode`(落进 `Object` 的那两个)按身份答出来**——拒绝 22 → 20、桩数不动、
+  可达 69,**读数是好的,还是撤回了**(ws1052,2026-09-11)。**夹具把它拆穿了**:
+  `dart_self_<trait>()` 对一个**值结构**来说是 `Rc::new(self.clone())`——**每次调用现装一个新的**,
+  于是 `dart_identical_any(&这个, &那个)` 永远为假(`w == w` 在 Dart 里是真),
+  `dart_identity_hash_code()` 每次是另一个地址(`a.hashCode == a.hashCode` 会是假)。
+  **这正是这段代码原来的注释写着的那句话**:「身份是被复制的值类没有的东西」——ws828 那次也是栽在这里,
+  只不过那次栽在实参上,这次栽在接收者上。超函数是所有实现者共用的,`Widget` 的实现者是不是 counted
+  在那里根本判断不了,所以这条**要等 aliasing/counted 那个决定**,不是能单独做的。
+  夹具顺带**又量到一次**〈已知欠账〉里 ws985 那条(继承来的 `==` 没被路由到):
+  `a == b` 两个不同对象答成 true,Dart 是 false。**新的一点写在那条账下面**。
+
 - **给 `DartFuture<Object>` 加 `dart_cast_future`、在 `coerce` 里把它转成 `Future<T>`
   (想清掉 `scheduleTask` 那两个桩)——**逐字节相同,规则一次都没触发**,已撤回
   (ws1042,2026-09-11)。**规则没错,是那条边上根本看不见这个差**:`DART2RUST_TRACE_RETURN`
@@ -1582,6 +1593,11 @@ trace 打出来全程序走到那条分支的接收者**全是 `List<..>` / `Set
   (它写 `==` 就是为了让子类别再定义相等),所以 gallery 里 widget 的相等**很可能是按字段比的,不是按同一性**。
   ws935 已经为 `Key` 修过同一件事的一个特例(`dart_any_eq` 去问注册表要类自己的 `==`),
   这一条是它的一般情形:**注册表里放的是 derive 出来的那个,而不是继承链上真正该赢的那个**。
+  **(2026-09-11 再量,ws1052 的夹具)** 形状原样复现(`a == b` 两个不同对象 → true)。
+  新看到的一点是**同一个 impl 里两半不一致**:
+  `impl DartEq for Leaf { fn dart_eq(&self, other) { self == other } `——按字段;
+  `fn dart_hash_code(&self) { Node::hash_code(self).unwrap_or(0) } }`——**已经**转发到继承来的声明。
+  哈希那半怎么找到继承链上那个声明的,相等这半照着做就是了。
 
 - **`todo!` 的剩员从没再量过**。三把尺子里这一把量的是「编得过、一跑就 panic」的
   转发器体:ws344 第一次照到它,一量 **26199 个**,削到 **782**——**此后再没量过**,
