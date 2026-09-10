@@ -528,7 +528,15 @@ augment class KernelFrontend {
         ..rustType = have == null ? null : _nonNull(have);
     }
 
-    if (declaredIr != null) {
+    // ..but only when the declared type actually says something about
+    // nullability. `flexes[x]!` on a `List<double?>` has `List.[]` for its
+    // callee, whose declared return type is the bare parameter `E` with
+    // undetermined nullability -- it inherits from the instantiation and
+    // says nothing here. Read as non-null it dropped the `!`, and
+    // `newTotalFlex += flexes[x]!` came out as `f64 + Option<f64>`
+    // (`RenderTable._computeColumnWidths`; the compoundbang fixture). The
+    // recorded type is the one that knows, so fall through to it.
+    if (declaredIr != null && declared is! TypeParameterType) {
       return isNullable(declaredIr) ? checked() : inner;
     }
     final have = inner.rustType;
