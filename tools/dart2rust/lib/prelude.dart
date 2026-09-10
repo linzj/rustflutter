@@ -5910,7 +5910,15 @@ impl<T> Clone for Pointer<T> {
 pub struct NativeType;
 pub struct Void;
 pub struct NativeFunction<T>(std::marker::PhantomData<T>);
-#[derive(Clone, Copy, Debug)]
+/// `dart:ffi`'s `DynamicLibrary`. Carries no state here -- the library it
+/// stands for is opened by the host -- but it is compared: `_Win32Platform
+/// Interface` keeps a `DynamicLibrary?` and asks `_library == null` before
+/// opening one, which needs the equality every other prelude value type
+/// has. `DartEq` it already had, by identity (`dart_eq_identity!`); what
+/// was missing is `PartialEq`, which is what `==` on an
+/// `Option<DynamicLibrary>` resolves to -- `Option`'s own `==` asks it of
+/// the value inside and never reaches `DartEq`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DynamicLibrary;
 impl fmt::Debug for Allocator {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

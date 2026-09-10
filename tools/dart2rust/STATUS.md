@@ -683,7 +683,6 @@ Dart 的循环变量是同一个对象。加 `mut` 只是把「诚实地 panic �
 |---|---|---|
 | ws951/952 | **`f<int>` 作为一个值**(`Instantiation`):Dart 把一个泛型函数值实例化到写出来的类型上,而**那些类型正是下面那个 tear-off 缺的东西**。Rust 的闭包没有自己的类型参数,所以 tear-off 变成的那个闭包就带着这些类型去调方法(`IrCall.typeArguments`)。`showDialog` 递的 `Navigator.of(context).pop` 就是这个形状,整个顶层函数为它被拒。ws951 只做了「实例化就是它自己」那半,于是拒绝换成了一个桩——泛型方法的 `T?` 形参在被调方那边拼成投影 `<T as DartNullable>::Or`(实例化之后是个 `Option`),而闭包收的是槽声明的那个(`Object?` 在这里是裸的 `Rc<dyn Object>`);ws952 让参数在传过去的路上进被调方的拼法,和普通调用的实参一样。夹具 `instantiation` 先红(带着一模一样的拒绝信息 panic)后绿,`T?` 可选形参也覆盖了 | stub 109(不变)、拒绝 **30 → 29**(`showDialog` 现在翻得出来**而且编得过**)、可达 69、0 error;run952 连采五次:707 行 / 类型差异 0 / 0 panic |
 | ws891 | 第五轮复审抓到:ws889 落地后 `regen.py` 的 `hints()` 会**永远误报**——它按 `'throws:' not in driver` 字面判定,而正确的修法恰恰是把那个参数删掉,所以那条提示从此指向唯一不该做的修法。换成 `DECIDED_IN`:只指出决定写在哪两个函数里,不对文件的现状下任何断言。顺手分开探针的两种失败(没调用 vs 调用了没 `?`) | `fails:` 在 frontend.dart 已 11 处、`throws:` 在 kernel driver 已 0 处——两条提示一条正确变哑、一条永久说谎,实测属实;两个诊断分支各跑一次验过 |
-| ws955 | **没有东西能告诉 rustc 一个 prelude 静态调用的类型参数是什么**:`Iterable<int>.generate(n)` 省掉了生成器,填进去的 `None` 什么也不说,`count` 是 `i64` 与元素无关;结果又被迭代而不是存进一个带标注的局部,于是上下文那头也没得推(`type annotations needed for &_`,starter study 的 `home.dart`)。规则:被调方是 prelude 的、且调用**实际填了的**每一个形参都不提到类型参数,就把类型实参拼出来。**但工厂的类型参数是它那个类的**——prelude 把类写成泛型时,它们在 impl 上而不在关联函数上(`Completer<T>.sync()` 是 `Completer::sync()`);少了这一分,E0107 多出 6 个,dart:ui 的 `_futurize` 在内。哪些 prelude 类型带自己的参数,是**读 prelude 源码**读出来的(`_genericPreludeTypes`),不是手列的表。夹具 `generateindices` 两半都覆盖,先红(一模一样的 `&_`)后绿 | stub **109 → 108**、拒绝 29、可达 69、0 error;run955 连采五次:707 行 / 类型差异 0 / 0 panic |
 | ws956 | **一个浮点字面量做接收者要自己说是 `f64`**——这条规则早就有(HCT 里 21 个 E0689),但它只认**光秃秃的**字面量,而 `math.min(-_kFlingVelocity, ..)` 里那个接收者是一个 `const double` 取负之后折出来的字面量,在 IR 里是 `IrUnary('-', 字面量)`:rustc 眼里它照样是 `{float}`,这边却不认。改成看**值**是不是浮点字面量(穿过取负),并且把后缀写在**字面量身上**——`(-(2.0_f64))`,不是 `(-2.0)_f64`,后缀属于字面量而不属于它外面那层表达式。夹具 `minnegconst` 三种拼法(取负的 const、写在调用里的负字面量、光秃秃的)都覆盖,先红后绿 | stub **108 → 107**(reply 的 `_handleDragEnd`)、拒绝 29、可达 69、0 error;run956 连采五次:707 行 / 类型差异 0 / 0 panic |
 | ws957 | **投影的 `T?` 每过一道边界都要换一次拼法**,radio group 那三个桩是同一件事的三种形状。(a)`??`:`<T as DartNullable>::Or` 是关联类型不是 `Option`,`match` 不了——原来只把**被匹配的那一边**摊平,于是两条臂不一样;要**两边都摊**,再把结果放回这个表达式记着的那个投影里(`registry?.groupValue ?? widget.groupValue`)。(b)**tear-off 的被调方槽**:ws952 只认泛型**方法**自己的类型参数,而泛型**类**的 `T?` 同样是投影(`Registry<T>.changed(T? value)` 撕成 `ValueChanged<T?>`,收到的是体里那个 `Option<T>`)。(c)**绑到 `null` 的 `Let` 什么也不绑**:`null` 没有位置、没有身份、没有副作用,body 读哪儿就把字面量放哪儿——原来那条绑定还是**错的**,因为静态类型 `Null` 的变量拼成 `Option<Null>`,而槽要的是它自己的 `Option<T>`(`registry!.onChanged(null)`)。夹具 `projectednullget` 三种形状都覆盖,先红后绿 | stub **107 → 103**(radio 三个,外加 `_detail_page_route` —— (c) 顺手清的)、拒绝 29、可达 69、0 error;run957 连采五次:707 行 / 类型差异 0 / 0 panic |
 | ws958 | **Dart 的函数子类型是逆变的,Rust 的不是**:`Set.contains(Object?)` 在 Dart 里可以当 `bool Function(String)` 用,而 tear-off 变成的那个闭包按**方法自己的**形参声明,于是 prelude 的 `first_where` 收到 `Fn(Rc<dyn Object>)` 而它要 `Fn(String)`(E0631)。做法:tear-off 落进的那个函数槽记下来(`_expectedTearOff`,和闭包字面量自己的 `_expectedFunction` 分开,免得改了嵌套闭包的降法),闭包按**槽的**形参声明,每个形参在进调用的路上再放宽回方法自己的槽——集合方法那一路借 `_retyped` (生成的调用读的是被调方自己的变量,读完由实参机制放宽),普通那一路借 `passedOn`。夹具 `widetearoff` 覆盖 `firstWhere`、`firstWhere(orElse:)`、`where` 三处,先红(一模一样的 E0631)后绿 | stub **103 → 102**(`commonDirectionalityOf`)、拒绝 29、可达 69、0 error;run958 连采五次:707 行 / 类型差异 0 / 0 panic |
@@ -722,6 +721,7 @@ Dart 的循环变量是同一个对象。加 `mut` 只是把「诚实地 panic �
 | ws1015 | **`dart:ffi` 的读那一半通了,拒绝第一次动:29 → 22**。三件事,每件都是 trace 出来的不是猜的:(1)**「没有结构体可摊的 prelude 基类」原来是一个名字判断**(`_isStreamView`),现在把规则写一次、用一张表说它有哪些实例(`dart:async` 的 `StreamView`、`dart:ffi` 的 `Struct`);(2)**要带的字段得沿整条基类链找,不是 `base.fields`**——trace 打出 `chain=[Struct:[], _Compound:[_typedDataBase, _offsetInBytes], Object:[]]`,`Struct` 自己一个字段都不声明,这正是结构体发出来是空的、每个 getter 无处可读的原因;(3)**super 构造器的位置实参按顺序填这些字段**,两个实例一次量到 (`StreamView params=1 args=1 carried=[_stream]`、`Struct params=2 args=2 carried=[两个]`),数目对不上就拒绝,不猜。再加 prelude 里三个读原语(按 `dart:ffi` 规定的小端布局在偏移处读)。**只做读**:`Uint8List` 在这边是值,写会落进一份拷贝、下一次读看不见——那是别名那个决定,不是疏漏。**走错一次**:三个名字先按 Rust 拼法注册,而那个检查跑在 `snake()` **之前**,比的是 Dart 名字,白跑一趟 translate | **拒绝 29 → 22**(掉的是 `_WindowsMessage` 五个 getter 和两个 `#fromTypedDataBase`;剩下的 `onMessage` 要回调蹦床,写那一半按上面的理由留着);stub **65 逐字节相同**(gone 0 / new 0)、可达 69、0 error;run1015 连采五次:707 行 / 类型差异 0 / 0 panic。`ffistructread` **两端都是 `0/0/0/0/24`**,钉住读路径和 `sizeOf`。**`ffistruct` 的红换了种红法**:以前是整个结构体被拒绝、编不过,现在编得过、跑到第一次*写*才 panic——夹具头注和 `allfx.sh` 的说明都跟着改了,那句「translator refuses on purpose」已经不成立 |
 | ws1017 | **`x?.m(..)` 里 `m` 要 `&mut self`——ws984 撤回两次的那条,这次掉了一个。**关键是**闸门和位置各自在替对方回答问题**:闸门问「这名字是不是*集合*修改器」(`_mutatesInPlace`),`_cellPlace` 问「格子里装的是不是集合」——**两个都不是真问题**,真问题是**被调方要不要 `&mut self`**。直接问被调方,两个替身一起消失:`_cellPlace` 加一个 `anyHeld` 开关(只在被调方已确定时跳过集合判断),闸门加一条按被调方声明回答的 `_mutatesSelf`。**ws984 记的原因是错的**:它写「接收者不是局部变量所以三条位置规则都算不出来」,trace 打出来是 `recv=IrField/... mutPlace=null`——**是字段,而且字段就在格子里**,卡住的是深一层那句 `if (!_isMutableCollection(held)) return null;`。**判据也选错过一次**:我先用 `_sharedMutation`,不发火——`drag_end` 是固有方法,它的 `&mut self` 来自 `_mutating`;对的写法是照抄 `_receiverOf` 的真实判断(counted → `&self`,否则 `_sharedMutation || _mutating`)。**而且走格子的 `borrow_mut()` 本身就是 `&mut`**,ws984 走局部绑定才需要的「第二半」(给绑定加 `mut`,缺了就是 57 个桩)**这里根本不需要** | stub **65 → 64**(掉的是 `cupertino_route._handle_drag_cancel`,新增 **0**);拒绝 22、可达 69、0 error;run1017 连采五次:707 行 / 类型差异 0 / 0 panic;夹具 54 个,53 AGREE + 1 个故意的红。**两个目标只掉了一个**,另一个 `services_restoration._removeChildData` 的接收者是 `_childrenToAdd[key]?.remove(child)`——**map 的下标读**,位置得是 `get_mut`,不是格子,是另一条机制 |
 | ws1018 | **`m[k]?.mutate(..)` 的位置是 `get_mut` 交回来的那个 `Option`,不是它里面的值**——ws984 那一对的另一半。`_heldSlot` 只认**空断言**那一形:`m[k]!.add(v)` 的位置是个*值*,`get_mut(&k).unwrap()`,后面再接 `.as_mut()`;**空感知**那一形要保住「不存在」这件事,所以位置**就是** `get_mut` 已经给出的 `Option<&mut V>`,再接 `.as_mut()` 就多了一层。类型不同,所以是另一个 helper 加另一种发射,不是把原来那条放宽。**trace 一次定位**:`name=remove_value recv=IrCall(!map_get) recvType=List<RestorationBucket>? mutating=true held=null`——闸门本来就过,卡的是 `_heldSlot` 不认光杆 `!map_get`;同一份 trace 还显示全程序其他 `!map_get` 接收者**都是 `mutating=false`**,所以这条只碰这一处。**它不只是编不过,是个正等着发作的错答案**:`_childrenToAdd[key]?.remove(child)` 改的是列表的**拷贝**,bucket 自己那份里 child 还在——和 `_heldSlot` 注释里 `RenderTapRegionSurface` 每个 group 都空掉是同一类 | stub **64 → 63**(掉的正是 `services_restoration._remove_child_data`,新增 **0**);拒绝 22、可达 69、0 error;run1018 连采五次:707 行 / 类型差异 0 / 0 panic;夹具 54 个,53 AGREE + 1 个故意的红。**ws984 撤回两次的那一对,到这里两个都掉了** |
+| ws1021 | **`Option<T>` 的 `==` 问的是里面那个值的 `PartialEq`,永远走不到 `DartEq`**。`DynamicLibrary` 早就在 `dart_eq_identity!` 里(有 `DartEq`,按同一性),缺的是 `PartialEq` 的 derive;`_Win32PlatformInterface` 拿 `DynamicLibrary?` 存库、开库前先问 `_library == null`,那句就编不过。**差点补出一个重复 impl**:我顺手也往 `dart_eq!` 里加了一个,而它已经在 `dart_eq_identity!` 里——两个宏都发 `DartEq`,加上去就是重复实现;发现是因为先去查了它到底有没有 `DartEq` | stub **63 → 62**(掉的正是 `widgets_window_win32.rs eq`,新增 **0**);拒绝 22、可达 69、0 error;run1021 连采五次:707 行 / 类型差异 0 / 0 panic;夹具 55 个,54 AGREE + 1 个故意的红。**这一条是把 63 个桩逐个分类之后挑出来的**——分类结论见〈桩尾还剩什么〉:尾巴**不再按成因聚集**了,最集中的一个文件(`widgets_window_win32.rs`,4 个)是**四种不同成因** |
 
 ## 下一步
 
@@ -1371,6 +1371,26 @@ tear-off 记下来的函数类型和槽的函数类型不一致(名字都印成 
 `if (sameRust && !projectionDiffers && !arityDiffers)` 里面,四个条件里任何一个不成立都会静默跳过。
 
 第一层是**验证过有效的**:`dispose` 改完就找得到了,只是被第二层挡着量不出来。
+
+### 62 个桩逐个分类了(2026-09-10,ws1021 之后)
+
+**尾巴不再按成因聚集。** 最集中的一个文件是 `widgets_window_win32.rs`,4 个桩,
+而那 4 个是**四种不同成因**(ffi 分配器的 `Pointer<T>`、`Option<DynamicLibrary>` 的 `==`、
+一次 moved value、一个被拒绝的静态)。按错误码分也没有大组:E0308 有 22 个,
+但 `expected/found` 各不相同(ws1010 那次量过)。
+
+剩下的大致落进四类,**没有一类是「一条规则一轮」能做的**:
+
+| 类 | 例子 | 要什么 |
+|---|---|---|
+| **子系统** | `StreamController`(prelude 里**一个都没有**)、HTTP 客户端(`HttpClientResponse` 是空类型)、`ListBase` 的可变成员(`typed_buffer` 的 `removeRange` 在 Dart 里根本没声明,来自 `dart:collection` 的 `ListMixin`)、gzip/JSON、ffi 的写 | 各自是一个库,不是一条规则 |
+| **擦除的类型参数界** | `material_date` 的 `T extends DateTime`——`DateTime` 在这边是**结构体**,`T: DateTime` 在 Rust 里根本写不出来 | ws544 量过:带上 Dart 的界是 **+252 桩** |
+| **别名** | `foundation_collections` 那两个 E0499(`merge_sort`) | 和 11 条拒绝是**同一个决定** |
+| **多层的 coercion 追查** | tear-off 那一处(ws1019/1020/1021 三轮) | 每一层都要一趟链子;第四层的位置已经写在上面了 |
+
+**所以「桩归零」和「拒绝归零」现在指向同一件事**:先做别名/counted 那个决定
+(它一次解开 11 条拒绝 + 2 个桩),再逐个把子系统补上(stream、HTTP、codec、ffi 写、ListBase)。
+在那之前,能靠通用规则捡的已经不多了——本轮 73 → 62 里,最后几个都是一次一个。
 
 ## 桩尾还剩什么(2026-09-10,ws988 之后 74 个,逐条看过)
 
