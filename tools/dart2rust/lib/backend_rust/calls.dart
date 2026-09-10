@@ -778,7 +778,7 @@ augment class RustBackend {
             ? ''
             : '<${passed.map((a) => type(a)).join(', ')}>';
         final self = identical(owner, cls)
-            ? (_inSuperFn ? '__Self' : 'Self')
+            ? (_inSuperFn ? _superSelf : 'Self')
             : ownBinding.isEmpty
             ? owner.name
             : '${owner.name}<${owner.typeParameters.map((p) => type(ownBinding[p]!)).join(', ')}>';
@@ -913,7 +913,7 @@ augment class RustBackend {
           asTrait ??
           _throughOwnInstantiation(target, receiverClass, qualifier) ??
           (library.isAbstract(qualifier) && (target == null || target is IrThis)
-              ? '<${_inSuperFn ? '__Self' : 'Self'} as $qualifier${_traitArgsOf(qualifier)}>'
+              ? '<${_inSuperFn ? _superSelf : 'Self'} as $qualifier${_traitArgsOf(qualifier)}>'
               : _dynQualified(target, qualifier) ?? qualifier);
       // A generic method of the trait, on `this` in a trait body through
       // the qualified path: its erased twin, as the plain call goes (the

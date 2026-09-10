@@ -70,13 +70,10 @@ augment class RustBackend {
     // already a reference -- one more deref when it is the handle
     // (`_receiverOf`) -- and a closure's `__me` is a handle when the class
     // is counted, a value otherwise (510 `Rc<X>: Trait` bounds at ws294).
-    final receiver = _selfName == 'self'
-        ? (_selfIsHandle ? '&**self' : 'self')
-        : _selfName == 'this_'
-        ? 'this_'
-        : cls.counted
-        ? '&*$_selfName'
-        : '&$_selfName';
+    // The super function takes `&dyn Base` now (`_emitSuperFnBody`), and the
+    // borrow comes from the base trait's own `dart_as_` -- method resolution
+    // derefs whatever `this` is here (a `&Self`, an `Rc<Self>` handle, a
+    // closure's `__me`) to find it.
     // The base's type arguments spelled: a class implementing the trait
     // at two instantiations (`Animation<f64>` and the wider `Animation<
     // Option<f64>>`) left `T` ambiguous (E0283, 3 at ws451). The method's
@@ -84,12 +81,24 @@ augment class RustBackend {
     final method = baseClass.methods.firstWhere(
       (m) => m.name == name && !m.isStatic && m.isSetter == isSetter,
     );
+    final baseDyn = _superTakesDyn(baseClass, method);
+    final receiver = baseDyn
+        ? '$_selfName.dart_as_${snakeRaw(base)}()'
+        : _selfName == 'self'
+        ? (_selfIsHandle ? '&**self' : 'self')
+        : _selfName == 'this_'
+        ? 'this_'
+        : cls.counted
+        ? '&*$_selfName'
+        : '&$_selfName';
     final own = typeArguments.length == method.typeParameters.length
         ? typeArguments.map(type).toList()
         : List.filled(method.typeParameters.length, '_');
+    // No leading `_`: `__Self` is gone from the super function's generics.
+    final spelledArgs = [if (!baseDyn) '_', ...baseArguments.map(type), ...own];
     final turbofish = baseArguments.isEmpty && own.every((a) => a == '_')
         ? ''
-        : '::<_${[...baseArguments.map(type), ...own].map((a) => ', $a').join()}>';
+        : '::<${spelledArgs.join(', ')}>';
     RustBackend.namedElsewhere
       ..add(base)
       ..add(superFn(base, name, isSetter: isSetter));
@@ -447,7 +456,6 @@ augment class RustBackend {
         ? expr(receiver)
         : '${expr(receiver)}.dart_cast_to::<dyn $castSpelled>().unwrap()';
     final generics = [
-      '_',
       for (var i = 0; i < classArity; i++) '_',
       ...typeArguments.map(type),
     ];
@@ -460,7 +468,8 @@ augment class RustBackend {
     RustBackend.namedElsewhere
       ..add(base)
       ..add(superFn(base, name));
-    return '${superFn(base, name)}::<${generics.join(', ')}>'
-        '(${['&*$on', ...args.map(expr)].join(', ')})$suffix';
+    final spelled = generics.isEmpty ? '' : '::<${generics.join(', ')}>';
+    return '${superFn(base, name)}$spelled'
+        '(${['$on.dart_as_${snakeRaw(base)}()', ...args.map(expr)].join(', ')})$suffix';
   }
 }

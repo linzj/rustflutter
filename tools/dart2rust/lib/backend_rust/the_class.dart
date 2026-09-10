@@ -456,6 +456,15 @@ augment class RustBackend {
     _line(
       'fn dart_self_${snakeRaw(cls.name)}(&self) -> std::rc::Rc<dyn ${cls.name}${_useArguments(cls)}>;',
     );
+    // ..and as a *borrow*, which is what a super function takes now that its
+    // body is written once against `&dyn Trait` rather than monomorphised
+    // per implementer (`_emitSuperFnBody`). A trait default cannot unsize
+    // its own `&self` -- `Self` is `?Sized` there -- and the `Rc` twin above
+    // would cost a refcount round trip on every super call. This is a
+    // vtable slot and nothing else.
+    _line(
+      'fn dart_as_${snakeRaw(cls.name)}(&self) -> &(dyn ${cls.name}${_useArguments(cls)} + \'static);',
+    );
     _line('');
     for (final method in cls.abstractMethods) {
       _member('${cls.name}.${method.name} (required)', () {
@@ -488,14 +497,21 @@ augment class RustBackend {
           // boxed here, borrowing `self` for the `'_` the signature allows.
           // The trait's own parameters spelled, so a class implementing
           // it at two instantiations is not ambiguous (ws451).
-          final spelled = [
-            if (cls.typeParameters.isNotEmpty ||
-                method.typeParameters.isNotEmpty)
-              '::<_${[...cls.typeParameters, ...method.typeParameters].map((p) => ', $p').join()}>',
-          ].join();
+          // No leading `_`: the super function is not generic over `__Self`
+          // any more, it takes `&dyn Trait` (`_emitSuperFnBody`). A default
+          // cannot unsize its own `&self` -- `Self` is `?Sized` in a trait --
+          // so it hands over the borrow the trait declares for exactly this.
+          final own = [...cls.typeParameters, ...method.typeParameters];
+          final dyn = _superTakesDyn(cls, method);
+          final spelled = dyn
+              ? (own.isEmpty ? '' : '::<${own.join(', ')}>')
+              : '::<_${own.map((p) => ', $p').join()}>';
+          final receiver = dyn
+              ? 'self.dart_as_${snakeRaw(cls.name)}()'
+              : 'self';
           final call =
               '${superFn(cls.name, method.name, isSetter: method.isSetter)}$spelled('
-              '${['self', ...method.params.map((p) => snake(p.name))].join(', ')})';
+              '${[receiver, ...method.params.map((p) => snake(p.name))].join(', ')})';
           // An async super function is a future, not a `Result`: the
           // trait default returns it in `Ok`.
           _line(method.isAsync && _resultModel ? 'Ok($call)' : call);

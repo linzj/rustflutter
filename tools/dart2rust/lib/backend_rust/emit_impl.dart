@@ -122,6 +122,13 @@ augment class RustBackend {
     _indent--;
     _line('}');
     _line('');
+    // ..and the borrow the super functions take. `Self` is concrete here, so
+    // this is just the unsizing coercion, written once per implementer
+    // instead of a whole method body per implementer.
+    _line(
+      'fn dart_as_${snakeRaw(base.name)}(&self) -> &(dyn ${base.name}$arguments + \'static) { self }',
+    );
+    _line('');
     // A field and a method of the same name are one item in Rust. A mixin
     // routinely has both -- `Ticker? _ticker;` beside a getter that reads it --
     // and emitting the accessor as well as the method put two `fn _ticker` in

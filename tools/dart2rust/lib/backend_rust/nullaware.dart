@@ -235,7 +235,7 @@ augment class RustBackend {
       return trait;
     }
     final args = _baseArguments(base) ?? '';
-    final self = _inSuperFn ? '__Self' : 'Self';
+    final self = _inSuperFn ? _superSelf : 'Self';
     return '<$self as $trait$args>';
   }
 

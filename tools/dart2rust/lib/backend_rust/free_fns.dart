@@ -217,11 +217,14 @@ augment class RustBackend {
     final erased = method.typeParameters
         .map((_) => 'std::rc::Rc<dyn Object>')
         .join(', ');
-    final spelled =
-        '::<Self${[...cls.typeParameters].map((p) => ', $p').join()}, $erased>';
+    final dyn = _superTakesDyn(cls, method);
+    final spelled = dyn
+        ? '::<${[...cls.typeParameters, erased].join(', ')}>'
+        : '::<Self${[...cls.typeParameters].map((p) => ', $p').join()}, $erased>';
+    final receiver = dyn ? 'self.dart_as_${snakeRaw(cls.name)}()' : 'self';
     final call =
         '${superFn(cls.name, method.name, isSetter: method.isSetter)}$spelled('
-        '${['self', ...method.params.map((p) => snake(p.name))].join(', ')})';
+        '${[receiver, ...method.params.map((p) => snake(p.name))].join(', ')})';
     _line(method.isAsync && _resultModel ? 'Ok($call)' : call);
     _indent--;
     _line('}');
@@ -302,6 +305,47 @@ augment class RustBackend {
   /// closure, E0411, run459).
   var _inSuperFn = false;
 
+  /// How `this`'s *type* is spelled inside the super function being written.
+  ///
+  /// `dyn Trait` where the body is written once against a trait object, and
+  /// `__Self` where it still has to be generic -- a super call inside it
+  /// reaches a trait this one is not below, and a bound like that cannot be
+  /// put on a `dyn` (3 of 10,292 super functions at ws975).
+  ///
+  /// Rust has no `super`, so a base method's body became a free function
+  /// generic over `__Self` and was monomorphised once per implementer:
+  /// 31,406 instances of 3,031 bodies, 24.0 MB of a 130 MB `.text`, 21.7 MB
+  /// of it byte-identical duplicates. `&dyn Trait` writes each body once.
+  /// The body's calls on `this_` become vtable calls, which is what Dart
+  /// does with them anyway.
+  var _superSelf = '__Self';
+
+  /// Whether `owner`'s super function for `method` takes `&dyn owner` rather
+  /// than a `__Self` it is generic over.
+  ///
+  /// Recomputed from the IR rather than remembered from the emission: a call
+  /// site is often in another module, and the callee's class may not have
+  /// been written yet. The same walk the signature itself uses, so the two
+  /// cannot drift -- and they must not, because a turbofish with one
+  /// argument too many is "takes 0 generic arguments but 1 was supplied"
+  /// (28 of those at the second ws975 reading).
+  static final _superDyn = <IrMethod, bool>{};
+
+  bool _superTakesDyn(IrClass owner, IrMethod method) =>
+      _superDyn.putIfAbsent(method, () {
+        if (method.isStatic) return false;
+        final reached = _WalkSelf()..statement(method.body);
+        for (final base in reached.superBases.keys) {
+          if (base != owner.name &&
+              base != 'Object' &&
+              _world.isTrait(base) &&
+              !_world.isBelow(owner.name, base)) {
+            return false;
+          }
+        }
+        return true;
+      });
+
   void _emitSuperFn(IrMethod method) {
     final wasSuperFn = _inSuperFn;
     _inSuperFn = true;
@@ -317,13 +361,39 @@ augment class RustBackend {
       _line('');
       _line('/// The body of `${cls.name}.${method.name}`, reachable from an');
       _line('/// override the way Dart\'s `super.${method.name}` is.');
+      // Which traits a `super` call inside reaches decides whether this body
+      // can be written against a trait object at all, and `this_`'s type is
+      // spelled before the signature is, so it is answered first.
+      final reached = _WalkSelf()..statement(method.body);
+      final beyond = [
+        for (final MapEntry(key: base, value: arguments)
+            in reached.superBases.entries)
+          if (base != cls.name &&
+              base != 'Object' &&
+              _world.isTrait(base) &&
+              !_world.isBelow(cls.name, base))
+            '$base${arguments.isEmpty ? _traitArgsOf(base) : '<${arguments.map(type).join(', ')}>'}',
+      ];
+      final wasSuperSelf = _superSelf;
+      // The signature and every call site ask the same question, so they
+      // cannot drift (`_superTakesDyn`).
+      assert(beyond.isEmpty == _superTakesDyn(cls, method));
+      // `+ 'static` on the *object*, not on the borrow: the bodies make
+      // `Rc<dyn Trait>` handles and `'static` closures out of `this_`, which
+      // is what the old `__Self: .. + 'static` bound was carrying. Written
+      // `+ '_` the object's lifetime followed the borrow and every trait
+      // default was "borrowed data escapes outside of method" (E0521, 154 of
+      // 168 at the first ws975 reading).
+      _superSelf = beyond.isEmpty
+          ? "(dyn ${cls.name}${_generics(cls)} + 'static)"
+          : '__Self';
       final params = [
         // The body writes fields through `this_` when the method is one of
         // this class's mutating ones (or the trait's, for every class).
         // `&__Self` always: a write to a field in here goes through the
         // setter the trait declares, on `&self` (typed_data, 7 mismatches
         // once the trait's defaults went back to `&self`).
-        'this_: &__Self',
+        'this_: &$_superSelf',
         ...method.params.map(
           // `mut` when the body assigns it (`start = index + 1` in a loop).
           // A lent place (`IrParam.mutRef`) as the trait declares it.
@@ -337,22 +407,21 @@ augment class RustBackend {
       // to the previous mixin of the application (`_realOwner`), which
       // its `on` clause never named (`SchedulerBinding`'s reaching
       // `GestureBinding`'s, 3 stubs on the start path at run448).
-      final reached = _WalkSelf()..statement(method.body);
-      final beyond = [
-        for (final MapEntry(key: base, value: arguments)
-            in reached.superBases.entries)
-          if (base != cls.name &&
-              base != 'Object' &&
-              _world.isTrait(base) &&
-              !_world.isBelow(cls.name, base))
-            '$base${arguments.isEmpty ? _traitArgsOf(base) : '<${arguments.map(type).join(', ')}>'}',
-      ];
       final superBounds = [for (final b in beyond) ' + $b'].join();
-      final generics =
-          '<__Self: ${cls.name}${_generics(cls)}$superBounds + ?Sized + \'static'
-          '${cls.typeParameters.isEmpty ? '' : ', ${cls.typeParameters.map((p) => "$p: Clone${_nbp(cls, p)} + 'static").join(', ')}'}'
-          '${method.typeParameters.isEmpty ? '' : ', ${method.typeParameters.map((p) => "$p: Clone${_nbm(method)} + 'static").join(', ')}'}'
-          '>';
+      // The body is written against a trait object unless a super call
+      // inside it needs `__Self` to be something more (`beyond`), which no
+      // `dyn` can say.
+      final ownParams = [
+        ...cls.typeParameters.map((p) => "$p: Clone${_nbp(cls, p)} + 'static"),
+        ...method.typeParameters.map(
+          (p) => "$p: Clone${_nbm(method)} + 'static",
+        ),
+      ];
+      final generics = beyond.isEmpty
+          ? (ownParams.isEmpty ? '' : '<${ownParams.join(', ')}>')
+          : '<__Self: ${cls.name}${_generics(cls)}$superBounds + ?Sized + \'static'
+                '${ownParams.isEmpty ? '' : ', ${ownParams.join(', ')}'}'
+                '>';
       final name = superFn(cls.name, method.name, isSetter: method.isSetter);
       if (method.isAsync) {
         // The wrapper holds the object through the trait's own handle
@@ -366,8 +435,17 @@ augment class RustBackend {
             'let __self = this_.dart_self_${snakeRaw(cls.name)}();',
             '&*__self',
           ),
-          turbofish:
-              '::<_${cls.typeParameters.isEmpty ? '' : ', ${cls.typeParameters.join(', ')}'}${method.typeParameters.isEmpty ? '' : ', ${method.typeParameters.join(', ')}'}>',
+          // No leading `_` where the body is not generic over `__Self` any
+          // more (`_superSelf`). The async wrapper was the fourth turbofish
+          // site and the one I missed: 28 "takes 0 generic arguments but 1
+          // was supplied" at the second ws975 reading.
+          turbofish: () {
+            final own = [...cls.typeParameters, ...method.typeParameters];
+            if (beyond.isNotEmpty) {
+              return '::<_${own.isEmpty ? '' : ', ${own.join(', ')}'}>';
+            }
+            return own.isEmpty ? '' : '::<${own.join(', ')}>';
+          }(),
         );
         _line('');
       }
@@ -415,6 +493,7 @@ augment class RustBackend {
       _selfName = 'self';
       _indent--;
       _line('}');
+      _superSelf = wasSuperSelf;
       // Recorded only now: a refusal above rolls the function back, and a
       // bound for a function that was not written is a promise nothing asks
       // for. See `_superBoundTraits`.
