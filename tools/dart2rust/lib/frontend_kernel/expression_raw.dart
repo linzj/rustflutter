@@ -51,6 +51,14 @@ augment class KernelFrontend {
   /// One run of `_expressionRaw`; null for a node it does not answer for.
   IrExpr? _rawReadOrInvoke(Expression node) {
     if (node is VariableGet) {
+      if (Platform.environment['DART2RUST_TRACE_PROMOTED'] ==
+          (_member?.name.text ?? '')) {
+        stderr.writeln(
+          'TRACE_PROMOTED ${node.variable.cosmeticName} '
+          'declared=${node.variable.type} '
+          'promoted=${node.promotedType}',
+        );
+      }
       // `cosmeticName` is Kernel's word for the name a human wrote; a variable
       // the CFE invented has none, and one whose name starts with `#` is a
       // temporary from its own lowering.
@@ -150,6 +158,15 @@ augment class KernelFrontend {
       // read is a downcast. Promotion to the *same* class (nullable to
       // non-null) is not.
       var promoted = node.promotedType;
+      // Promoting a local whose declared type is a *type parameter* gives
+      // an intersection, not a type: `if (v is double)` on a `T v` reads
+      // `T & double`, and the branches below -- written for an
+      // `InterfaceType`, a `TypeParameterType`, a `FunctionType` -- match
+      // none of it, so the read went in as a bare `T`
+      // (`IterableProperty.valueToString`, whose `debugFormatDouble(v)`
+      // wanted an `f64`). What the promotion *says it now is* is the
+      // right-hand side.
+      if (promoted is IntersectionType) promoted = promoted.right;
       // ..a copy's parameter as its declaration types it (`ChildType?`,
       // the bound here) rather than as the copy does (`RenderBox?`).
       final declared = declaredAs ?? node.variable.type;
