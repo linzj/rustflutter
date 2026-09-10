@@ -514,7 +514,7 @@ augment class RustBackend {
   /// `borrow_mut()`, and through a promoted read (`_sizes!.add(..)`,
   /// `_sizes![k] = v`) the value inside it (`as_mut().unwrap()`); null
   /// when the target has no such place (the nullmut fixture, ws577).
-  String? _mutPlace(IrExpr? target) {
+  String? _mutPlace(IrExpr? target, {bool anyHeld = false}) {
     // A read's clone is the place it read.
     if (target is IrCall &&
         target.name == 'clone' &&
@@ -558,7 +558,7 @@ augment class RustBackend {
       }
       return null;
     }
-    final cell = _cellPlace(target);
+    final cell = _cellPlace(target, anyHeld: anyHeld);
     if (cell == null) return null;
     // A `late` field's cell holds an `Option`: the value inside it
     // (`ObserverList._set.clear()`, ws577).
@@ -694,7 +694,33 @@ augment class RustBackend {
 
   /// The cell a field read would go through, as a place -- `self.x` or
   /// `other.x` -- when the field is kept in a `RefCell`; null otherwise.
-  String? _cellPlace(IrExpr? target) {
+  /// Whether the method `name` on a receiver of type `holder` is one this
+  /// compiler gives `&mut self`.
+  ///
+  /// The question `_mutatesInPlace` approximates by name, answered instead
+  /// from the callee's own declaration -- the same two tests `_receiverOf`
+  /// makes for the class being emitted, asked about another class: a
+  /// counted class takes `&self` because its fields are in cells, and
+  /// otherwise the receiver is `&mut self` exactly when the method writes a
+  /// field (`_mutating`) or shares a trait signature with one that does.
+  ///
+  /// This is what lets a `?.` on a cell field tell `dragEnd`, which mutates
+  /// the controller, from `reverse` on a held `AnimationController`, which
+  /// does not mutate the cell -- the distinction the collection test in
+  /// `_cellPlace` was standing in for.
+  bool _mutatesSelf(IrType? holder, String name) {
+    if (holder == null) return false;
+    final other = library[holder.name];
+    if (other == null || other.counted) return false;
+    final method = other.methods
+        .where((m) => m.name == name && !m.isStatic)
+        .firstOrNull;
+    if (method == null) return false;
+    return _sharedMutation(method) ||
+        _mutatingOf(other).contains(_rustName(method));
+  }
+
+  String? _cellPlace(IrExpr? target, {bool anyHeld = false}) {
     // A local in a cell (`IrLocalDecl.cell`: captured and changed in a
     // closure): the cell itself, whose `borrow_mut()` the call takes. The
     // value read cloned it and `seen.add(..)` pushed into the clone (the
@@ -825,8 +851,14 @@ augment class RustBackend {
     // alias of its `Vec` and spelled by name, and `WriteBuffer._add`'s
     // `_buffer[i] = b` went into a clone -- every platform message was
     // 35 zero bytes (run512).
+    // ..unless the caller has already established that the *callee* takes
+    // `&mut self`. The collection test stands in for that question, because
+    // the gate above it is a name test and `reverse` on a held
+    // `AnimationController` is the controller's method rather than
+    // `Vec::reverse`. Where the callee is known, the stand-in is not needed,
+    // and refusing here is what left `x?.dragEnd(0)` with no place at all.
     final held = _heldType(cell);
-    if (!_isMutableCollection(held)) return null;
+    if (!anyHeld && !_isMutableCollection(held)) return null;
     final holder = base == null || base is IrThis ? _selfName : expr(base);
     return '$holder.${snake(target.name)}';
   }

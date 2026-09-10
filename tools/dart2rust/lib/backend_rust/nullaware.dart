@@ -45,7 +45,27 @@ augment class RustBackend {
           body.target is IrBound &&
           _mutatesInPlace(body.name) &&
           !scalar;
-      final cellPlace = mutating ? _mutPlace(receiver) : null;
+      // ..and a call whose *callee* takes `&mut self`, which the name test
+      // above cannot see. `x?.dragEnd(0)` on a field held in a cell had no
+      // place at all: the gate said "not a collection mutator" and
+      // `_cellPlace` said "the cell does not hold a collection", each
+      // standing in for the question the other was supposed to answer.
+      // Asked of the callee directly, both stand-ins fall away.
+      //
+      // Through the cell's `borrow_mut()`, which is already a `&mut`: ws984
+      // went through a local binding instead and needed a second half to
+      // put `mut` on it, and 57 stubs came of the half that was missing.
+      final calleeMutates =
+          !mutating &&
+          body is IrCall &&
+          body.target is IrBound &&
+          !scalar &&
+          _mutatesSelf(receiver.rustType, body.name);
+      final cellPlace = mutating
+          ? _mutPlace(receiver)
+          : calleeMutates
+          ? _mutPlace(receiver, anyHeld: true)
+          : null;
       final ownPlace =
           mutating &&
               cellPlace == null &&
