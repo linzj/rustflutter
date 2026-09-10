@@ -1028,7 +1028,44 @@ ws344 才照到它,一量 26199 个,削到 782。
 后端某个 scope 自己的还原,而守卫要到成员结束才跑。今天没有这种写法;
 真出现了,后端那些 scope 就得**同时**有 `try/finally`,而不是二选一。
 
-## Object 协议第二版:第 0 步过了,第 1 步的前提不成立(2026-09-10)
+## Object 协议第二版:第 0/1 步过了,第 2 步量到红,撤回(2026-09-10)
+
+**第 2 步试过一次,六趟链子,撤回。** 最后一趟:**可达 crate 69 → 23、29 个无法打桩的错误**。
+读数轨迹(每一趟的成因都不一样,都是从输出里读出来的,不是猜的):
+
+| 趟 | 桩 | 新增 | 成因 |
+|---|---|---|---|
+| 1 | 618 | — | prelude 里有 4 处签名把错误位**写死**成 `Result<.., std::rc::Rc<dyn Object>>` 而不是 `DartError`(`dart_native`、`dart_native_as` 那种;行很长,值类型里带 `>`,一开始的正则没匹配到) |
+| 2 | 300 | 227 | `flattening.dart` 判断「这个抛出的值要不要装箱」是拿 `_failure` **和字面量字符串比**;错误类型一改,比较就false,`throw AssertionError(..)` 不再装箱 |
+| 3 | 300 | 227 | 装箱回来了,但走的是 `dart_boxed`,它**返回 `Rc<dyn Object>`**。加了个兄弟 `dart_thrown -> DartError`(不改 `dart_boxed`,否则每个值槽都要 upcast) |
+| 4 | 104 | 31 | 抛出路径里还有一处 `as std::rc::Rc<dyn Object>` 的**显式转换** |
+| 5 | 103 | 30 | 改了那处,只掉 1 个——**剩下的来自 `IrUpcast` 的 explicit 分支**,它拼的是 `type(IrType('Object'))` |
+| 6 | 121 | 112 | **把类型表整个换成 `Rc<dyn DartAny>`**(计划本来就是这么说的)→ **可达 crate 23**,撤回 |
+
+**最要紧的结构性发现,也是「一次翻,不拆」真正的理由:**
+**IR 里错误槽和值槽拼法完全一样,都是 `Object`。** 所以**错误位根本没法单独搬**——
+抛出路径上的 `IrUpcast` 和普通值的 upcast 是同一条路。计划 §8 那句「一次翻,不拆」
+说的就是这个,我当成了「整洁些比较好」的建议,花了六趟链子才把它读懂。
+
+**`Rc<dyn Object>` 被当字面量写死的地方(六处,下次直接照着改):**
+`prelude.dart` 的 `DartError` typedef;prelude 里 4 处 `Result<..., Rc<dyn Object>>` 签名;
+`dart_error_text`/`complete_error`(而 `dart_message` **不能**跟着改,它收的是普通对象,改了会断 4 个调用点);
+`dart_boxed` 的返回类型;`backend_rust/failure.dart` 的 `_error`;
+`flattening.dart` 里两处(装箱判据的字面量比较、抛出的显式 `as`);
+`backend_rust.dart:539` 的类型表。
+另外 `dyn DartAny` 需要自己的 `impl fmt::Debug`。
+
+**还需要什么(第 6 趟露出来的):** 值槽换成 `Rc<dyn DartAny>` 之后,
+prelude 里收 `Rc<dyn Object>` 值的那些函数全都对不上了(`listen_below` 那一片 E0308/E0277/E0631)。
+**那一半没做**——要么给它们也换,要么在边界上 upcast。下次从这里起,别再从错误位起。
+
+**好消息:prelude 那一侧很浅。** 只把 `DartError` 换成 `Rc<dyn DartAny>`,prelude 单独编,
+一开始 6 个错,补完就 **0 error**——对比第一版(拿掉毯式)是 **161 个错、117 个类型**。
+第 0 步(`1903dc54`)和第 1 步(`20ddbb50`)都还站着。
+
+### 原来的记录(第 0/1 步)
+
+#### Object 协议第二版:第 0 步过了,第 1 步的前提不成立(2026-09-10)
 
 `/tmp/work.md` 换成了第二版:**不动毯式 impl**,改的是**手柄的类型**——
 翻译代码里的 `Rc<dyn Object>` 换成 `Rc<dyn DartAny>`。`DartAny: Object + 'static`,
