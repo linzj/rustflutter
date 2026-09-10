@@ -205,9 +205,28 @@ augment class RustBackend {
       // Harmless where nothing needs it: `Or` is an associated type every
       // `DartNullable` has, so the clause is satisfiable wherever the
       // parameter's own `PartialEq` is.
+      // Every projected field's *base*, which is not always a type
+      // parameter: `IterableProperty<T>._value` is
+      // `<Rc<dyn DartIterable<T>> as DartNullable>::Or`, and it is that
+      // whole handle whose `Or` has to be `PartialEq`.
+      final projected = {
+        for (final f in _allFields(cls))
+          if (f.type.projected)
+            type(IrType(f.type.name, arguments: f.type.arguments)),
+      };
       final bounds = cls.typeParameters.isEmpty
           ? ''
-          : ' where ${[for (final p in cls.typeParameters) '$p: PartialEq', for (final p in cls.typeParameters) '<$p as DartNullable>::Or: PartialEq'].join(', ')}';
+          : ' where ${{
+              for (final p in cls.typeParameters) '$p: PartialEq',
+              // ..and for every parameter, not only the ones this class
+              // holds projected itself: a field can merely *hold* a generic
+              // whose own `PartialEq` asks for it. `_MenuItem<T>` holds an
+              // `Option<DropdownMenuItem<T>>`, and that wants
+              // `<T as DartNullable>::Or: PartialEq` while none of
+              // `_MenuItem`'s own fields is projected (E0369, ws979).
+              for (final p in cls.typeParameters) '<$p as DartNullable>::Or: PartialEq',
+              for (final p in projected) '<$p as DartNullable>::Or: PartialEq',
+            }.join(', ')}';
       _line(
         'impl${_implGenerics(cls)} PartialEq for ${cls.name}${_generics(cls)}$bounds {',
       );
