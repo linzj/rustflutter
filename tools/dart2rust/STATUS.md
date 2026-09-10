@@ -1014,6 +1014,42 @@ ws344 才照到它,一量 26199 个,削到 782。
 后端某个 scope 自己的还原,而守卫要到成员结束才跑。今天没有这种写法;
 真出现了,后端那些 scope 就得**同时**有 `try/finally`,而不是二选一。
 
+## 拒绝归零要什么(2026-09-10,量出来的,不是估的)
+
+29 条拒绝按**日志里自己写的理由**分组(不是印象):
+
+| 根因 | 条数 | 归零要什么 |
+|---|---|---|
+| `dart:ffi` / win32 | 11 | 读的那一半能做,**写的那一半做不了**(见下) |
+| `identical` 落在不是引用的东西上 | 5 | 值类没有身份 → **别名/counted 那个工程**(ws437 量过 **+901 桩**) |
+| 动态派发(`DynamicGet`/`DynamicInvocation`) | 4 | 真的按名字派发。**「名字在闭世界里只有一个声明者」只能解决 33 处里的 1 处**(量过:`slug` 有 2 个声明者,`toJson` 有 18 个) |
+| `const GZipCodec` / `const JsonEncoder` | 3 | 真的 gzip 和 JSON 编码器——一个库,不是一条规则 |
+| `super` 进 `Object` 的 `==`/`hashCode` | 2 | **不要动。ws985 量过:改了就是把一个对的拒绝换成一个错答案** |
+| 零散(`runZonedGuarded`、`identityHashCode`、`is HttpException`、一处 super 进没翻译的类) | 4 | 各自独立 |
+
+**ffi 那 11 条卡在同一个地方,而且和 `merge_sort` 那 2 个桩是同一个地方。**
+CFE 把一个 `Struct` 子类摊成:两个字段(`_Compound._typedDataBase`、`_offsetInBytes`)、
+一个 `#fromTypedDataBase` 构造器、以及一组 `_loadInt64(this._typedDataBase, X#offsetOf + this._offsetInBytes)` 的存取器。
+`#sizeOf` / `#offsetOf` **已经翻得出来**(所以 `_abi()` 是通的),
+字段和构造器有现成的一般机制可以照抄(`ByteStream extends StreamView` 那条:
+「prelude 的基类没有结构体可摊,子类就自己带上它本该继承的字段,并且没有 Rust 超类」)。
+**但 `Uint8List` 在这边是 `Vec<u8>`,一个值。** `_storeInt64(this._typedDataBase, ..)` 改的是一份拷贝,
+后面那次 `_loadInt64` 看不见——**读能做,写不能做**。
+
+所以真正的路只有四条,而且**第一条同时挡着三处**:
+
+1. **别名的决定**(`List`/typed data 从值变成共享可变的对象)。挡着:ffi 的写路径、
+   `merge_sort` 那 2 个桩(Dart 把同一个 list 同时当源和目标传进去,两个 `&mut` 表达不了)、
+   以及 5 条 `identical`。STATUS 早就写过这个改动**要靠语义立论、不能靠性能**(ws911 那三个数)。
+2. **ffi 的回调蹦床 + 一个分配器**(`_createNativeCallableIsolateLocal`、`calloc`)。
+3. **gzip / JSON 编码器**。
+4. **按名字的动态派发**。
+
+**还有一条必须说清楚:「拒绝归零」按字面讲是达不到的。** 已经证明有 2 条(`super` 进 `Object`)
+**今天就是对的**——`cc88ae36` 说 29 条里约 7 条属于这一类,ws985 把其中 2 条钉死了。
+把它们「清掉」等于让编译器开始说假话。要么这 2 条(以及另外那几条)留着,
+要么先做完第 1 条,让它们不再是对的。
+
 ## 已知欠账
 
 **(2026-09-10)这一节的出场规则。** 三次压缩都只压尺寸、没定出场条件,于是 1266 行
