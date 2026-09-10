@@ -1059,6 +1059,33 @@ ws344 才照到它,一量 26199 个,削到 782。
 prelude 里收 `Rc<dyn Object>` 值的那些函数全都对不上了(`listen_below` 那一片 E0308/E0277/E0631)。
 **那一半没做**——要么给它们也换,要么在边界上 upcast。下次从这里起,别再从错误位起。
 
+**第二次尝试(整体换,不再只动错误位)——也撤回了。** 读数:
+
+| 趟 | 桩 | 新增 | 可达 crate | 成因 |
+|---|---|---|---|---|
+| 7 | 788 | 783 | **4** | 后端**自己发出来的 trait impl** 里把 `Rc<dyn Object>` 写死了(`from_answer`、`from_dynamic`),和换过的 trait 声明对不上(446 个 E0053) |
+| 8 | 1494 | 1421 | 69 | 把后端那 25 处**发射出去的**字面量也换掉(7 处是**比较**,没动)。crate 回来了,桩爆了 |
+
+**所以第 2 步一共试了八趟,两次撤回。** 但 prelude 那一侧的结论**更强了**:
+**整体换**(`Rc<dyn Object>` → `Rc<dyn DartAny>`,只留 `TypeId::of` / `for dyn Object` / `impl Object` 那几行)
+prelude 单独编**只要 5 处改动、0 error**:
+`impl fmt::Debug for dyn DartAny`、`impl PartialEq for dyn DartAny`、`impl DartEq for dyn DartAny`、
+`dart_boxed` 改成 `dart_cast_to::<dyn DartAny>`、`JsonCodec::encode` 和 `JsonUtf8Encoder::convert` 补 `DartAny` 界。
+(对比第一版拿掉毯式:**161 个错、117 个类型**。)
+
+**`Rc<dyn Object>` 被当字面量写死的地方,七层,每一层都要等上一层修好才露出来:**
+(1) prelude 的 4 处 `Result<.., Rc<dyn Object>>` 签名;(2) `flattening.dart` 装箱判据的字面量比较;
+(3) `dart_boxed` 的返回类型;(4) 抛出路径里显式的 `as Rc<dyn Object>`;
+(5) `IrUpcast` 的 explicit 分支(**错误槽和值槽在这里分不开**);(6) `backend_rust.dart:539` 的类型表;
+(7) **后端发射的 trait impl**(`from_answer`/`from_dynamic` 那些)。
+后端里还有 **7 处是拿这个拼法做*比较*的**(`_failure == '..'`、`rendered == '..'`),
+**那几处不能跟着换**,换了就是把判断改坏。
+
+**下次要做,先解决「1421 个新桩」那一层**——第 8 趟 crate 是好的、`cargo check` 0 error,
+说明类型这一层通了,炸的是**生成代码里那些拿 `Rc<dyn Object>` 当值传来传去的地方**。
+建议:别再一层层试;先写个探针,把生成代码里 `Rc<dyn Object>` 出现的**位置种类**数一遍
+(值槽 / 错误槽 / trait impl 签名 / 显式 cast),照单子一次改完。
+
 **好消息:prelude 那一侧很浅。** 只把 `DartError` 换成 `Rc<dyn DartAny>`,prelude 单独编,
 一开始 6 个错,补完就 **0 error**——对比第一版(拿掉毯式)是 **161 个错、117 个类型**。
 第 0 步(`1903dc54`)和第 1 步(`20ddbb50`)都还站着。
