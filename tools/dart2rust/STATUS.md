@@ -1441,6 +1441,42 @@ The trait now declares `iterator` (the front end, from
 implementor has an `iterator` of its own, so the impl forwards it like any
 other trait method.
 
+## 常量聚合的普查(2026-09-10)
+
+「常量数据被写成了代码」这件事,此前只从二进制符号反推过(`15.3 MB / ~67 个函数`)。
+`lib/aggregates.dart` 从 IR 数了一遍,`bin/aggregate_census.dart` 是它的普查。
+**不改代码生成**——链子里没有任何文件 import 它们,所以尺子一格没动,也没有重跑。
+
+**数据构造器**:只把参数、常量默认值、别的数据构造器写进字段。**2666 / 4029(66.2%)**,
+5 轮收敛。有两件事不对就一个也数不出来:
+
+- **不动点要跑遍整个 component,不是被翻译的那些库。** super 链的尽头是 `dart:core`
+  的 `Object`;只问被翻译的库,3214 个构造器**全部**出局,2594 个的理由是
+  「看不见的 super」。什么会被翻译、数据构造器能够到什么,是两个问题。
+- **在两个数据之间挑一个,仍然是搬数据。** `TextSpan.mouseCursor` 是
+  `let #0 = mouseCursor in recognizer == null ? const _DeferringMouseCursor{} : const SystemMouseCursor{kind:"click"}`,
+  就这一个字段,让 `TextSpan`——全程序 45,732 次构造——不合格。`EqualsNull` 是空检查
+  不是 `operator ==`,所以 `EqualsCall` 不在放行之列。
+
+**对上了的:** `code_segments.dart` **63 棵树、45,732 次构造**,和反汇编数出来的
+`TextSpan::new` 次数**一模一样**。63 棵**共用一个形状**
+`TextSpan(children:[TextSpan(style:I,text:L)])`——「63 个函数共用 1 个 builder」由 IR 证实;
+每棵 **6–8 个**互不相同的不变量读,正好是那个 `u8` 列。
+
+**改掉的成本模型:按构造次数算钱,最多错 8 倍。** `raw_keyboard_android` 是
+1003 次构造、35 KB;`dateSymbols` 是 98 次构造、1.16 MB。对着 `nm -S` 拟合出来是
+**215 B/构造 + 85 B/字符串叶 + 2 B/标量叶**——一个字符串叶就是一次 `to_string()`,
+一次分配加一次存。一个 span 是 1 构造 + 1 字符串 + 1 标量 = 302 B,对上了指令直方图
+数出来的 304 B。**所以阈值要落在字符串叶上,不是构造次数上**:N=200 时
+**62 棵树**占全部字符串叶的 **85.8%**,投影 15.26 MB,其中 **15.13 MB 是量出来的、
+不是外推的**。拟合在能对账的地方站得住(三个大模块 1.00 / 1.04 / 1.15),
+在 60 KB 以下的模块**高估 2–4 倍**(rustc 把小树折成了静态量),
+所以全程序那个 **20.93 MB 是上界,只有它的头部算证据**。
+
+**另外两条:** `dateSymbols` 一棵树 **0 个不变量**——纯常量,不需要对 getter 做任何判断,
+而它一个成员就是 1.16 MB。出局理由的长尾是「看不见的 super」545 条、
+「字段初始化式在算」523 条;普查同时说了,头部之外的收益不大,所以现在不值得再放宽。
+
 ## The census on stubs786.txt.detail.txt
 
 256 blocks, grouped by normalised expected/found: 108 E0308, 50 E0599,
