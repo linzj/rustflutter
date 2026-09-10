@@ -108,6 +108,39 @@ const mutatingThisFieldNames = {
 /// a list.
 const mutatingListNames = {...mutatingSequenceNames, 'length'};
 
+/// Which positional argument of a list member is an *element*.
+///
+/// An element handed to one of these has to go into the list's element type
+/// rather than stay as the body spelled it: the prelude takes a `T` or a
+/// `&T`, which is a type parameter and coerces nothing, so nothing else
+/// converts on the way in. A `Disposer` into a `List<Disposer?>.remove`
+/// wants its `Some` (`ListNotifier.removeListener`, ws493); a subclass wants
+/// its handle; a method tear-off into a `List<void Function()>` wants the
+/// function handle the element is (`Rc<dyn Fn(..)>`), and handed over bare it
+/// is a closure rustc will not take.
+///
+/// Written as an index rather than a set because the element is not always
+/// the only argument: `insert(index, element)` has it second. The three that
+/// were covered before this (`remove`, `indexOf`, `lastIndexOf`) are the
+/// ones that *compare* an element; the ones that *put* one in ask exactly
+/// the same question and were missing, which is a stub per site
+/// (`pickerBuilders.insert(1, _buildTimeSeparatorWidget)` in
+/// `_CupertinoDatePickerDateTimeState.build`; the listinsertfn fixture).
+///
+/// Not `fillRange`, and the difference is the whole point of the table
+/// being about *elements*: Dart declares `fillRange(int start, int end,
+/// [E? fill])`, so its slot is an element-or-null, `Option<T>` in the
+/// prelude. Coercing it into `E` made a `f64` where `Option<f64>` was taken
+/// and cost a stub in `SliverMasonryGrid.performLayout` -- measured, not
+/// reasoned: it was in the table for one chain and came straight back out.
+const listElementArgument = <String, int>{
+  'add': 0,
+  'insert': 1,
+  'remove': 0,
+  'indexOf': 0,
+  'lastIndexOf': 0,
+};
+
 /// Dart names with no Rust method of the same name behind them.
 ///
 /// `[]=` is Rust's index assignment, emitted as one; `updateAll` has no

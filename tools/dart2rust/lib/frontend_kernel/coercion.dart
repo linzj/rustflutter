@@ -533,6 +533,29 @@ augment class KernelFrontend {
         ..rustType = IrType('List', arguments: [const IrType('int')]);
       narrowWidened = true;
     }
+    // A closure has no recorded type of its own until a slot gives it one,
+    // so the gate below -- which reads `lowered.rustType` -- never asks
+    // about one. Where the slot is a function type, that *is* the answer:
+    // the closure goes behind the handle every function slot is
+    // (`coerceInto`'s `!rc`). Reached where a slot is spelled but nothing
+    // typed the value: `pickerBuilders.insert(1, _buildTimeSeparatorWidget)`
+    // into a `List<_ColumnBuilder>` handed the closure over bare and rustc
+    // said "expected `Rc<dyn Fn(..)>`, found closure" (the listinsertfn
+    // fixture). The census above is where these were being counted.
+    if (coerceByType &&
+        translated &&
+        param is FunctionType &&
+        lowered is IrClosure &&
+        lowered.rustType == null) {
+      try {
+        final slot = slotIr ?? _type(param);
+        if (slot.isFunction) {
+          return coerce(lowered..rustType = slot, slot);
+        }
+      } on Unsupported {
+        // Unspelled: as it was.
+      }
+    }
     if (coerceByType &&
         translated &&
         param != null &&

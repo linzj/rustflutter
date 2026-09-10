@@ -885,24 +885,28 @@ augment class KernelFrontend {
       }
       final rust = listMethodNames[name];
       if (rust != null) {
-        // An element handed to `remove`/`indexOf`: into the element type,
-        // which the prelude's `&T` cannot coerce to (see `_intoElement`).
-        final byElement =
-            const {'remove', 'indexOf', 'lastIndexOf'}.contains(name) &&
-            args.length == 1;
+        // An element handed to one of these goes into the element type,
+        // which the prelude's `T`/`&T` cannot coerce to (see `_intoElement`
+        // and `listElementArgument`). Which argument it is depends on the
+        // member: `insert(index, element)` is the second.
+        final at = listElementArgument[name];
         final receiver = _listReceiver(node.receiver, name);
         final call = IrCall(
           receiver,
           rust,
-          byElement
-              ? [
-                  _intoElement(
-                    args.single,
-                    node.arguments.positional.single,
-                    _staticType(node.receiver),
-                  ),
-                ]
-              : args,
+          at == null || at >= args.length
+              ? args
+              : [
+                  for (var i = 0; i < args.length; i++)
+                    if (i == at)
+                      _intoElement(
+                        args[i],
+                        node.arguments.positional[i],
+                        _staticType(node.receiver),
+                      )
+                    else
+                      args[i],
+                ],
         );
         return call;
       }
