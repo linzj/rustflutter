@@ -382,16 +382,22 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 实验后来被重做并结案时,缩成「当初为什么撤、后来为什么对」两句**,过程移出(git 有)。
 不要为了短而删掉「为什么错」和「要重做需要什么」——那两样正是这一节存在的理由。
 
-**(2026-09-10,ws966 试过又撤回;一次都没触发)** `null?.x` 就是 `null`——这条规则
-前端早有(`_isNull(value)`,ws777),按的是 **Kernel 节点**;`TextStyle` 那个
-`None.as_ref().map(|it| ..)`(`&_`,E0282)里的 `None` 是 TFA 把「永远是 null 的
-字段」折出来的,读到这儿已经不是 `_isNull` 认得的节点了。于是补了一条:**降下来**
-是个 null 字面量时,整条访问也是 null。只认**光秃秃**的字面量——降下来还绑了东西的,
-那些绑定装着接收者自己的副作用,而 Dart 是要先算它们再决定这次访问是 null 的。
-量出来 **stub 93 → 93,桩的集合一模一样**:一次都没触发。夹具 `nullchain`
-(`Styled.package` 没有任何一处赋过值)复现不出来——TFA 在这么小的程序里把那个读
-折成了**带类型的** null(`dart_null_as::<Option<String>>()`),所以根本没有 `&_`;
-gallery 那个是**没有类型**的 `None`,根子和 ws957 的 `Option<Null>` 是同一个。
+**(ws966 撤回 → ws971 做成;按本节的压缩规则缩成两句)** `null?.x` 就是 `null`。
+**当初为什么撤**:按在**前端**、认的是 Kernel 节点(`_isNull`,ws777),而 gallery
+里那个 `None` 是 TFA 折出来的,到那儿已经不是它认得的节点——量出来 **stub 93 → 93,
+桩的集合一模一样**,一次都没触发。**后来为什么对**:ws971 把同一句话按在**后端发射
+处**(`_writtenNull`,穿过 `clone` 往里看),那里看得见接收者就是降下来的 null
+字面量;连带「对写下来的 null 做判空的三目,另一支是死的」一起,**stub 89 → 88**,
+夹具 `writtennull` 先红(一模一样的 `&_`,E0282)后绿。
+
+**(2026-09-10,ws971 试过两次都撤回)** 同一件事按在 `coerceInto` 里,两次都不对。
+第一次按 `slot.projected && have0.name == 'Null'`:**89 → 89,桩的集合一模一样**,
+一次都没触发。第二次按 `have0.name == 'Null' && slot.isFunction`,并把字面量的
+`rustType` 改写成槽的类型——**stub 89 → 119、拒绝 29 → 34**,多出来的绝大多数是
+「cannot find type `T` in this scope」:槽是用**被调方自己的类型参数**拼的,调用点
+一个都拼不出来。**要重做需要什么**:别在 `coerceInto` 里找它——那条 `None.as_ref()
+.map(..)` 根本不是 `coerceInto` 发的,是后端的空安全发射器发的(`_nullAware`),
+探针一跑就看见了(`DART2RUST_TRACE_NONE`)。
 下次要动它,先弄清那个 `None` 是从哪条路出来的——不是这条。
 
 **(2026-09-10,ws962 试过又撤回;拒绝 -1、桩 +1,净零)** 把 `dart:io` 的三个
@@ -568,7 +574,6 @@ Dart 的循环变量是同一个对象。加 `mut` 只是把「诚实地 panic �
 
 | 轮 | 规则 / 读数 | 数 |
 |---|---|---|
-| ws899 | 黄金 44 个错里 28 个的根因是「夹具 driver 不是同一个编译器」:`dart2rust_kernel.dart` 一个 `TypeEnvironment` 都没建(前端里 34 处读它,全走 null 分支),`const Spacing._(3.0)` 的 `3.0` 因此退化成 `dynamic`,`const` 里发出一次拆箱。另一半:分析器前端一次实参加宽都不做,补上「进对象槽就装箱」(`IrUpcast`,由后端选 `dart_boxed`/`dart_object`/句柄) | testdata **44 → 16** 错;oracle exit 0、BEHIND 16 → 14(`constdirect`/`named_args` 真追上);十个 fx 夹具全 AGREE;gallery 逐字节未动(md5 1aee02ea,拒绝仍 38)——这一轮没碰生产路径 |
 | ws900 | `use` 行一直是从**生成出来的文本**用正则回扫猜出来的,而后端发射时明明知道每个引用指向哪个库——`_ReferenceCollector._member` 手里就是答案,却只留下库和类名、把成员名扔了。改成一次遍历(`referencesOf`)同时交出库、类名、成员,`use` 行照账本写;文本侧十二条补丁一次删完(`_code`/`_identifiersIn`/`_calledIn`/`_boundIn`/`_packageOf`/`everyDefinitionIsAFunction`/`visible`/同包兜底/Dart import 列表/`pub use` 再导出)。账本盖不到的只有**编译器自己发明的名字**,各自在发明处记一笔:`superFn` 与它的 trait 界、类头的 supertrait、`implName`、抽象类的静态、宽 impl 与动态槽两次普查、`_genericOnTrait` 选中的体、被应用的 mixin 体 | stub **147**(未升)、拒绝 38、可达 **67 → 69**、`cargo check --workspace` **0 error**;`dart2rust_package.dart` −290 行;widgets crate 325,924 → 402,903 行(**变大,记债**);oracle exit 0 / BEHIND 14;**run900 红**——账本把 `scheduleMicrotask` 从 `dart:ui` 的空实现改绑到 prelude,microtask 第一次真的跑起来,当场撞上 147 里早就有的那个 `_handle_focus_changed`(下一轮修) |
 | ws901 | run900 停在 `_handle_focus_changed`:`policy.invalidate_scope_data(..)` 要 `&mut self`,而 `policy` 是 `Rc<dyn FocusTraversalPolicy>`。两本普查读的不是同一批体——后端的 `_mutating` 读**降下来的 IR**(里面有 `_policy_data.remove(k)`),前端决定 `counted` 的 `_writesFieldInMethod` 只走类**声明**里的 procedures,而 CFE 把 mixin 的体拷进了匿名**应用**类。让它读同一批:自己的 + 上方匿名应用的 + (是 mixin 声明时)`applications` 里的。顺手把账本欠的三处收了:`_member` 现在也读被引用成员的签名类型(Rust 调用处没有推断——适配实参发射的是被调方的参数类型) | stub **147 → 135**(focus 那组 9 个 + 三处 import 3 个,一个新的都没加)、拒绝 38、可达 69、`cargo check` 0 error;夹具 `mixinmutmap` 先红后绿;oracle exit 0 / BEHIND 14;run901 仍红,但往前挪到了下一个桩(`Completer<void>.complete()`) |
 | ws902 | 两条都在 microtask 刚被叫醒的那条路上。一、`Completer<T?>.complete()` 省略实参是 Dart 的 `complete(null)`,而这里写死成「`Completer<void>`,传 `()`」——改成按接收者的类型实参:`void` 传单元,投影过的 `T?` 用 `from_option`(`IrNullableOf`),其余传 null。二、prelude 的 `_schedule_microtask` 是**同步就地执行**回调的,而 `SCHEDULER.microtasks` 队列和 `run_until_idle` 的排干顺序本来就在——ws900 之前没人调它(名字被解析到 `dart:ui` 那个没有 host 应答的原生上),所以这条一直没被看见。入队后,`FocusManager._markNeedsUpdate` 的回调不再在 build 中途重入 | stub **135 → 134**、拒绝 38、可达 69、0 error;夹具 `completervoid` 先红后绿;**渲染树回来了:707 个节点,与 `ref_render_walk_settled.txt` 类型差异 0**;run903 仍以 panic 收尾——`NotificationListener<T>` 的 `notification is T` 里 `T` 被擦成了界,恒真(下一轮) |
@@ -609,6 +614,7 @@ Dart 的循环变量是同一个对象。加 `mut` 只是把「诚实地 panic �
 | ws968 | **`Object.hashAllUnordered(xs)` prelude 里没有**,调用名了一个没人写的函数(E0425)。补上:每个元素的 hash 用**可交换**的方式折进去(求和、异或、计数,和 SDK 自己那套一样),所以同样的元素换个顺序算出来一样。补完之后那个桩还在,原因换成了 mismatched types——`hashAll`/`hashAllUnordered` 收的是 `Iterable<Object?>`,而 prelude 那两个写的是 `Vec<T>`,`RenderObject.hashCode` 递进去的是个 `Set`;于是两个都改成收**任何能迭代的东西**(`IntoIterator`,`Set<T>` 早就实现了)。夹具 `hashunordered` 覆盖「换序相同」「不同元素不同」「有序的那个确实看顺序」和「收 `Set`」四条,先红后绿 | stub **92 → 91**(`RenderObject.hashCode`)、拒绝 29、可达 69、0 error;run968 连采五次:707 行 / 类型差异 0 / 0 panic |
 | ws969 | **字面量之间的算术,做接收者一样是没定住的**。`(1.5 * 0.35).sin()` 和 `1.5.sin()` 一样——里面没有一处说它是哪种浮点(E0689)。ws956 教会了这条规则穿过取负,这是另一种拼法:穿过 `+ - * /`,并且**两边都得是字面量**——只要有一个带类型的操作数,推导本来就有了。后缀写在**最左边那个字面量**上,一处就把整个表达式定住。夹具 `binaryfloatrecv` 覆盖全字面量的两种和带类型操作数的一种,先红(一模一样的 E0689)后绿 | stub **91 → 90**(`InkSparkle._updateFragmentShader`);第三轮的错误数 86 → 80,说明这条规则不止一处在用;拒绝 29、可达 69、0 error;run969 连采五次:707 行 / 类型差异 0 / 0 panic |
 | ws970 | **super 函数的 `__Self` 上站着 Dart 链从没提过的 trait**。`super.x()` 在混入里派发到*应用*的前一个类——`on` 子句没提过它——自由函数就把那个 trait 也要进界里(`_superBoundTraits`),而**界是往下继承的**:`on` 那个混入的混入,`__Self` 上同样站着它。于是 Dart 只声明过一次的名字,在 Rust 这边有第二个候选(E0034),而 Dart 那边无从看见。`_boundOnlyTraits` 用同一个 walk 从 IR 里把这些多出来的 trait 读回来,数候选时算上;答案仍是 Dart 的那个**声明 trait**,重写照样到位(具体类对它的 impl 带着重写)。夹具 `boundwidened` 先红(一模一样的 E0034,`Base` 对 `Mid`)后绿。**同一轮把尺子的输入搬回工程目录**:`~/dart2rust_build/` 被清掉,一次带走 dill、41 个夹具的全部源码和参考渲染树,而仓库里没有一行说过怎么再造。dill 与参考各补了脚本(`bin/gallery_dill.py`、`bin/render_ref.py`),夹具**源**入库(`fx/`),扫描与运行尺子也第一次写下来(`bin/allfx.sh`、`bin/render_ruler.py`) | stub **90 → 89**(`RenderAbstractLayoutBuilderMixin.layoutCallback`;`layoutInfo` 的 E0034 也没了,底下露出另一条错);第三轮错误数 80 → 79;拒绝 29、可达 69、0 error;run970 连采五次:707 行 / 类型差异 0 / 0 panic;夹具 **39 个,37 AGREE + 2 个故意的红**(从转录里捞回 39 个,`cmpscalar` 和另一个没捞回来) |
+| ws971 | **降下来的那个 `null`,是已经知道答案的**。同一句话说两遍,都在后端发射处:`null?.x` 就是 `null`(`?.` 右边 Dart 一步都不算,所以没有东西要 map);`x == null ? a : b` 里的 `x` 是这样的 null 时就是 `a`(另一支是死的,可它照样得过类型,而站在那儿的光秃秃 `None` 什么类型都推不出来)。只折**降低过程自己写下来**的 null——省略的实参、常量字段;仅仅是可空的接收者照旧运行期再问,夹具里 `viaField` 按着这一条。三次才对:前两次按在 `coerceInto` 里,一次一个桩都没动(集合逐字节相同)、一次把 stub 顶到 119、拒绝顶到 34,两条连数带原因都进了〈撤回与作废〉;探针(`DART2RUST_TRACE_NONE`)一跑才看见那条 `None.as_ref().map(..)` 压根不是 `coerceInto` 发的。ws966 撤回的是同一句话按在前端,按本节压缩规则缩成两句 | stub **89 → 88**(`_WidgetStateTextStyle.new`);`ChangeNotifierProvider.value` 的 `&_` 也没了,底下露出另一条(`Some(Rc::new(闭包))` 不 unsize 成 `Rc<dyn Fn>`);拒绝 29、可达 69、0 error;run971 连采五次:707 行 / 类型差异 0 / 0 panic;夹具 **40 个,38 AGREE + 2 个故意的红** |
 
 ## 下一步
 
@@ -626,8 +632,8 @@ ws482/ws494;refusal 归并 804 → 29,一直在按类别收)。还活着的两�
   的函数带 `Result` 而只有 6.9% 会失败。
 - **运行时 `Dart_*` 仍是 0/168**;`runtime/` crate(无头引擎)从 09-06 起存在。
 
-**(2026-09-10 校注)** 现状:**ws970 89 stub / 29 拒绝 / 69 crate 全可达 / 0 error**,
-运行尺子 run970 **707 行、类型差异 0、0 panic,连采五次一模一样**——尺子从 ws934
+**(2026-09-10 校注)** 现状:**ws971 88 stub / 29 拒绝 / 69 crate 全可达 / 0 error**,
+运行尺子 run971 **707 行、类型差异 0、0 panic,连采五次一模一样**——尺子从 ws934
 起不再抖(根因见〈已知欠账〉第一条),所以「读三次取多数」那套读法可以退休了,
 一次就算数;为了看住回归,每轮仍连采五次。
 

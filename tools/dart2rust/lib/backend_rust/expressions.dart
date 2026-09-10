@@ -283,6 +283,17 @@ augment class RustBackend {
       // The branches have no expected type from each other: an upcast in
       // one is explicit (`dart_object(FontWeight)` against
       // `Rc::new("unspecified")`, ws476).
+      // A condition that asks whether a `null` the lowering itself wrote is
+      // null: Dart answered that when it wrote it, and the other arm is
+      // dead. Emitted whole, the dead arm still has to type, and a bare
+      // `None` standing in it types nothing ("cannot infer type of the
+      // type parameter `T` declared on the enum `Option`", E0282:
+      // `_WidgetStateTextStyle.new`, where `TextStyle`'s constructor is
+      // inlined with `package` omitted and computes
+      // `'packages/$package/$fontFamily'` in the branch never taken, ws971).
+      IrConditional(condition: IrIsNull(:final operand), :final then)
+          when _writtenNull(operand) =>
+        expr(_explicitUpcast(then)),
       // ..typed where one arm never arrives: `if c { None } else {
       // unreachable!() }` leaves `None`'s `T` to a never-type fallback
       // (`Object.hash(.., stops == null ? null : hashAll(stops!), ..)`

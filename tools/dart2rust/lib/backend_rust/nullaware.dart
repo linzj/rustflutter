@@ -2,7 +2,31 @@ part of '../backend_rust.dart';
 
 // Null-aware chains, upcasts through an instantiation, static calls.
 augment class RustBackend {
+  /// A value the lowering wrote as Dart's `null` itself, through the clones
+  /// a read takes on the way.
+  static bool _writtenNull(IrExpr? e) => switch (e) {
+    IrLiteral(:final rustType) => rustType?.name == 'Null',
+    IrCall(name: 'clone', :final target) => _writtenNull(target),
+    IrBlockValue(:final value) => _writtenNull(value),
+    _ => false,
+  };
+
   String _nullAware(IrExpr receiver, IrExpr body, bool flatten) {
+    // `null?.anything` is `null`: Dart evaluates nothing to the right of
+    // `?.` when the left is null, so there is nothing here to map. Mapped
+    // anyway, the closure binds a value that does not exist and types
+    // nothing -- `None.as_ref().map(|it| ..)` is "type annotations needed
+    // for `&_`" (E0282), which stubbed `_WidgetStateTextStyle.new`
+    // (an interpolation of a null `fontFamily`) and
+    // `ChangeNotifierProvider.value` (the omitted `updateShouldNotify`,
+    // adapted into a wider instantiation) -- ws971.
+    //
+    // Only a `null` the *lowering itself* wrote is folded: an omitted
+    // argument, a const field, an uninitialised local. A receiver that is
+    // merely nullable still has to be asked at run time.
+    if (_writtenNull(receiver)) {
+      return 'None';
+    }
     final scalar = const {
       'int',
       'double',
