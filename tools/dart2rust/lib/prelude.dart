@@ -1007,6 +1007,21 @@ pub trait DartAny: Object + 'static {
         format!("Instance of '{}'", self.dart_runtime_type().name)
     }
 
+    /// The identity of an object this compiler copies by value.
+    ///
+    /// A translated value class is a Rust struct, and passing it clones it --
+    /// but a clone is not a second Dart object, it is the same one reached
+    /// again, which is why its mutable fields already live in a shared cell.
+    /// The token is that fact for identity: the clones of one object share
+    /// one `Rc<()>`, and two separately constructed objects have two.
+    ///
+    /// `None` for anything that does not carry one: a counted class (its
+    /// handle has an address already), a scalar, and a *constant* instance,
+    /// which Dart canonicalises -- see `dart_value_identical`.
+    fn dart_identity_token(&self) -> Option<&std::rc::Rc<()>> {
+        None
+    }
+
     /// The value itself as `Any`, for `dart_cast_any`'s fallback: a
     /// handle answers with what it holds, an absent value with itself.
     fn dart_any_ref(&self) -> &dyn std::any::Any {
@@ -5754,6 +5769,36 @@ pub fn dart_identical_opt_value<T, U>(a: &Option<T>, b: &Option<U>) -> bool {
             std::ptr::eq(x as *const T as *const (), y as *const U as *const ())
         }
         _ => false,
+    }
+}
+
+/// `identical(a, b)` where at least one side is a value this compiler copies.
+///
+/// Three cases, and the third is the one worth reading twice. Two tokens
+/// compare by token: same object or not. A token against no token is false --
+/// a constant is never the object a constructor built. *Neither* carrying a
+/// token means both are constants, and Dart canonicalises constants, so "the
+/// same object" and "equal field by field" are the same question for them.
+/// That is not a fallback standing in for identity; for a canonicalised
+/// constant it *is* identity.
+pub fn dart_value_identical(a: &dyn DartAny, b: &dyn DartAny) -> bool {
+    match (a.dart_identity_token(), b.dart_identity_token()) {
+        (Some(x), Some(y)) => std::rc::Rc::ptr_eq(x, y),
+        (None, None) => a.dart_eq_any(b.dart_any_ref()),
+        _ => false,
+    }
+}
+
+/// `identityHashCode(x)` for such a value: the token's address, and the
+/// value's own hash where there is no token. It has to agree with
+/// `dart_value_identical` case for case, or a map keyed by identity would
+/// lose things -- so a constant hashes by its fields, exactly as it compares.
+pub fn dart_value_identity_hash(value: &dyn DartAny) -> i64 {
+    match value.dart_identity_token() {
+        Some(token) => {
+            (std::rc::Rc::as_ptr(token) as *const u8 as usize as i64) & 0x3fff_ffff
+        }
+        None => value.dart_hash_any(),
     }
 }
 

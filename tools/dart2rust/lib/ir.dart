@@ -1816,6 +1816,22 @@ class IrClass {
   /// `type()` answers all of them.
   final bool counted;
 
+  /// Whether this class carries an identity token: a `__identity` the clones
+  /// of one object share, so that `identical` can answer for a class this
+  /// compiler copies by value.
+  ///
+  /// Set by the census, not by the class: only the classes whose identity the
+  /// program actually observes carry one (`identityObservedIn`). A counted
+  /// class needs none -- its handle already has an address -- and a class
+  /// nobody asks about pays nothing.
+  ///
+  /// A *constant* instance carries `None` rather than a fresh token, and two
+  /// of those are compared by their fields. That is not a fallback: Dart
+  /// canonicalises constants, so structural equality is exactly what
+  /// `identical` means for them, and it is why a const is never identical to
+  /// a runtime instance (the valueidentity fixture pins both).
+  var identityToken = false;
+
   /// `class _Linear extends ParametricCurve<double>` -- the `double`.
   ///
   /// Needed for the `impl`: Rust wants `impl ParametricCurve<f32> for _Linear`,

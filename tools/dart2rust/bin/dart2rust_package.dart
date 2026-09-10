@@ -262,6 +262,13 @@ Future<void> main(List<String> args) async {
   // while its shape is being decided: how many names a program really asks
   // of a `dynamic`, and how many classes would have to answer each.
   final dynamicMembers = dynamicMembersIn(component.libraries);
+  // The classes whose identity the program asks about (`identityObservedIn`).
+  // Only these carry a token, and only the value ones need it -- a counted
+  // class already has an address.
+  final identityObserved = identityObservedIn(
+    component.libraries,
+    typeEnvironment,
+  );
   if (Platform.environment['DART2RUST_TRACE_DYNMEMBER'] == '1') {
     final rows = dynamicMembers.entries.toList()
       ..sort((a, b) => b.value.length.compareTo(a.value.length));
@@ -364,6 +371,7 @@ Future<void> main(List<String> args) async {
       typeEnvironment: typeEnvironment,
       dynamicSlots: dynamicSlots,
       dynamicMembers: dynamicMembers,
+      identityObserved: identityObserved,
       open: openClasses,
       erase: Platform.environment['DART2RUST_ERASE'] != '0',
       eraseObjectBounded: Platform.environment['DART2RUST_ERASE_OBJECT'] == '1',

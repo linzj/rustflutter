@@ -488,6 +488,29 @@ augment class KernelFrontend {
     return touched;
   }
 
+  /// Whether every field of `node` is a number, a `bool` or an enum -- the
+  /// shape this compiler derives `Copy` for. See `IrClass.identityToken`.
+  ///
+  /// Not `scalarNames`: that set has `String` in it, and a Rust `String` is
+  /// not `Copy`. Asking the wrong question here took the token away from
+  /// every class with a `String` field, this fixture's own included.
+  static const _copyableFields = {'int', 'double', 'num', 'bool'};
+
+  bool _allCopyableFields(Class node) {
+    var any = false;
+    for (final field in node.fields) {
+      if (field.isStatic) continue;
+      any = true;
+      final t = field.type;
+      final named = t is InterfaceType ? t.classNode : null;
+      if (named == null) return false;
+      if (_copyableFields.contains(named.name)) continue;
+      if (named.isEnum) continue;
+      return false;
+    }
+    return any;
+  }
+
   /// The closures in the applications of a mixin declaration, which is where
   /// the CFE put its bodies. Empty for anything that is not one.
   ///
@@ -769,71 +792,106 @@ augment class KernelFrontend {
           const {'num', 'int', 'double'}.contains(bound.classNode.name);
     }
 
-    final cls = IrClass(
-      node.name,
-      typeParameters: [
-        for (final p in node.typeParameters)
-          if (!_erasedParameter(p)) p.name ?? 'T',
-      ],
-      numericParameters: {
-        for (final p in node.typeParameters)
-          if (!_erasedParameter(p) && numericBound(p)) p.name ?? 'T',
-      },
-      enumParameters: {
-        for (final p in node.typeParameters)
-          if (!_erasedParameter(p) && _enumBound(p)) p.name ?? 'T',
-      },
-      superclassArguments: superType == null
-          ? const []
-          : _erasedArguments(superType.classNode, superType.typeArguments),
-      // `class ByteStream extends StreamView<List<int>>`: the prelude's
-      // `StreamView` has no struct to flatten, so the subclass carries the
-      // one field it would have inherited, `_stream` (added below), and
-      // has no Rust superclass.
-      superclass:
-          node.isEnum ||
-              base == null ||
-              base.name == 'Object' ||
-              _isFlatBase(base)
-          ? null
-          : base.name,
-      // An enum's mixins too: `enum WidgetState with WidgetStatesConstraint`
-      // is a Rust enum, and the mixin is the trait impl that lets its value
-      // stand where the mixin's type goes -- dropped, the value had no
-      // `impl WidgetStatesConstraint` to be cast through (5 at ws751). A
-      // mixin that declares fields still has nowhere to put them on an
-      // enum, and the emission refuses as it would for any other class.
-      mixins: mixins,
-      iterableElement: node.isEnum ? null : _iterableElementIr(node),
-      // The class's own `implements` clause. The applied mixins reached
-      // through `implementedTypes` above belong to the *synthetic* classes on
-      // the way up, not to this one, so the two lists do not overlap.
-      // A mixin's `on` types come along: `SourceSpanMixin on SourceSpan`
-      // calls `start` on `this`, and the free function holding that body is
-      // bounded by the trait, which had to say it is a `SourceSpan` too.
-      // An enum's own `implements` clause too: the trait impl it gets is
-      // what lets its value stand where the interface is (`_emitBaseImpl`;
-      // an enum into an `Rc<dyn Ts>`, ws510).
-      interfaces: node.isEnum
-          ? [
-              for (final t in node.implementedTypes)
-                if (t.classNode.name != '_Enum' && t.classNode.name != 'Enum')
-                  _type(t.asInterfaceType),
-            ]
-          : [
-              for (final t in node.implementedTypes) _type(t.asInterfaceType),
-              if (node.isMixinDeclaration)
-                for (final t in node.onClause) _type(t.asInterfaceType),
-              // ..and what every application puts under it
-              // (`_appliedOver`).
-              if (node.isMixinDeclaration) ..._appliedOver(node),
+    final cls =
+        IrClass(
+            node.name,
+            typeParameters: [
+              for (final p in node.typeParameters)
+                if (!_erasedParameter(p)) p.name ?? 'T',
             ],
-      counted: _counted,
-      isAbstract: node.isAbstract || _isOpen(node),
-      isEnum: node.isEnum,
-      values: recovered,
-      valueFields: carriedState,
-    )..enumElementsDeclared = node.fields.any((f) => f.isEnumElement);
+            numericParameters: {
+              for (final p in node.typeParameters)
+                if (!_erasedParameter(p) && numericBound(p)) p.name ?? 'T',
+            },
+            enumParameters: {
+              for (final p in node.typeParameters)
+                if (!_erasedParameter(p) && _enumBound(p)) p.name ?? 'T',
+            },
+            superclassArguments: superType == null
+                ? const []
+                : _erasedArguments(
+                    superType.classNode,
+                    superType.typeArguments,
+                  ),
+            // `class ByteStream extends StreamView<List<int>>`: the prelude's
+            // `StreamView` has no struct to flatten, so the subclass carries the
+            // one field it would have inherited, `_stream` (added below), and
+            // has no Rust superclass.
+            superclass:
+                node.isEnum ||
+                    base == null ||
+                    base.name == 'Object' ||
+                    _isFlatBase(base)
+                ? null
+                : base.name,
+            // An enum's mixins too: `enum WidgetState with WidgetStatesConstraint`
+            // is a Rust enum, and the mixin is the trait impl that lets its value
+            // stand where the mixin's type goes -- dropped, the value had no
+            // `impl WidgetStatesConstraint` to be cast through (5 at ws751). A
+            // mixin that declares fields still has nowhere to put them on an
+            // enum, and the emission refuses as it would for any other class.
+            mixins: mixins,
+            iterableElement: node.isEnum ? null : _iterableElementIr(node),
+            // The class's own `implements` clause. The applied mixins reached
+            // through `implementedTypes` above belong to the *synthetic* classes on
+            // the way up, not to this one, so the two lists do not overlap.
+            // A mixin's `on` types come along: `SourceSpanMixin on SourceSpan`
+            // calls `start` on `this`, and the free function holding that body is
+            // bounded by the trait, which had to say it is a `SourceSpan` too.
+            // An enum's own `implements` clause too: the trait impl it gets is
+            // what lets its value stand where the interface is (`_emitBaseImpl`;
+            // an enum into an `Rc<dyn Ts>`, ws510).
+            interfaces: node.isEnum
+                ? [
+                    for (final t in node.implementedTypes)
+                      if (t.classNode.name != '_Enum' &&
+                          t.classNode.name != 'Enum')
+                        _type(t.asInterfaceType),
+                  ]
+                : [
+                    for (final t in node.implementedTypes)
+                      _type(t.asInterfaceType),
+                    if (node.isMixinDeclaration)
+                      for (final t in node.onClause) _type(t.asInterfaceType),
+                    // ..and what every application puts under it
+                    // (`_appliedOver`).
+                    if (node.isMixinDeclaration) ..._appliedOver(node),
+                  ],
+            counted: _counted,
+            isAbstract: node.isAbstract || _isOpen(node),
+            isEnum: node.isEnum,
+            values: recovered,
+            valueFields: carriedState,
+          )
+          ..enumElementsDeclared = node.fields.any((f) => f.isEnumElement)
+          // A token only where the program asks (`identityObservedIn`), and only
+          // where the address of a copy would answer nothing: a counted class
+          // has a handle already, an enum is a Rust enum with no room for one,
+          // and an abstract class is a trait whose implementors carry their own.
+          ..identityToken =
+              identityObserved.contains(node) &&
+              !_counted &&
+              !node.isEnum &&
+              !(node.isAbstract || _isOpen(node)) &&
+              // ..and not a class this compiler treats as a pure value: one
+              // whose every field is a scalar or an enum derives `Copy`, is held
+              // in a `Cell` and read with `get()`, and duplicating it bitwise
+              // *is* making a new value -- the exact opposite of what a token
+              // says. Taking `Copy` away to give such a class identity cost 43
+              // stubs for one refusal when it was measured (`SemanticsFlags`,
+              // whose fields are all `bool`, and every `Cell<SemanticsFlags>`
+              // read with it: "the method `get` exists ... but its trait bounds
+              // were not satisfied"). They keep their refusal.
+              !_allCopyableFields(node) &&
+              // ..and not a class with a `const` constructor. Dart canonicalises
+              // constant instances, so two of them are one object -- but this
+              // compiler does not always *see* a construction as constant (a
+              // local `const Frozen(1)` reaches the backend as a call to the
+              // constructor), and a fresh token per call would then say two
+              // canonicalised constants are different objects. Making that right
+              // is the constant half of this, and it is a round of its own; until
+              // then such a class keeps its refusal, which says something true.
+              !node.constructors.any((c) => c.isConst);
     final refused = <String>[];
     if (base != null && _isFlatBase(base)) {
       // The fields the base would have held, at the instantiation this

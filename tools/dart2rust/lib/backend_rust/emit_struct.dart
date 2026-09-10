@@ -15,8 +15,14 @@ augment class RustBackend {
     // Asked of the *emitted* type: a shared field is an `Rc<Cell<..>>`, which
     // is not `Copy` however copyable the value inside it is. Asking the Dart
     // type instead derived `Copy` for a struct that cannot have it.
+    // ..and never where the class carries an identity token: that is an
+    // `Rc`, which is not `Copy` -- and could not be, since `Copy` is
+    // precisely the promise that a bitwise duplicate is a new value, which
+    // is the opposite of what the token says.
     final copyable =
-        !cls.counted && _allFields(cls).every((f) => _isCopy(_fieldType(f)));
+        !cls.counted &&
+        !cls.identityToken &&
+        _allFields(cls).every((f) => _isCopy(_fieldType(f)));
     // `Debug` and `PartialEq` cannot be derived over a function-typed field
     // (a `dyn Fn` is neither), and a struct holding one got 15 `E0369`s and
     // 14 `E0277`s for the derive alone. Left off there: a `==` on such a
@@ -123,6 +129,15 @@ augment class RustBackend {
     // literal wherever it is used (`dart_rc(Struct {..})`), other modules
     // included (E0451 in `SemanticsService`, ws432).
     if (cls.counted) _line('pub __self: DartSelf<Self>,');
+    // The identity of an object this compiler copies by value: a token its
+    // clones share, so `identical` can tell "the same object, reached again"
+    // from "another object with equal fields". `None` on a constant
+    // instance, which Dart canonicalises -- see `IrClass.identityToken`.
+    // `pub` for the reason `__self` is: a constant of the class is spelled
+    // as a struct literal wherever it is used.
+    if (cls.identityToken) {
+      _line('pub __identity: Option<std::rc::Rc<()>>,');
+    }
     // A Dart class can name a type parameter it never stores -- `Tween<T>`
     // holds `begin` and `end` of type `T?`, but plenty do not. Rust will not
     // have an unused parameter, and `PhantomData` is what it offers instead.
@@ -144,6 +159,9 @@ augment class RustBackend {
         for (final f in _allFields(cls))
           '${snake(f.name)}: self.${snake(f.name)}.clone()',
         if (cls.counted) '__self: self.__self.clone()',
+        // Cloning the *token*, not making one: a clone of the struct is the
+        // same Dart object, which is the whole point.
+        if (cls.identityToken) '__identity: self.__identity.clone()',
         for (final unused in _unusedParameters(cls))
           '_phantom_${snake(unused)}: std::marker::PhantomData',
       ];
@@ -334,6 +352,15 @@ augment class RustBackend {
       'fn dart_eq_any(&self, other: &dyn std::any::Any) -> bool { match other.downcast_ref::<Self>() { Some(o) => self.dart_eq(o), None => false } }',
     );
     _line('fn dart_hash_any(&self) -> i64 { self.dart_hash_code() }');
+    // The token, where the class carries one: this is how `identical` reaches
+    // it through an `Object` or a trait object, which is the only way it can
+    // -- the two sides of an `identical` rarely have the same Rust type.
+    if (cls.identityToken) {
+      _line(
+        'fn dart_identity_token(&self) -> Option<&std::rc::Rc<()>> '
+        '{ self.__identity.as_ref() }',
+      );
+    }
     _line('fn dart_runtime_type(&self) -> Type {');
     _indent++;
     // A generic class names its arguments, as Dart's `runtimeType` does:

@@ -513,6 +513,12 @@ augment class RustBackend {
   bool _classIsCopy(IrClass other, Set<String> seen) {
     final known = _copyable[other.name];
     if (known != null) return known;
+    // A class carrying an identity token holds an `Rc`, so it is not `Copy`
+    // -- and `emit_struct` leaves `Copy` off its derive for exactly that
+    // reason. Both answers have to be the same one: while they were not,
+    // `SelectionPoint.hashCode` read a field by move that the struct no
+    // longer let it move (E0507, the one stub this cost).
+    if (other.identityToken) return false;
     // Reached from itself. A value type cannot really contain itself -- the
     // struct would have no size -- so this is a hierarchy that says something
     // impossible, and `Clone` is the half that costs nothing but a clone.

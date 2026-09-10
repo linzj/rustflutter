@@ -413,6 +413,89 @@ class _ClosureFinder extends RecursiveVisitor {
 }
 
 /// The **mutable** fields of `this` a closure reads or writes.
+/// The classes whose *identity* the program observes.
+///
+/// `identical(a, b)`, `identityHashCode(x)`, and `super.==`/`super.hashCode`
+/// landing in `Object` -- the three ways a Dart program can ask "is this the
+/// same object". A class this compiler copies by value has no address to
+/// answer with, so it needs a token; one nobody asks about pays nothing for
+/// one. This is that list.
+///
+/// By the operand's *static* type, and by the enclosing class for a `super`
+/// call. A type that is not a class -- `dynamic`, a type parameter, a
+/// function -- names nothing to carry a token and is left out; the value
+/// behind it still answers through the object protocol, because the token is
+/// read off `DartAny` rather than off the struct.
+Set<Class> identityObservedIn(
+  Iterable<Library> libraries,
+  TypeEnvironment env,
+) {
+  final found = <Class>{};
+  final finder = _IdentityObserved(found, env);
+  for (final library in libraries) {
+    library.accept(finder);
+  }
+  return found;
+}
+
+class _IdentityObserved extends RecursiveVisitor {
+  _IdentityObserved(this.found, this.env);
+  final Set<Class> found;
+  final TypeEnvironment env;
+  Member? _member;
+
+  @override
+  void defaultMember(Member node) {
+    _member = node;
+    super.defaultMember(node);
+    _member = null;
+  }
+
+  void _observe(Expression e) {
+    final member = _member;
+    if (member == null) return;
+    final DartType t;
+    try {
+      t = e.getStaticType(StaticTypeContext(member, env));
+    } catch (_) {
+      return;
+    }
+    if (t is InterfaceType) found.add(t.classNode);
+  }
+
+  @override
+  void visitStaticInvocation(StaticInvocation node) {
+    final name = node.target.name.text;
+    if ((name == 'identical' && node.arguments.positional.length == 2) ||
+        (name == 'identityHashCode' && node.arguments.positional.length == 1)) {
+      node.arguments.positional.forEach(_observe);
+    }
+    super.visitStaticInvocation(node);
+  }
+
+  /// `super.==` and `super.hashCode` reaching `Object`: the object asking is
+  /// the enclosing class, and it is its own identity that has to answer.
+  @override
+  void visitSuperMethodInvocation(SuperMethodInvocation node) {
+    if (node.name.text == '==' &&
+        node.interfaceTarget.enclosingClass?.name == 'Object') {
+      final own = _member?.enclosingClass;
+      if (own != null) found.add(own);
+    }
+    super.visitSuperMethodInvocation(node);
+  }
+
+  @override
+  void visitSuperPropertyGet(SuperPropertyGet node) {
+    if (node.name.text == 'hashCode' &&
+        node.interfaceTarget.enclosingClass?.name == 'Object') {
+      final own = _member?.enclosingClass;
+      if (own != null) found.add(own);
+    }
+    super.visitSuperPropertyGet(node);
+  }
+}
+
 /// The field a member access on `this` really names.
 ///
 /// In a mixin *declaration* the CFE leaves an abstract accessor where the

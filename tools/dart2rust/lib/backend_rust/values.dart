@@ -121,6 +121,12 @@ augment class RustBackend {
       _returns = outer;
     }
     if (cls.counted) parts.add('__self: DartSelf::new()');
+    // A constant carries *no* token. Dart canonicalises constants, so two
+    // `const Frozen(1)` are one object and `const Frozen(1)` is never the
+    // object `Frozen(1)` builds -- which is exactly what comparing two
+    // tokenless values by their fields says, and what having a fresh token
+    // each would get wrong (the valueidentity fixture).
+    if (cls.identityToken) parts.add('__identity: None');
     // The phantom fields a generic class carries (see the struct's
     // emission): `const PersistentHashMap<Type, InheritedElement>.empty()`
     // (ws475).
@@ -541,6 +547,33 @@ augment class RustBackend {
         return 'dart_identical_opt(&${expr(absent)}, &${expr(other)})';
       }
     }
+    // A value this compiler copies, whose identity the program asks about
+    // (`IrClass.identityToken`): the token answers, reached through the
+    // object because the two sides rarely have the same Rust type. This is
+    // the case the refusal below used to name, and the reason it could not
+    // be answered before -- the address of a copy is the address of a copy.
+    //
+    // **Before the slot rule below**, which compares two locals by their
+    // stack addresses and so answers "distinct". That is right for a value
+    // with no identity of its own -- a `Zone`, a copied map -- and wrong
+    // for one carrying a token, where two locals really can be one object
+    // (`identical(a, alias)` read false until this moved up).
+    bool tokened(IrExpr e) {
+      final t = e is IrThis ? IrType(cls.name) : e.rustType;
+      if (t == null || t.isFunction) return false;
+      return library[nonNull(t).name]?.identityToken ?? false;
+    }
+
+    if ((tokened(left) || tokened(right)) &&
+        !(_isReference(left) && _isReference(right))) {
+      String asAny(IrExpr e) => _handleLike(e)
+          ? '(${expr(e)}).as_ref()'
+          : e is IrThis
+          ? _selfName
+          : '&${expr(e)}';
+      return 'dart_value_identical(${asAny(left)}, ${asAny(right)})';
+    }
+
     // Two locals, or a local against a static: the addresses of the *slots*.
     // Two distinct slots are never the same address, so this says "not
     // identical" -- which is what Dart says of two distinct objects, and is

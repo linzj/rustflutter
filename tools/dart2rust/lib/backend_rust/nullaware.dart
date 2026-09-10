@@ -557,6 +557,18 @@ augment class RustBackend {
             : identityBearing(only)) {
           return '(${_handleOf(only)}).dart_identity_hash_code()';
         }
+        // A value class carrying an identity token (`IrClass.identityToken`):
+        // the token's address, and the value's own hash where it has none.
+        // It has to agree with `dart_value_identical` case for case, which is
+        // why both live next to each other in the prelude.
+        final held = only is IrThis
+            ? IrType(cls.name)
+            : (only.rustType ?? const IrType('dynamic'));
+        if (!held.isFunction &&
+            (library[nonNull(held).name]?.identityToken ?? false)) {
+          return 'dart_value_identity_hash('
+              '${only is IrThis ? _selfName : '&${expr(only)}'})';
+        }
       }
       // A top-level function: no owner in either language. Checked against
       // what this file emits, for the same reason a static call is -- a call

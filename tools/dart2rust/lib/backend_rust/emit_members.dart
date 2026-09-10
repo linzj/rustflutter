@@ -51,7 +51,14 @@ augment class RustBackend {
     // ..and a redirecting one (`const BorderRadius.all(r) : this.only(..)`)
     // only when the constructor it hands its arguments to is one: a
     // `const fn` may not call a plain `fn` (run686).
-    final constness = _constCtor(ctor, {}) ? 'const ' : '';
+    // ..and not where the class carries an identity token: making one is
+    // `Rc::new`, which a `const fn` may not call. Nothing is lost -- a
+    // *constant* instance of the class is written as a struct literal
+    // (`values.dart`), with `__identity: None`, and never through this
+    // constructor.
+    final constness = _constCtor(ctor, {}) && !cls.identityToken
+        ? 'const '
+        : '';
     // A counted class hands out a handle, not a value: everything that
     // holds one holds an `Rc`, so the constructor is where the first one is
     // made. A `const fn` cannot allocate, so a counted constructor is not one.
@@ -148,6 +155,11 @@ augment class RustBackend {
     );
     _indent++;
     if (cls.counted) _line('__self: DartSelf::new(),');
+    // A fresh token per construction: this is where a new Dart object comes
+    // into being, and the only place one should.
+    if (cls.identityToken) {
+      _line('__identity: Some(std::rc::Rc::new(())),');
+    }
     for (final field in _allFields(cls)) {
       if (deferred.containsKey(field.name)) {
         _line(

@@ -138,6 +138,7 @@ class KernelFrontend implements TypeWorld {
     this.typeEnvironment,
     this.dynamicSlots = const {},
     this.dynamicMembers = const {},
+    this.identityObserved = const {},
     this.open = const {},
     this.erase = false,
     this.eraseObjectBounded = false,
@@ -789,6 +790,11 @@ class KernelFrontend implements TypeWorld {
   /// (`IrDynamicDispatch`), with the candidates found by member name rather
   /// than by which slot the value came out of.
   final Map<String, Set<Class>> dynamicMembers;
+
+  /// The classes whose identity the program observes (`identityObservedIn`),
+  /// whole program. A value class in here carries an identity token; see
+  /// `IrClass.identityToken`.
+  final Set<Class> identityObserved;
 
   /// The whole program's types, for `getStaticType`. Built once by the
   /// driver; null in the tools that lower a single library on its own, which
