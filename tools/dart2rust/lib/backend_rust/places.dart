@@ -217,6 +217,17 @@ augment class RustBackend {
           : '&mut *${snake(place.name)}.borrow_mut()';
     }
     if (place is IrField && (place.target == null || place.target is IrThis)) {
+      // Inside a trait body a field is an accessor, and its cell is what
+      // the trait hands out (`_cellPlace`) -- the same spelling a *read* of
+      // it takes. Lent as a plain field it was `__me._incoming_items`,
+      // which is a method there and not a field ("attempted to take value
+      // of method", E0615: `_SliverAnimatedMultiBoxAdaptorState`'s
+      // `insertItem`/`removeItem`, ws973). The closures inside a super
+      // function are trait bodies too, which is where these two sit.
+      if (_fieldsAreAccessors) {
+        final through = _cellPlace(place);
+        if (through != null) return '&mut *$through.borrow_mut()';
+      }
       final shared = _sharedField(place.name);
       if (shared != null && !_isCopy(_heldDecl(shared))) {
         return '&mut *$_selfName.${snake(place.name)}.borrow_mut()';

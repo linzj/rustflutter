@@ -55,6 +55,31 @@ impl Comparable<f64> for i64 {
     }
 }
 
+/// A handle to a comparable thing compares as the thing does.
+///
+/// A class that `implements Comparable<T>` gets `impl Comparable<T> for T`
+/// on the *struct* (`_emitPreludeInterfaces`), and every list of it holds
+/// handles: `List<_ActiveItem>.sort()` is a `Vec<Rc<_ActiveItem>>`, and
+/// `DartSortNatural` asks `Rc<_ActiveItem>: Comparable<Rc<_ActiveItem>>`,
+/// which nothing answered (E0599 on `sort_natural`,
+/// `_SliverAnimatedMultiBoxAdaptorState.insertItem`/`removeItem`, ws973).
+///
+/// The bound is `Comparable<Rc<T>>`, not `Comparable<T>`: a class-typed
+/// parameter is lent as a handle, so what the class implements is
+/// `Comparable<Rc<_ActiveItem>> for _ActiveItem` -- the argument is already
+/// a handle and only the receiver is not. Written `T: Comparable<T>` this
+/// blanket held for nothing a class ever implements.
+///
+/// No overlap with the per-class impls: those all have a concrete struct as
+/// their self type, never an `Rc`. `Rc<dyn Trait>` is not covered either --
+/// `T` is sized here -- and a trait object that needs comparing carries its
+/// own impl.
+impl<T: Comparable<std::rc::Rc<T>>> Comparable<std::rc::Rc<T>> for std::rc::Rc<T> {
+    fn compare_to(&self, other: std::rc::Rc<T>) -> i64 {
+        (**self).compare_to(other)
+    }
+}
+
 impl Comparable<String> for String {
     fn compare_to(&self, other: String) -> i64 {
         match self.cmp(&other) {
