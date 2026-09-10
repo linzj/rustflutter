@@ -1724,7 +1724,7 @@ dart_any_display!(
     u8 => "int", i8 => "int", u16 => "int", i16 => "int",
     u32 => "int", i32 => "int", u64 => "int", usize => "int", isize => "int",
     f32 => "double", char => "String",
-    Duration => "Duration", Symbol => "Symbol", StackTrace => "StackTrace", Uri => "Uri", Exception => "Exception", FormatException => "FormatException", ArgumentError => "ArgumentError", UnimplementedError => "UnimplementedError", IndexError => "IndexError", RangeError => "RangeError", FileSystemException => "FileSystemException", SocketException => "SocketException", AssertionError => "AssertionError",
+    Duration => "Duration", Symbol => "Symbol", StackTrace => "StackTrace", Uri => "Uri", Exception => "Exception", FormatException => "FormatException", ArgumentError => "ArgumentError", UnimplementedError => "UnimplementedError", IndexError => "IndexError", RangeError => "RangeError", FileSystemException => "FileSystemException", SocketException => "SocketException", HttpException => "HttpException", AssertionError => "AssertionError",
     StateError => "StateError", TypeError => "TypeError", Error => "Error", UnsupportedError => "UnsupportedError", ConcurrentModificationError => "ConcurrentModificationError",
 );
 
@@ -3440,7 +3440,7 @@ impl DartEq for f32 {
     }
 }
 
-dart_eq!(StringBuffer, StackTrace, DateTime, SentinelValue, Stopwatch, Uri, JsonUtf8Encoder, Pattern, ServiceExtensionResponse, Flow, RandomAccessFile, File, Directory, FileSystemEntity, FileSystemException, FileMode, FileLock, Null, RegExpMatch, HttpClientResponse, TimelineTask, Endian, InternetAddress, Invocation, InvocationKind, Zone, Timer, RegExp, Exception, Utf8Decoder, OSError, SocketException, HttpClient, JsonCodec, Utf8Codec, Encoding, TypedData, ByteBuffer, ArgumentError, UnimplementedError, IndexError, RangeError, ByteData, FormatException);
+dart_eq!(StringBuffer, StackTrace, DateTime, SentinelValue, Stopwatch, Uri, JsonUtf8Encoder, Pattern, ServiceExtensionResponse, Flow, RandomAccessFile, File, Directory, FileSystemEntity, FileSystemException, FileMode, FileLock, Null, RegExpMatch, HttpClientResponse, HttpHeaders, TimelineTask, Endian, InternetAddress, Invocation, InvocationKind, Zone, Timer, RegExp, Exception, Utf8Decoder, OSError, SocketException, HttpException, HttpClient, JsonCodec, Utf8Codec, Encoding, TypedData, ByteBuffer, ArgumentError, UnimplementedError, IndexError, RangeError, ByteData, FormatException);
 
 /// `hashCode` of a shared object: its identity, as Dart's `Object.hashCode`.
 pub trait RcHashCode {
@@ -6044,6 +6044,23 @@ impl<T: Clone + 'static> Stream<T> {
     }
 
     /// `toList()`.
+    /// `stream.handleError(onError)`: the stream, with errors routed to a
+    /// handler. A stream here is a *ready* stream of events already known
+    /// and has no error channel at all (see the struct), so no error can
+    /// arrive for the handler to see, and the stream itself is the honest
+    /// answer -- not a stub. `IOClient.send` calls it on the response.
+    /// `onError` is Dart's bare `Function` -- `handleError` takes one so
+    /// that it can accept either arity -- so it arrives as the function
+    /// *object* every `Function` slot holds, exactly as `DartFuture::then`
+    /// takes its own.
+    pub fn handle_error(
+        &self,
+        _on_error: std::rc::Rc<dyn DartAny>,
+        _test: Option<std::rc::Rc<dyn Fn(std::rc::Rc<dyn DartAny>) -> Result<bool, DartError>>>,
+    ) -> Stream<T> {
+        self.clone()
+    }
+
     pub fn to_list(&self) -> DartFuture<Vec<T>> {
         DartFuture::ready(Ok(self.events.borrow().clone()))
     }
@@ -6063,6 +6080,15 @@ impl<T: Clone + 'static> Stream<T> {
 impl<T> Clone for Stream<T> {
     fn clone(&self) -> Self {
         Stream { events: self.events.clone() }
+    }
+}
+
+/// The empty ready stream, which is what `Stream::empty()` builds. Written
+/// by hand for the same reason `Clone` above is: deriving it would ask
+/// `T: Default`, and a stream of no events needs nothing of `T`.
+impl<T> Default for Stream<T> {
+    fn default() -> Self {
+        Stream { events: std::rc::Rc::new(std::cell::RefCell::new(Vec::new())) }
     }
 }
 
@@ -6154,8 +6180,75 @@ impl MapBase {
 }
 
 /// `dart:io`'s `HttpClientResponse`, named in `http`'s IO client.
+///
+/// A type so the signatures compile, as `HttpClient` beside it is: there is
+/// no HTTP stack here, and nothing makes one of these. Its members are the
+/// ones `IOClient.send` reads off it when it builds an
+/// `IOStreamedResponse` -- the status line, the length, the two flags and
+/// the headers -- so that the function translates instead of being refused
+/// whole. A response nobody can obtain answers with the zero value.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct HttpClientResponse;
+pub struct HttpClientResponse {
+    pub status_code: i64,
+    pub reason_phrase: String,
+    pub content_length: i64,
+    pub is_redirect: bool,
+    pub persistent_connection: bool,
+    pub headers: HttpHeaders,
+    pub body: Stream<Vec<i64>>,
+}
+
+impl HttpClientResponse {
+    pub fn status_code(&self) -> i64 {
+        self.status_code
+    }
+    pub fn reason_phrase(&self) -> String {
+        self.reason_phrase.clone()
+    }
+    pub fn content_length(&self) -> i64 {
+        self.content_length
+    }
+    pub fn is_redirect(&self) -> bool {
+        self.is_redirect
+    }
+    pub fn persistent_connection(&self) -> bool {
+        self.persistent_connection
+    }
+    pub fn headers(&self) -> HttpHeaders {
+        self.headers.clone()
+    }
+
+    /// `HttpClientResponse` *is* a `Stream<List<int>>` in Dart, and
+    /// `IOClient.send` reads it as one (`response.handleError(..)`). The
+    /// body it forwards to is empty for the same reason the rest of this
+    /// type answers with the zero value: nothing here can obtain one.
+    pub fn handle_error(
+        &self,
+        on_error: std::rc::Rc<dyn DartAny>,
+        test: Option<std::rc::Rc<dyn Fn(std::rc::Rc<dyn DartAny>) -> Result<bool, DartError>>>,
+    ) -> Stream<Vec<i64>> {
+        self.body.handle_error(on_error, test)
+    }
+}
+
+/// `dart:io`'s `HttpHeaders`, as much of it as `IOClient.send` walks: it
+/// asks each header for its joined value (`forEach`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct HttpHeaders {
+    pub entries: Vec<(String, Vec<String>)>,
+}
+
+impl HttpHeaders {
+    pub fn for_each(
+        &self,
+        action: std::rc::Rc<dyn Fn(String, Vec<String>) -> Result<(), DartError>>,
+    ) -> Result<(), DartError> {
+        for (name, values) in self.entries.iter() {
+            action(name.clone(), values.clone())?;
+        }
+        Ok(())
+    }
+}
 
 /// `dart:convert`'s `ByteConversionSink`: a sink of byte lists.
 /// A `Sink<List<int>>`, and a `List<int>` is a `Vec<i64>` here (the
@@ -9101,6 +9194,8 @@ dart_core_as!(AssertionError);
 dart_core_as!(UnsupportedError);
 dart_core_as!(UnimplementedError);
 dart_core_as!(ConcurrentModificationError);
+dart_core_as!(HttpException);
+dart_core_as!(SocketException);
 dart_core_as!(
     Error,
     ArgumentError => |e| Error { message: format!("{}", e), rendered: Some(format!("{}", e)) },
@@ -9488,6 +9583,31 @@ impl SocketException {
 impl fmt::Display for SocketException {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "SocketException: {}", self.message)
+    }
+}
+
+/// `dart:io`'s `HttpException`: what a failed request throws, caught by
+/// `IOClient.send` (`on HttpException catch (error) => ClientException
+/// (error.message, error.uri)`, and an `err is HttpException` on the
+/// response stream's error). Its two members are the two that use reads.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct HttpException {
+    pub message: String,
+    pub uri: Option<Uri>,
+}
+
+impl HttpException {
+    pub fn new(message: String, uri: Option<Uri>) -> Self {
+        HttpException { message, uri }
+    }
+}
+
+impl fmt::Display for HttpException {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.uri {
+            Some(uri) => write!(f, "HttpException: {}, uri = {}", self.message, uri),
+            None => write!(f, "HttpException: {}", self.message),
+        }
     }
 }
 

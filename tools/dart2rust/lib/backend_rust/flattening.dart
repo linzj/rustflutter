@@ -326,6 +326,9 @@ augment class RustBackend {
     'UnsupportedError',
     'UnimplementedError',
     'ConcurrentModificationError',
+    // `dart:io`'s two, which `IOClient.send` catches and tests for.
+    'HttpException',
+    'SocketException',
     'TypeError',
     'AssertionError',
     'Error',
