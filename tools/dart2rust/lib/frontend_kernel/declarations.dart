@@ -511,6 +511,18 @@ augment class KernelFrontend {
     return any;
   }
 
+  /// Whether the CFE applied this class as a mixin anywhere -- which is
+  /// where its bodies, fields and closures went.
+  ///
+  /// Asked instead of `isMixinDeclaration`, because that is false for a
+  /// Dart 3 `mixin class`: `abstract mixin class WidgetsBindingObserver` is a
+  /// `Class` in Kernel, hollow in exactly the same way, with sixteen
+  /// applications and thirteen of them carrying the body of
+  /// `didChangeAppLifecycleState` -- which the flag hid, so a `super` call
+  /// into it was refused as "not translated" (ws1063).
+  bool _appliedAnywhere(Class node) =>
+      (applications[node] ?? const <Class>[]).isNotEmpty;
+
   /// The closures in the applications of a mixin declaration, which is where
   /// the CFE put its bodies. Empty for anything that is not one.
   ///
@@ -543,7 +555,7 @@ augment class KernelFrontend {
     if (target is! Procedure) return null;
     if (!target.isGetter && !target.isSetter) return null;
     final owner = target.enclosingClass;
-    if (owner == null || !owner.isMixinDeclaration) return null;
+    if (owner == null || !_appliedAnywhere(owner)) return null;
     final field = _appliedFields(owner)[target.name.text];
     // Only a *mutable* field. This exists to find cells, and a `final` field
     // has none -- resolving one only feeds it to the copy path, where
@@ -555,7 +567,7 @@ augment class KernelFrontend {
   }
 
   List<FunctionNode> _appliedClosures(Class node) {
-    if (!node.isMixinDeclaration) return const [];
+    if (!_appliedAnywhere(node)) return const [];
     return _appliedClosureCache.putIfAbsent(node, () {
       final found = <FunctionNode>[];
       for (final application in applications[node] ?? const <Class>[]) {
@@ -936,9 +948,26 @@ augment class KernelFrontend {
     }
     for (final procedure in node.procedures) {
       // A hollow mixin method: its body, from an application of the mixin.
-      final lowered = node.isMixinDeclaration && procedure.isAbstract
+      final lowered = procedure.isAbstract && _appliedAnywhere(node)
           ? _appliedBody(node, procedure) ?? procedure
           : procedure;
+      // `DART2RUST_TRACE_MIXINBODY=<name>` says why a mixin's method has no
+      // body to give a `super` call: whether the declaration is hollow at
+      // all, how many applications the driver found, and which of them
+      // carries a concrete copy.
+      if (Platform.environment['DART2RUST_TRACE_MIXINBODY'] ==
+          procedure.name.text) {
+        final apps = applications[node] ?? const <Class>[];
+        stderr.writeln(
+          'TRACE_MIXINBODY ${node.name}.${procedure.name.text} '
+          'mixinDecl=${node.isMixinDeclaration} '
+          'abstract=${procedure.isAbstract} '
+          'found=${!identical(lowered, procedure)} '
+          'applications=${apps.length} '
+          'carriers=${[for (final a in apps)
+            if (a.procedures.any((p) => p.name.text == procedure.name.text && !p.isAbstract && !p.isStatic)) a.name].join(",")}',
+        );
+      }
       final wasBack = _appliedBack;
       if (!identical(lowered, procedure)) {
         _appliedBack = _appliedBackMap(node, lowered.enclosingClass);
@@ -965,7 +994,7 @@ augment class KernelFrontend {
     // ..and the fields the declaration no longer lists, held by an
     // application: known to the trait for their cells only
     // (`IrClass.appliedFields`), typed by the declaration's own getter.
-    if (node.isMixinDeclaration) {
+    if (_appliedAnywhere(node)) {
       final own = {for (final f in node.fields) f.name.text};
       final seenApplied = <String>{};
       for (final application in applications[node] ?? const <Class>[]) {
@@ -995,7 +1024,7 @@ augment class KernelFrontend {
     }
     // ..and the mixin's methods the declaration no longer lists at all,
     // from an application that kept them (`_appliedProcedure`).
-    if (node.isMixinDeclaration) {
+    if (_appliedAnywhere(node)) {
       // By name *and* kind: a getter the declaration kept does not stand
       // for the setter of the same name it dropped
       // (`RenderAnimatedOpacityMixin.alwaysIncludeSemantics=`, written by
