@@ -434,6 +434,29 @@ augment class RustBackend {
       return '(std::rc::Rc::new($receiver) as ${dartHandle})';
     }
     if (name == '!dart_eq' && args.length == 1) {
+      // Two function values that take a *different number of arguments*
+      // are never the same object -- no Dart function value has two
+      // arities -- so Dart's `==` on them is false, and there is nothing
+      // to compare. `dart_eq` takes `&Self`, and the two are different
+      // types (E0308).
+      //
+      // `_TimePickerModel.updateShouldNotifyDependent` compares
+      // `onHourMinuteModeChanged != oldWidget.onHourDoubleTapped`: a
+      // `ValueChanged<_HourMinuteMode>` against a `VoidCallback`. That is
+      // upstream Flutter's own copy-paste -- the two lines below it read
+      // the same field on the left, in
+      // `packages/flutter/lib/src/material/time_picker.dart` and in the
+      // kernel, which carries it as written. Answering it the way Dart
+      // does is the faithful translation.
+      final held = target?.rustType;
+      final given = args.single.rustType;
+      if (held != null &&
+          given != null &&
+          held.isFunction &&
+          given.isFunction &&
+          held.parameters!.length != given.parameters!.length) {
+        return 'false';
+      }
       return '$receiver.dart_eq(&${_borrowed(args.single)})';
     }
     // `Vec::contains` takes a reference; Dart's takes the value. Only the

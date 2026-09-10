@@ -292,6 +292,27 @@ augment class RustBackend {
           }
         }
       }
+      // Two function values that take a *different number of arguments*
+      // are never the same object -- no Dart function value has two
+      // arities -- so Dart's `==` on them is false and `!=` is true, and
+      // there is nothing to compare. Rust's `dart_eq` takes `&Self` and
+      // the two are different types (E0308).
+      //
+      // `_TimePickerModel.updateShouldNotifyDependent` compares
+      // `onHourMinuteModeChanged != oldWidget.onHourDoubleTapped`: a
+      // `ValueChanged<_HourMinuteMode>` against a `VoidCallback`. That is
+      // upstream Flutter's own copy-paste (the two lines below it read the
+      // same field on the left), checked against
+      // `packages/flutter/lib/src/material/time_picker.dart` and against
+      // the kernel, which carries it as written. Answering it the way Dart
+      // does is the faithful translation.
+      if (leftType != null &&
+          bareType != null &&
+          leftType.isFunction &&
+          bareType.isFunction &&
+          leftType.parameters!.length != bareType.parameters!.length) {
+        return op == '==' ? 'false' : 'true';
+      }
       final coerced = leftType != null && bare.rustType != null
           ? coerceInto(bare, leftType, _world, inClosure: true)
           : bare;

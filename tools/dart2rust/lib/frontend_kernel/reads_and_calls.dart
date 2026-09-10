@@ -19,6 +19,14 @@ augment class KernelFrontend {
 
   IrExpr _instanceGetRaw(InstanceGet node) {
     final name = _fieldNameOf(node.interfaceTarget, node.name.text);
+    if (Platform.environment['DART2RUST_TRACE_FIELDREAD'] ==
+        (_member?.name.text ?? '')) {
+      stderr.writeln(
+        'TRACE_FIELDREAD wrote=${node.name.text} '
+        'target=${node.interfaceTarget.name.text} name=$name '
+        'receiver=${node.receiver.runtimeType}',
+      );
+    }
     final staticGot = _staticType(node.receiver);
     if (staticGot is InterfaceType && staticGot.classNode.name == 'Iterable') {
       iterableMembers.update(
