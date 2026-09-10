@@ -254,12 +254,12 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 (原尺子是 `toStringDeep` dump,它在 `assert` 里,release dill 没有——run554 起换。)
 
 - 参考:`~/gallery_upstream/test/dump_render_walk_test.dart` 打出,存
-  `~/dart2rust_build/scratch/ref_render_walk.txt`,6 行:`_ReusableRenderView →
+  `.build/scratch/ref_render_walk.txt`,6 行:`_ReusableRenderView →
   RenderSemanticsAnnotations → RenderSemanticsAnnotations → RenderTapRegionSurface →
   RenderSemanticsAnnotations → RenderConstrainedBox`,后五个带 `size=Size(800.0, 600.0)`。
-- 产物:`~/dart2rust_build/scratch/got_render_walk.txt`。
+- 产物:`.build/scratch/got_render_walk.txt`。
 - 第二份参考(2026-09-07):`test/dump_render_walk_settled_test.dart`(pump 8×100ms)→
-  `~/dart2rust_build/scratch/ref_render_walk_settled.txt`,708 行,gallery 主页整棵树;
+  `.build/scratch/ref_render_walk_settled.txt`,708 行,gallery 主页整棵树;
   run658 起前 23 行类型一致,分叉在过渡(`_RenderSnapshotWidget` vs `RenderAnimatedOpacity`)。
 - **现状(run599):节点类型序列 6/6 一致(自 run584);还差 `size=`**——dump 时
   没有 layout 数据(2 帧已画,待查是 dump 时机还是 size 读取)。
@@ -568,7 +568,6 @@ Dart 的循环变量是同一个对象。加 `mut` 只是把「诚实地 panic �
 
 | 轮 | 规则 / 读数 | 数 |
 |---|---|---|
-| run877 | the reading, after ws875-ws877 | — |
 | ws899 | 黄金 44 个错里 28 个的根因是「夹具 driver 不是同一个编译器」:`dart2rust_kernel.dart` 一个 `TypeEnvironment` 都没建(前端里 34 处读它,全走 null 分支),`const Spacing._(3.0)` 的 `3.0` 因此退化成 `dynamic`,`const` 里发出一次拆箱。另一半:分析器前端一次实参加宽都不做,补上「进对象槽就装箱」(`IrUpcast`,由后端选 `dart_boxed`/`dart_object`/句柄) | testdata **44 → 16** 错;oracle exit 0、BEHIND 16 → 14(`constdirect`/`named_args` 真追上);十个 fx 夹具全 AGREE;gallery 逐字节未动(md5 1aee02ea,拒绝仍 38)——这一轮没碰生产路径 |
 | ws900 | `use` 行一直是从**生成出来的文本**用正则回扫猜出来的,而后端发射时明明知道每个引用指向哪个库——`_ReferenceCollector._member` 手里就是答案,却只留下库和类名、把成员名扔了。改成一次遍历(`referencesOf`)同时交出库、类名、成员,`use` 行照账本写;文本侧十二条补丁一次删完(`_code`/`_identifiersIn`/`_calledIn`/`_boundIn`/`_packageOf`/`everyDefinitionIsAFunction`/`visible`/同包兜底/Dart import 列表/`pub use` 再导出)。账本盖不到的只有**编译器自己发明的名字**,各自在发明处记一笔:`superFn` 与它的 trait 界、类头的 supertrait、`implName`、抽象类的静态、宽 impl 与动态槽两次普查、`_genericOnTrait` 选中的体、被应用的 mixin 体 | stub **147**(未升)、拒绝 38、可达 **67 → 69**、`cargo check --workspace` **0 error**;`dart2rust_package.dart` −290 行;widgets crate 325,924 → 402,903 行(**变大,记债**);oracle exit 0 / BEHIND 14;**run900 红**——账本把 `scheduleMicrotask` 从 `dart:ui` 的空实现改绑到 prelude,microtask 第一次真的跑起来,当场撞上 147 里早就有的那个 `_handle_focus_changed`(下一轮修) |
 | ws901 | run900 停在 `_handle_focus_changed`:`policy.invalidate_scope_data(..)` 要 `&mut self`,而 `policy` 是 `Rc<dyn FocusTraversalPolicy>`。两本普查读的不是同一批体——后端的 `_mutating` 读**降下来的 IR**(里面有 `_policy_data.remove(k)`),前端决定 `counted` 的 `_writesFieldInMethod` 只走类**声明**里的 procedures,而 CFE 把 mixin 的体拷进了匿名**应用**类。让它读同一批:自己的 + 上方匿名应用的 + (是 mixin 声明时)`applications` 里的。顺手把账本欠的三处收了:`_member` 现在也读被引用成员的签名类型(Rust 调用处没有推断——适配实参发射的是被调方的参数类型) | stub **147 → 135**(focus 那组 9 个 + 三处 import 3 个,一个新的都没加)、拒绝 38、可达 69、`cargo check` 0 error;夹具 `mixinmutmap` 先红后绿;oracle exit 0 / BEHIND 14;run901 仍红,但往前挪到了下一个桩(`Completer<void>.complete()`) |
@@ -609,6 +608,7 @@ Dart 的循环变量是同一个对象。加 `mut` 只是把「诚实地 panic �
 | ws967 | **`Isolate.run(computation)`**:这里只有一个 isolate,所以那段计算就在这个 isolate 上派出去——而这正是 `Future(computation)` 已经在做的事,回调的形状(`FutureOr<R> Function()`)也一模一样,所以降成 `future_new(..)`。**不能**写成 prelude 那个 `Isolate<T>` 上的 `run`:那是给 `static` 用的包装,只是恰好和 `dart:isolate` 同名,`Isolate::run` 那个 `T` 无从推起(「no associated function named `run` found for struct `Isolate<_>`」)。夹具 `isolaterun` 先红(一模一样的 E0599)后绿——同步的夹具驱动不了事件循环,所以它验的是「调得出来、拿回来的是对的 future 类型」 | stub **93 → 92**(foundation 的 `compute`)、拒绝 29、可达 69、0 error;run967 连采五次:707 行 / 类型差异 0 / 0 panic |
 | ws968 | **`Object.hashAllUnordered(xs)` prelude 里没有**,调用名了一个没人写的函数(E0425)。补上:每个元素的 hash 用**可交换**的方式折进去(求和、异或、计数,和 SDK 自己那套一样),所以同样的元素换个顺序算出来一样。补完之后那个桩还在,原因换成了 mismatched types——`hashAll`/`hashAllUnordered` 收的是 `Iterable<Object?>`,而 prelude 那两个写的是 `Vec<T>`,`RenderObject.hashCode` 递进去的是个 `Set`;于是两个都改成收**任何能迭代的东西**(`IntoIterator`,`Set<T>` 早就实现了)。夹具 `hashunordered` 覆盖「换序相同」「不同元素不同」「有序的那个确实看顺序」和「收 `Set`」四条,先红后绿 | stub **92 → 91**(`RenderObject.hashCode`)、拒绝 29、可达 69、0 error;run968 连采五次:707 行 / 类型差异 0 / 0 panic |
 | ws969 | **字面量之间的算术,做接收者一样是没定住的**。`(1.5 * 0.35).sin()` 和 `1.5.sin()` 一样——里面没有一处说它是哪种浮点(E0689)。ws956 教会了这条规则穿过取负,这是另一种拼法:穿过 `+ - * /`,并且**两边都得是字面量**——只要有一个带类型的操作数,推导本来就有了。后缀写在**最左边那个字面量**上,一处就把整个表达式定住。夹具 `binaryfloatrecv` 覆盖全字面量的两种和带类型操作数的一种,先红(一模一样的 E0689)后绿 | stub **91 → 90**(`InkSparkle._updateFragmentShader`);第三轮的错误数 86 → 80,说明这条规则不止一处在用;拒绝 29、可达 69、0 error;run969 连采五次:707 行 / 类型差异 0 / 0 panic |
+| ws970 | **super 函数的 `__Self` 上站着 Dart 链从没提过的 trait**。`super.x()` 在混入里派发到*应用*的前一个类——`on` 子句没提过它——自由函数就把那个 trait 也要进界里(`_superBoundTraits`),而**界是往下继承的**:`on` 那个混入的混入,`__Self` 上同样站着它。于是 Dart 只声明过一次的名字,在 Rust 这边有第二个候选(E0034),而 Dart 那边无从看见。`_boundOnlyTraits` 用同一个 walk 从 IR 里把这些多出来的 trait 读回来,数候选时算上;答案仍是 Dart 的那个**声明 trait**,重写照样到位(具体类对它的 impl 带着重写)。夹具 `boundwidened` 先红(一模一样的 E0034,`Base` 对 `Mid`)后绿。**同一轮把尺子的输入搬回工程目录**:`~/dart2rust_build/` 被清掉,一次带走 dill、41 个夹具的全部源码和参考渲染树,而仓库里没有一行说过怎么再造。dill 与参考各补了脚本(`bin/gallery_dill.py`、`bin/render_ref.py`),夹具**源**入库(`fx/`),扫描与运行尺子也第一次写下来(`bin/allfx.sh`、`bin/render_ruler.py`) | stub **90 → 89**(`RenderAbstractLayoutBuilderMixin.layoutCallback`;`layoutInfo` 的 E0034 也没了,底下露出另一条错);第三轮错误数 80 → 79;拒绝 29、可达 69、0 error;run970 连采五次:707 行 / 类型差异 0 / 0 panic;夹具 **39 个,37 AGREE + 2 个故意的红**(从转录里捞回 39 个,`cmpscalar` 和另一个没捞回来) |
 
 ## 下一步
 
@@ -626,8 +626,8 @@ ws482/ws494;refusal 归并 804 → 29,一直在按类别收)。还活着的两�
   的函数带 `Result` 而只有 6.9% 会失败。
 - **运行时 `Dart_*` 仍是 0/168**;`runtime/` crate(无头引擎)从 09-06 起存在。
 
-**(2026-09-10 校注)** 现状:**ws969 90 stub / 29 拒绝 / 69 crate 全可达 / 0 error**,
-运行尺子 run969 **707 行、类型差异 0、0 panic,连采五次一模一样**——尺子从 ws934
+**(2026-09-10 校注)** 现状:**ws970 89 stub / 29 拒绝 / 69 crate 全可达 / 0 error**,
+运行尺子 run970 **707 行、类型差异 0、0 panic,连采五次一模一样**——尺子从 ws934
 起不再抖(根因见〈已知欠账〉第一条),所以「读三次取多数」那套读法可以退休了,
 一次就算数;为了看住回归,每轮仍连采五次。
 
@@ -740,6 +740,31 @@ sig dill,前缀 `package:,dart:ui`,931 个库;尺子 `bin/stubs.py`,峰值 4–1
 三个数各量一样东西:**stub** 是「译出了、编不过」的函数;**refusal** 是
 「没译出」的函数;**`todo!`** 是「编得过、一跑就 panic」的转发器体——
 ws344 才照到它,一量 26199 个,削到 782。
+
+
+**尺子的输入放在哪(2026-09-10 定)**
+
+四把尺子都要吃东西:chain 要 gallery 的 AOT dill,夹具尺子要夹具语料,渲染尺子
+要 Flutter 自己那份参考遍历。这些以前在 `~/dart2rust_build/`——**工程目录之外**。
+2026-09-10 那个目录被清掉,一次带走了 dill、**41 个夹具的全部源码**和参考渲染树,
+而仓库里没有一行说过它们怎么再造出来。
+
+现在的规矩:**产物不出工程目录**,并且**尺子的输入要么在库里,要么有脚本能把它
+再造出来**。
+
+| 东西 | 在哪 | 怎么再造 |
+|---|---|---|
+| gallery 的 AOT dill | `.build/gallery/app_aot_sig.dill`(不入库) | `bin/gallery_dill.py` |
+| 夹具**源** | `fx/*.dart`(**入库**) | 无——它们是验收测试,丢了就是丢了 |
+| 夹具产物(dill/crate/日志) | `.build/fx/`(不入库) | `bin/fx.sh <name>` |
+| 渲染尺子的参考 | `.build/scratch/ref_render_walk_settled.txt`(不入库) | `bin/render_ref.py` |
+| 渲染尺子本身 | — | `bin/render_ruler.py <前缀> [次数]` |
+| 夹具全扫 | — | `bin/allfx.sh` |
+
+从转录里捞回了 39 个夹具,**`cmpscalar` 和另一个没捞回来**——它们那两次会话的
+转录已经不在了。清点也是这时才做的:`bin/allfx.sh`、`bin/render_ruler.py`、
+`bin/render_ref.py`、`bin/gallery_dill.py` 四个脚本以前每轮都是手敲的,一行都
+没写下来过。
 
 
 ## 九条要记住的
@@ -882,6 +907,18 @@ ws344 才照到它,一量 26199 个,削到 782。
    曾经同一件事三处三个数(16/11/9)、两个相反结论,就是靠加校注攒出来的。
 
 校注只用于「原文没错但要补一层」;凡是「原文错了」,直接改原文。
+
+- **两条从夹具语料重建时照出来的错(2026-09-10,ws970)**。两个夹具的转录版本比
+  当时通过的版本多一截,那一截各自照出一个真错;把多出来的那截摘掉才绿,摘掉的
+  东西写在这里,不是丢掉。两条都还没量过在 gallery 里值多少。
+  - **map 里存的 `null`,取出来再 `as List?`,会 unwrap 一个 `None`**。
+    `{'missing': null}` 的值是 `dart_null_object()`,`map['missing']` 因此是
+    `Some(dart_null_object())` 而不是 `None`,`as List?` 的 downcast 就在
+    `Some` 里 unwrap,panic。Dart 那边是 `null`。见 `fx/rawlistcast.dart` 的注释。
+  - **界是可空的泛型函数,不能在不可空的实例化上调用**。`T extends String?` 的
+    参数在签名里一律写成 `Option<String>`,`sentence<String>('hello')` 因此是
+    「expected `Option<String>`, found `String`」(E0308),返回值也一样,进
+    `format!` 又是一个 E0277。见 `fx/promotedor.dart` 的注释。
 
 - **`todo!` 的剩员从没再量过**。三把尺子里这一把量的是「编得过、一跑就 panic」的
   转发器体:ws344 第一次照到它,一量 **26199 个**,削到 **782**——**此后再没量过**,
@@ -1251,7 +1288,7 @@ int 分支不够:Dart 的 `(-7).abs()` 是 **int 7**,印 `7`;当成 double 印
   已量到的三笔:`.text` 的 20% 是「常量数据当代码写」(O3 之下不减);
   53% 是泛型实例化(O3 之下不变);**124,364 个 `pub fn` 里 123,181 个返回 `Result`
   (99.05%),而前端自己的 `throws` 普查说只有 8991/130133(6.9%)会失败**。
-  产物在 `~/dart2rust_build/scratch/`(`target-release/`、`libapp_x64.so`、
+  产物在 `.build/scratch/`(`target-release/`、`libapp_x64.so`、
   `rel_syms.txt`、`dbg_syms.txt`)。
 
 ## The generic class's `runtimeType`

@@ -50,9 +50,10 @@ cd "$here" || exit 2
   # in target/, under 16 GB of it live. This reclaims it while
   # nothing is compiling.
   python3 bin/prune_target.py \
+  && python3 bin/gallery_dill.py \
   && "$dart" run $DART2RUST_EXPERIMENTS \
     --packages=.agree/kernel_package_config.json bin/dart2rust_package.dart \
-    "$HOME/dart2rust_build/gallery/app_aot_sig.dill" "package:,dart:ui" .crate/src \
+    "$here/.build/gallery/app_aot_sig.dill" "package:,dart:ui" .crate/src \
   && python3 bin/workspace.py \
   && python3 bin/stubs.py --rounds 80 --report "$report"
 ) > "$log" 2>&1 &

@@ -12,6 +12,7 @@ build directory, not part of the repository.
 """
 import io
 import os
+import re
 import subprocess
 import sys
 
@@ -35,7 +36,14 @@ def module_name(path, crate):
     that does not compile.
     """
     stem = os.path.splitext(os.path.abspath(path))[0]  # the backend drops `.dart`
-    name = ''.join(c if c.isalnum() else '_' for c in stem)
+    # A *run* of non-alphanumerics is one underscore, as `moduleName` in
+    # `bin/dart2rust_package.dart` spells it. Per character it was the same
+    # answer for every path that has no `..`, `//` or dot-directory in it --
+    # and then the build directory moved into the repository as `.build/`,
+    # whose `/.` is two characters and one underscore: the check below fired
+    # on every fixture at once (2026-09-10). The check did its job; this
+    # derivation was the wrong half.
+    name = re.sub(r'[^A-Za-z0-9]+', '_', stem)
     declared = io.open(os.path.join(crate, 'lib.rs'), encoding='utf-8').read()
     if 'pub mod %s;' % name not in declared:
         raise SystemExit('no `pub mod %s` in %s/lib.rs' % (name, crate))

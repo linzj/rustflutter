@@ -714,13 +714,23 @@ augment class RustBackend {
       // and `value=`: the setter is `set_value` here, and naming a trait
       // that has only the setter was 49 "cannot find method", ws418).
       bool declares(IrMethod m) => m.name == name && !m.isStatic && !m.isSetter;
-      final declaring = _abstractAncestors(owner).where(
-        (a) =>
-            a.methods.any(declares) ||
-            a.abstractMethods.any(declares) ||
-            a.fields.any((f) => f.name == name),
-      );
-      if (declaring.length > 1) wide = declaring.first;
+      bool declarer(IrClass a) =>
+          a.methods.any(declares) ||
+          a.abstractMethods.any(declares) ||
+          a.fields.any((f) => f.name == name);
+      final declaring = _abstractAncestors(owner).where(declarer).toList();
+      // ..or once along Dart's chain and again in a trait only Rust put
+      // above it (`_boundOnlyTraits`): a super function's `__Self` carries
+      // the bounds its ancestors' super calls asked for, and a name one of
+      // those declares too is a second candidate Dart never saw
+      // (`constraints` on `RenderAbstractLayoutBuilderMixin`, whose
+      // `RenderObjectWithLayoutCallbackMixin` reaches `RenderBox` through
+      // `super`: 2 E0034 at ws970). The answer is still Dart's -- the one
+      // trait its chain declares the name on.
+      if (declaring.length > 1 ||
+          (declaring.length == 1 && _boundOnlyTraits(owner).any(declarer))) {
+        wide = declaring.first;
+      }
     }
     String? asTrait;
     if (wide != null &&

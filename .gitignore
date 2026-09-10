@@ -74,3 +74,9 @@ tools/dart2rust/.crate/
 # The slice crates round 63 added. Generated, like `.crate/`, and forgetting
 # them here swept 1500 generated files into a commit.
 tools/dart2rust/.crate-*/
+
+# 编译器自己的产物根:gallery 的 AOT dill、夹具的 dill/crate/日志、渲染尺子
+# 的参考与实测。这些以前在 `~/dart2rust_build/`——**工程目录之外**,所以一次
+# 清理就把整份夹具语料和参考渲染树一起带走了(2026-09-10)。现在它们在工程
+# 里,可重新生成的部分不入库,夹具的**源**入库(`tools/dart2rust/fx/`)。
+tools/dart2rust/.build/

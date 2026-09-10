@@ -100,6 +100,57 @@ augment class RustBackend {
   /// free function rests on.
   final _superBoundTraits = <String>{};
 
+  /// What `_superBoundTraits` put above a trait, read back from the IR:
+  /// the traits standing over `of` in Rust that Dart's chain never named.
+  ///
+  /// The bound a super function asks for is inherited by every trait below
+  /// it, so the widening travels: `RenderObjectWithLayoutCallbackMixin`
+  /// reaches `RenderBox.markNeedsLayout` through `super`, and a mixin `on`
+  /// that mixin has `RenderBox` over its `__Self` too, though its own `on`
+  /// clause names only `RenderObject`. A name Dart's chain declares *once*
+  /// may then be declared a second time up there -- one member to Dart,
+  /// two candidates to Rust (E0034 on `constraints` in
+  /// `RenderAbstractLayoutBuilderMixin`, ws970).
+  ///
+  /// Read from the bodies rather than from `_superBoundTraits`, which is
+  /// one emitter's and holds only the class being written: the same walk
+  /// (`_WalkSelf`, the same three tests) over an ancestor's methods says
+  /// what its own emitter will have asked for.
+  static final _boundOnly = <IrClass, List<IrClass>>{};
+
+  List<IrClass> _boundOnlyTraits(IrClass of) => _boundOnly.putIfAbsent(of, () {
+    final chain = [of, ..._abstractAncestors(of)];
+    final named = {for (final c in chain) c.name};
+    final out = <String, IrClass>{};
+    void reach(String name) {
+      if (named.contains(name) || out.containsKey(name)) return;
+      final above = library[name] ?? library.elsewhere[name];
+      if (above == null || !above.isAbstract) return;
+      out[name] = above;
+      // ..and whatever stands over *it*: the bound names one trait and
+      // brings its supertraits with it.
+      for (final a in _abstractAncestors(above)) {
+        if (!named.contains(a.name)) out.putIfAbsent(a.name, () => a);
+      }
+    }
+
+    for (final c in chain) {
+      for (final method in c.methods) {
+        if (method.isStatic) continue;
+        final reached = _WalkSelf()..statement(method.body);
+        for (final base in reached.superBases.keys) {
+          if (base != c.name &&
+              base != 'Object' &&
+              _world.isTrait(base) &&
+              !_world.isBelow(c.name, base)) {
+            reach(base);
+          }
+        }
+      }
+    }
+    return out.values.toList();
+  });
+
   void _emitSuperFns() {
     for (final method in cls.methods) {
       if (method.isStatic) continue;
