@@ -602,8 +602,16 @@ augment class KernelFrontend {
       // childAfter`, ws527).
       // The receiver bound once (see `bindReceiver`): a closure that read
       // it again would read whatever it says the next time.
+      //
+      // Through `_receiver`, as a call's receiver and a field write's
+      // already are (ws1027, ws1029): an erased read has to be narrowed to
+      // the type Dart gives it before a member is looked for on it.
+      // `RestorableChangeNotifier<T extends ChangeNotifier>` reads `_value`
+      // through a trait erased to `RestorableListenable`'s bound, so
+      // `scheduleMicrotask(_value!.dispose)` tore `dispose` off an
+      // `Rc<dyn Listenable>`, which has no such member.
       final IrExpr? boundInit = bindReceiver && receiver is! ThisExpression
-          ? expression(receiver)
+          ? _receiver(receiver)
           : null;
       final String? bound = boundInit == null ? null : '__t${_nextTemporary++}';
       final tornCall = _qualified(
@@ -612,7 +620,7 @@ augment class KernelFrontend {
               ? null
               : bound != null
               ? (IrLocal(bound)..rustType = boundInit!.rustType)
-              : expression(receiver),
+              : _receiver(receiver),
           node.name.text,
           [
             for (var i = 0; i < fn.positionalParameters.length; i++)

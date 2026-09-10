@@ -253,6 +253,13 @@ augment class KernelFrontend {
     IrExpr lowered, {
     IrType? slotIr,
   }) {
+    if (Platform.environment['DART2RUST_TRACE_SLOT'] ==
+        (_member?.name.text ?? '')) {
+      stderr.writeln(
+        'TRACE_SLOT param=$param slotIr=$slotIr '
+        'lowered=${lowered.runtimeType} have=${lowered.rustType}',
+      );
+    }
     // The callee flag (`_slotTranslated`) is about this slot; whatever is
     // lowered underneath -- a literal's entries against the slot's element
     // types -- fills slots of its own, translated ones.

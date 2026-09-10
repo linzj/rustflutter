@@ -1453,9 +1453,24 @@ augment class KernelFrontend {
       if (bound is InterfaceType &&
           !(_translatedClass(bound.classNode) &&
               _abstractLike(bound.classNode))) {
+        if (Platform.environment['DART2RUST_TRACE_NARROW'] == '1') {
+          stderr.writeln(
+            'TRACE_NARROW declined ${static.parameter.name} bound=${bound.classNode.name} '
+            'translated=${_translatedClass(bound.classNode)} '
+            'abstractLike=${_abstractLike(bound.classNode)} '
+            'in ${_member?.name.text} have=${lowered.rustType}',
+          );
+        }
         return lowered;
       }
       static = bound;
+    }
+    if (Platform.environment['DART2RUST_TRACE_NARROW'] == '1' &&
+        _staticType(e) is TypeParameterType) {
+      stderr.writeln(
+        'TRACE_NARROW narrowing ${(_staticType(e) as TypeParameterType).parameter.name} '
+        'to $static in ${_member?.name.text} have=${lowered.rustType}',
+      );
     }
     if (!coerceByType || static is! InterfaceType) return lowered;
     try {

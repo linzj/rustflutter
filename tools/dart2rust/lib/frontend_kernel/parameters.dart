@@ -22,6 +22,16 @@ augment class KernelFrontend {
       // gives it to them (`_preludeLends`).
       // The parameter is owned where it is kept, so the argument is boxed to
       // match: a closure's own type has no name.
+      // ..and a tear-off that binds its receiver first is a *block* that
+      // hands the closure back (`raw_casts`), so the closure to box is the
+      // one under it. `scheduleMicrotask(_value!.dispose)` in
+      // `RestorableChangeNotifier._disposeOldValue` went in bare --
+      // "expected `Rc<dyn Fn()>`, found closure" -- while the same tear-off
+      // rooted at `this`, which binds nothing, was boxed all along.
+      if (value is IrBlockValue && value.value is IrClosure) {
+        final inner = _boxedArgument(value.value as IrClosure);
+        return IrBlockValue(value.statements, inner)..rustType = value.rustType;
+      }
       if (value is IrClosure) {
         // Typed as the closure it is (`rustType` carried), so the slot's
         // coercion sees it: a `Future<bool> Function(MethodCall)` tear-off
@@ -29,26 +39,31 @@ augment class KernelFrontend {
         // `Future<dynamic>` the slot declares (run447). Untyped from ws419
         // (2609 -> 2779 then) until the result rules -- `void` into
         // `Object`, a future into a future -- were in `coerce`.
-        return IrClosure(
-          value.params,
-          value.body,
-          value.returns,
-          captures: value.captures,
-          locals: value.locals,
-          // Carried. Rebuilding a node without a flag it had is the shape
-          // that lost `kept` in round 104 and `shared` in round 101 --
-          // and `isAsync` here, until run430 (`await` in a closure that
-          // was not `async`).
-          holdsSelf: value.holdsSelf,
-          boxed: true,
-          isAsync: value.isAsync,
-        )..rustType = value.rustType;
+        return _boxedArgument(value);
       }
       return value;
     } finally {
       _borrowedArgument = was;
     }
   }
+
+  /// A closure argument the callee keeps: boxed, since a closure's own type
+  /// has no name. Typed as the closure it is (`rustType` carried), so the
+  /// slot's coercion sees it.
+  static IrClosure _boxedArgument(IrClosure value) => IrClosure(
+    value.params,
+    value.body,
+    value.returns,
+    captures: value.captures,
+    locals: value.locals,
+    // Carried. Rebuilding a node without a flag it had is the shape
+    // that lost `kept` in round 104 and `shared` in round 101 --
+    // and `isAsync` here, until run430 (`await` in a closure that
+    // was not `async`).
+    holdsSelf: value.holdsSelf,
+    boxed: true,
+    isAsync: value.isAsync,
+  )..rustType = value.rustType;
 
   /// Whether the callee does anything with the parameter but call it.
   ///
