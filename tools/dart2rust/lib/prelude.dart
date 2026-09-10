@@ -6342,8 +6342,16 @@ pub fn dart_null_as<T: DartNullable>() -> T {
 
 /// `null!`: Dart's null check operator on a value that is Dart's `null`.
 /// It throws, so there is no value to hand back and no type to name.
-pub fn dart_null_check_failed() -> ! {
-    panic!("Null check operator used on a null value")
+/// What Dart's `x!` throws when `x` is null.
+///
+/// The message has always been Dart's own; the *behaviour* was not. This
+/// used to `panic!`, which is a `TypeError` the program cannot catch --
+/// and `on TypeError catch` around a null assert is ordinary Dart. Now it
+/// is the error, and the caller propagates it.
+pub fn dart_null_check_failed() -> DartError {
+    std::rc::Rc::new(TypeError::new(
+        "Null check operator used on a null value".to_string(),
+    )) as DartError
 }
 
 /// `List<T?>.filled(n, null)`: `n` nulls of `T?` as translated code spells

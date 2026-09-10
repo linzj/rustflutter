@@ -358,12 +358,17 @@ augment class RustBackend {
       // arm the AOT compiler proved dead, once the base's default `null`
       // was substituted in for it -- `None.unwrap()` could infer nothing,
       // run696).
+      // `x!` on a null is Dart's `TypeError`, and Dart catches it -- so it
+      // is an `Err` and not an `unwrap`, the same trade the `as` above
+      // makes. `None::<()>` gives the `ok_or_else` something to be an
+      // `Option` of where the value is statically null and there is no type
+      // to unwrap it at.
       IrNullCheck(operand: IrLiteral(type: IrType(name: 'Null'))) =>
-        'dart_null_check_failed()',
+        'None::<()>.ok_or_else(dart_null_check_failed)$_propagate',
       IrNullCheck(:final operand) =>
         operand is IrLocal
-            ? '${expr(operand)}.clone().unwrap()'
-            : '${expr(_plain(operand))}.unwrap()',
+            ? '${expr(operand)}.clone().ok_or_else(dart_null_check_failed)$_propagate'
+            : '${expr(_plain(operand))}.ok_or_else(dart_null_check_failed)$_propagate',
       // A closure inside `Some(..)` is the `Rc<dyn Fn>` its slot holds.
       // A local crossing is cloned: a closure's parameter rebound in its
       // prologue (`_withEdgeParams`) may be the `&T` a prelude iterator
