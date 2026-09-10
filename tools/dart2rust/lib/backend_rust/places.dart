@@ -619,6 +619,36 @@ augment class RustBackend {
     return null;
   }
 
+  /// `m[k]` as an `Option<&mut V>`, for a null-aware call that mutates what
+  /// the map holds.
+  ///
+  /// `_heldSlot` answers the null-*asserted* shape, `m[k]!.add(v)`, whose
+  /// place is a value: `get_mut(..).unwrap()`. The null-*aware* one is a
+  /// different type -- `m[k]?.remove(v)` has to keep the absence, so the
+  /// place is the `Option` `get_mut` already hands back and the caller maps
+  /// over it directly instead of adding `.as_mut()`
+  /// (`_childrenToAdd[child.restorationId]?.remove(child)` in
+  /// `RestorationBucket._removeChildData`, which mutated a copy of the list
+  /// and left the bucket's own untouched).
+  String? _optionHeldSlot(IrExpr? read) {
+    if (read is IrCall &&
+        read.name == 'clone' &&
+        read.args.isEmpty &&
+        read.target != null) {
+      return _optionHeldSlot(read.target!);
+    }
+    if (read is IrCall &&
+        read.name == '!map_get' &&
+        read.args.length == 1 &&
+        read.target != null) {
+      final place = _collectionPlace(read.target!);
+      return place == null
+          ? null
+          : '$place.get_mut(&${_borrowed(read.args.single)})';
+    }
+    return null;
+  }
+
   /// A collection as a place: a cell's `borrow_mut()`, one of this struct's
   /// own fields, or a local.
   String? _collectionPlace(IrExpr collection) {

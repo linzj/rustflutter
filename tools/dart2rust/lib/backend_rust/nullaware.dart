@@ -85,6 +85,16 @@ augment class RustBackend {
             ? '$place.as_mut().map(|$_boundName| ${expr(body)})'
             : '$place.as_mut().map(|$_boundName| -> Result<_, $_error> { Ok(${expr(body)}) }).transpose()?';
       }
+      // ..and what a *map* holds, which is already an `Option<&mut V>` and
+      // is mapped over as it stands. `m[k]!.add(v)` unwraps to a place;
+      // `m[k]?.remove(v)` has to keep the absence, so `.as_mut()` above
+      // would be one layer too many.
+      final held = mutating || calleeMutates ? _optionHeldSlot(receiver) : null;
+      if (held != null) {
+        return _failure == null
+            ? '$held.map(|$_boundName| ${expr(body)})'
+            : '$held.map(|$_boundName| -> Result<_, $_error> { Ok(${expr(body)}) }).transpose()?';
+      }
       // The body's *value* being the binding itself -- a `?..` cascade,
       // whose steps mutate through the reference and whose result is the
       // object -- is a clone: `as_ref()` binds a `&T` and the slot takes
