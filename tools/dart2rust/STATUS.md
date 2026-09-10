@@ -377,6 +377,22 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 
 ## 撤回与作废(不要再试)
 
+- **`super.==` / `super.hashCode` 进 `Object` 改成同一性——量出来是**把一个对的拒绝换成一个错答案**,已撤回
+  (ws985,2026-09-10)。** Flutter 的 `Widget` 写的就是 `operator ==(Object other) => super == other;`
+  和 `int get hashCode => super.hashCode;`,这两条是 29 条拒绝里的 2 条。prelude 现成就有非虚的同一性
+  (`dart_identical_any` 比两个地址、`dart_identity_hash_code` 就是地址),于是在**类是句柄**时发出去,
+  **拒绝 29 → 27,桩 77 逐字节相同**——数字是真的好看。
+  **但夹具照出它是错的**:`Thing`(抽象)下面一个 `Leaf`(**值结构体**),两个不同的 `Leaf(1)`
+  在 Dart 里 `hashCode` 不同(同一性),这边**相同**——`dart_self_thing()` 对一个按值拼的类
+  根本不是一个稳定的身份。改之前那里是 `panic!`(诚实的拒绝),改之后是一个**悄悄的错答案**。
+  **超类函数的接收者是 `&dyn Thing`,发射的时候不知道具体类是不是句柄**,所以这条规则没法在这里立住;
+  限制成「所有实现者都是句柄」的话,`Widget` 首先就不满足,那 2 条拒绝也就一条都掉不了。
+  `super_calls.dart` 里 ws828 留的那句话是对的:**同一性正是一个被复制的值类所没有的东西**。
+  **这 2 条属于 cc88ae36 说的「今天就是对的那 ~7 条拒绝」。**
+  顺带照出一条**更老的欠账**(见〈已知欠账〉):子类从抽象超类**继承**来的 `operator ==` 根本没被路由到——
+  结构体的 `dart_eq` 是按字段 derive 的,`dart_any_eq` 在注册表里找到的就是它,
+  所以 `Leaf(1) == Leaf(1)` 这边答 `true`、Dart 答 `false`。
+
 - **`x?.m(..)` 里 `m` 要 `&mut self` 就改走 `as_mut()`——两次都不成,已撤回(ws984,2026-09-10)。**
   两个桩(`cupertino_route._handleDragCancel`、`services_restoration._removeChildData`)是
   「cannot borrow `*it` as mutable, as it is behind a `&` reference」(E0596):`x?.dragEnd(0)`
@@ -1023,6 +1039,14 @@ ws344 才照到它,一量 26199 个,削到 782。
     参数在签名里一律写成 `Option<String>`,`sentence<String>('hello')` 因此是
     「expected `Option<String>`, found `String`」(E0308),返回值也一样,进
     `format!` 又是一个 E0277。见 `fx/promotedor.dart` 的注释。
+
+- **继承来的 `operator ==` 没被路由到**(2026-09-10,ws985 的夹具照出来的,还没量在 gallery 里值多少)。
+  一个类从抽象超类继承 `operator ==`(不自己写),生成的结构体 `dart_eq` 用的是**按字段 derive** 的那个,
+  `dart_any_eq` 从注册表里拿到的也是它,于是那个继承来的 `==` 一次都没被调用:
+  `Leaf(1) == Leaf(1)` 这边 `true`、Dart `false`。Flutter 的 `Widget` 就是这个形状
+  (它写 `==` 就是为了让子类别再定义相等),所以 gallery 里 widget 的相等**很可能是按字段比的,不是按同一性**。
+  ws935 已经为 `Key` 修过同一件事的一个特例(`dart_any_eq` 去问注册表要类自己的 `==`),
+  这一条是它的一般情形:**注册表里放的是 derive 出来的那个,而不是继承链上真正该赢的那个**。
 
 - **`todo!` 的剩员从没再量过**。三把尺子里这一把量的是「编得过、一跑就 panic」的
   转发器体:ws344 第一次照到它,一量 **26199 个**,削到 **782**——**此后再没量过**,
