@@ -259,7 +259,16 @@ class _WalkSelf {
     switch (e) {
       case IrCall(:final target, :final name, :final args, :final fails):
         if (fails) failing = true;
-        if (_caught == 0 && (target == null || target is IrThis)) {
+        // Not guarded by `_caught`: that counts whether a *failure*
+        // escapes, and both readers of `selfCalls` ask a different
+        // question -- does this method call that one, so that the handle
+        // (`_computeHandles`) or the `&mut self` (`_mutating`) has to
+        // spread to it. A `try` stops a throw, not a call.
+        // `EditableTextState._pasteTextWithReporting` is `try { await
+        // pasteText(cause); } catch ..`, and `pasteText` takes the handle:
+        // the call went unrecorded, the caller kept `&self`, and
+        // `self.paste_text(..)` had no such method.
+        if (target == null || target is IrThis) {
           selfCalls.add(name);
         }
         // `this` handed to a call keeps the object, as a closure would:
