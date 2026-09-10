@@ -386,11 +386,23 @@ augment class RustBackend {
       'impl${_generics(cls, static: true, clone: false)} DartEq for dyn ${cls.name}${cls.typeParameters.isEmpty ? '' : '<${cls.typeParameters.join(', ')}>'} {',
     );
     _indent++;
+    // ..and asks the object through its *own vtable*, not the registry.
+    // Every translated trait has `DartAny` as a supertrait
+    // (`pub trait Key: DartAny + std::fmt::Debug`), so `dyn Key` already
+    // carries these four methods; `dart_any_eq` was hashing a `TypeId` and
+    // probing a thread-local table to reach the very same per-class
+    // implementation. `bin/vtable_probe.py` is the compiled proof that the
+    // vtable route resolves, with a control that fails without the
+    // supertrait.
+    //
+    // The answer must not change: `dart_eq_any` on a concrete class is what
+    // the registry's closure called, so ws934 stands or falls with the
+    // render tree being byte-identical.
     _line(
-      'fn dart_eq(&self, other: &Self) -> bool { dart_any_eq(self.as_any(), other.as_any()) }',
+      'fn dart_eq(&self, other: &Self) -> bool { self.dart_eq_any(other.dart_any_ref()) }',
     );
     // ..and hashes the same way, consistently (see the prelude's `DartEq`).
-    _line('fn dart_hash_code(&self) -> i64 { dart_any_hash(self.as_any()) }');
+    _line('fn dart_hash_code(&self) -> i64 { self.dart_hash_any() }');
     _indent--;
     _line('}');
     _line('');
