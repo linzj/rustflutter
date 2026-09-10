@@ -1351,9 +1351,18 @@ Listenable>` 上,而这句在 `RestorableChangeNotifier<T extends ChangeNotifier
 也就是 tear-off 造出来的闭包没有进它的函数手柄(ws1008/ws1013 那一族)。
 第二层一直都在,只是被第一层挡着看不见。
 
-**按「逐字节相同就撤回」撤了**(和 `_nativeEffect`、ws1016 一样)。
-**要做就得两层一起做**,单独做第一层量不出来。同一个文件里已经有先例可抄:
-prelude 集合方法的 tear-off 会被改写成它代表的那次调用,好让调用的规则生效。
+**两层一起做也试过了(ws1020),还是逐字节相同,一并撤回。** 第二层的位置找对了:
+接收者被绑定时,tear-off 交回来的是一个 **`IrBlockValue`** 包着闭包
+(`{ let __t1 = ..; move || .. }`),而 `coerceInto` 里那条「闭包要进函数手柄」的规则
+只认光杆 `IrClosure`。把块看穿之后 `!rc` **仍然没发**,所以还有第三个未知数。
+
+**下次从这里起,别再猜第三次**:调用方是 `_schedule_microtask`,**是翻译出来的**
+(不是 prelude 的 `schedule_microtask`),所以 `translated` 为真、coercion 那条闸门应该跑得到。
+要打的是 `coerceInto` 对这个实参的 trace:`have0`、`slot`、`sameRust(have0, slot)`
+以及 `closure.boxed` 各是什么——`!rc` 那条包在
+`if (sameRust && !projectionDiffers && !arityDiffers)` 里面,四个条件里任何一个不成立都会静默跳过。
+
+第一层是**验证过有效的**:`dispose` 改完就找得到了,只是被第二层挡着量不出来。
 
 ## 桩尾还剩什么(2026-09-10,ws988 之后 74 个,逐条看过)
 
