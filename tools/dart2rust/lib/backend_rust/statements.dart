@@ -772,7 +772,42 @@ augment class RustBackend {
             : target is IrTopLevel
             ? '(**${screamingSnake(target.name)})'
             : null;
-        if (staticHolder != null &&
+        // What the static holds, and whether that is a *trait* handle: a
+        // `dyn Trait` has no fields, only the accessor pair it declares, so
+        // both shapes below have to become the setter.
+        // `_ContextMenuRoute._rectTweenReverse` holds a `RectTween?` and
+        // `_sheetScaleTween` a `Tween<double>`; `..end = x` on either came
+        // out as a field write ("method, not a field").
+        // A class's static lives on its owner, not in the library's
+        // top-level list -- looking only there found nothing.
+        final heldByStatic = target is IrStatic
+            ? library[target.owner]?.constants
+                  .where((c) => c.name == target.name)
+                  .firstOrNull
+                  ?.type
+            : target is IrTopLevel
+            ? (library.constants
+                      .where((c) => c.name == target.name)
+                      .firstOrNull
+                      ?.type ??
+                  library.constantsElsewhere[target.name]?.type)
+            : null;
+        final holdsTrait =
+            heldByStatic != null &&
+            library.isAbstract(nonNull(heldByStatic).name);
+        if (staticHolder != null && holdsTrait) {
+          // ..and only a *mutable* static has a cell to borrow through. An
+          // immutable one is the handle itself, and the trait's setter does
+          // its own interior mutation (`_sheetScaleTween` against
+          // `_rectTweenReverse`, which is mutable and does need the cell).
+          final cellBorne = target is IrStatic
+              ? _isMutableStatic(target.owner, target.name)
+              : target is IrTopLevel && _isMutableTopLevel(target.name);
+          final holder = cellBorne
+              ? '$staticHolder.borrow_mut()'
+              : staticHolder;
+          _line('$holder.set_${snake(name)}($written)$_propagate;');
+        } else if (staticHolder != null &&
             shared != null &&
             owner != null &&
             (library[owner]?.counted ?? false)) {
