@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Compile `bin/vtable_probe.rs` against the real prelude, plus a control.
 
-    python3 tools/dart2rust/bin/vtable_probe.py
+    python3 tools/dart2rust/bin/vtable_probe.py [probe.rs]
 
 Step 0 of the "Object protocol: registry -> vtable" plan. Changes nothing
 and builds nothing the chain uses: it copies `.crate-ws/dart_prelude/src/
@@ -21,9 +21,14 @@ import tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOOL = os.path.dirname(HERE)
 PRELUDE = os.path.join(TOOL, '.crate-ws', 'dart_prelude', 'src', 'lib.rs')
-PROBE = os.path.join(HERE, 'vtable_probe.rs')
-SUPERTRAIT = 'pub trait ProbeKey: DartAny + std::fmt::Debug {}'
-CONTROL = 'pub trait ProbeKey: std::fmt::Debug {}'
+PROBE = os.path.join(
+    HERE, sys.argv[1] if len(sys.argv) > 1 else 'vtable_probe.rs')
+#: The control is written into the probe file itself, as a pair of marker
+#: lines: everything between them is what gets removed to make the version
+#: that must *fail*. A probe with no control proves only that something
+#: compiles, not that it compiles for the reason claimed.
+CUT_BEGIN = '// CONTROL-CUT-BEGIN'
+CUT_END = '// CONTROL-CUT-END'
 
 
 def compile_source(text, out):
@@ -53,10 +58,14 @@ def main():
             for e in errors[:10]:
                 print('   ', e)
             return 1
-        print('probe: compiles (a `&dyn Trait` answers the protocol from its '
-              'own vtable; `Rc<dyn Trait>` upcasts to `Rc<dyn Object>`)')
-        code, errors = compile_source(
-            base + '\n' + probe.replace(SUPERTRAIT, CONTROL), out)
+        print('probe: compiles (%s)' % os.path.basename(PROBE))
+        if CUT_BEGIN not in probe or CUT_END not in probe:
+            print('probe has no CONTROL-CUT markers -- refusing to pass '
+                  'without a control')
+            return 1
+        head, rest = probe.split(CUT_BEGIN, 1)
+        _, tail = rest.split(CUT_END, 1)
+        code, errors = compile_source(base + '\n' + head + tail, out)
         if code == 0:
             print('CONTROL FAILED -- it compiles without the `DartAny` '
                   'supertrait too, so the probe proves nothing about why')

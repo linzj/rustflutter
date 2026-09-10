@@ -14,7 +14,16 @@
 /// Stands for a translated trait: every one of them has `DartAny` as a
 /// supertrait (`pub trait Key: DartAny + std::fmt::Debug`,
 /// `StatelessWidget: DartAny + Debug + Widget`).
-pub trait ProbeKey: DartAny + std::fmt::Debug {}
+/// The control cuts *only* the supertrait, so the trait still exists and the
+/// functions below still name a real type: what breaks is the claim itself.
+/// Cutting the whole declaration would only prove a missing name is an error.
+pub trait ProbeKey:
+    // CONTROL-CUT-BEGIN
+    DartAny +
+    // CONTROL-CUT-END
+    std::fmt::Debug
+{
+}
 
 /// Claim 1: a `&dyn Trait` answers the protocol from its *own* vtable, with
 /// no `TypeId` hash and no table probe anywhere.
