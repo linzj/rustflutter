@@ -494,10 +494,22 @@ augment class KernelFrontend {
       }
       // A local function is declared as a closure, so its named parameters
       // are in type order there too.
-      return IrCallValue(
-        IrLocal(name),
-        _argumentsByType(node.arguments, node.functionType),
-      )..rustType = _type(node.functionType).returns;
+      // ..and its *omitted optional* arguments get their declared defaults,
+      // as a method call's do. `node.functionType` describes the
+      // invocation, so a call that passes nothing says nothing about the
+      // parameter that was left out: `void takeMeasurementsInSourceRoute
+      // ([Duration? _])` called as `takeMeasurementsInSourceRoute()` came
+      // out as a no-argument call against a one-parameter closure
+      // (`_OpenContainerRoute._takeMeasurements`). Only when the
+      // declaration has more positionals than the call supplied -- reading
+      // the declaration unconditionally would drop a supplied argument.
+      final filled =
+          declared.positionalParameters.length >
+              node.arguments.positional.length
+          ? _arguments(node.arguments, declared)
+          : _argumentsByType(node.arguments, node.functionType);
+      return IrCallValue(IrLocal(name), filled)
+        ..rustType = _type(node.functionType).returns;
     }
     if (node is FunctionExpression) return _closure(node.function, node);
     if (node is StaticSet) {
