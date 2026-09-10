@@ -1445,6 +1445,25 @@ Rust 这边不塌,仍是 `Option<Rc<dyn DartAny>>`。闭包形参按 Dart 的类
 **这是投影/可空那一族**(ws957 记的「投影的 `T?` 每过一道边界都要换一次拼法」),
 不是闭包形参那一族——下次别再从 `_expectedFunction` 那边查。
 
+### `provider.rs update` 的 `T` 不在作用域里:同一个文件里两种拼法并存(2026-09-11 查证)
+
+`dart_cast_to::<dyn _Delegate<T>>()` 落在 `impl _InheritedProviderScopeElement` 里,
+而那个 impl **没有 `<T>`**——`pub struct _InheritedProviderScopeElement {` 也没有,
+所以这个类的 `T` 是**擦掉了的**。
+
+**先怀疑「`_type` 不认擦除的参数」,不是**:`types.dart:163` 写着
+「An erased parameter is its bound」,而且同一个文件里 `_Delegate<std::rc::Rc<dyn DartAny>>`
+出现 **8 次**——那条路是通的。可 `_Delegate<T>` 同时出现 **17 次**。
+
+**两种拼法并存说明那 17 处带的是另一个 `TypeParameter` 对象**:
+`_InheritedProviderScopeElement` 是 `_InheritedProviderScope<T>` 的 Element,
+Dart 里它自己也是 `<T>` 的;擦掉的是**元素类自己**的 `T`,而这些类型里名字相同的
+是**作用域类**的 `T`,`_erasedParameter` 对它答 false。
+
+**所以下一步是查「哪个 `TypeParameter` 对象」,不是查 `_type`。**
+这一族是擦除孪生(ws544 量过:把 Dart 的界带上是 **+252 桩**),
+`material_date` 的 `T extends DateTime` 也在里面——**不是一轮能做的**。
+
 ## 桩尾还剩什么(2026-09-10,ws988 之后 74 个,逐条看过)
 
 `b09ac222` 说「一条通用规则一轮就掉一格的阶段基本走完了」,这次把剩下的 74 个又过了一遍,确认了,并且把**每一条卡在哪儿**记下来,省得下次重新翻:
