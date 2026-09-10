@@ -402,12 +402,24 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 
 报错说的是 `Option<DropdownMenuItem<T>>`(没有 `Vec`),是 **`_MenuItem<T>`** 的 `eq`。
 
-**这条记录原本写错了。** 当初写的是「毛病在 `_comparableType` 里面,它对带界的 derive
-是瞎的」——**不对**:`DropdownButton` 和 `DropdownMenuItem` 两个 impl 的 `where` 子句
-一模一样,没有谁不满足谁。我在**探错了类**之后又靠推理下了结论,而且是在刚说完「规则不
-触发就打印节点、别再推」之后。**真正的成因见 ws979**:`_MenuItem<T>` 的 `where` 只有
-`T: PartialEq`,少了 `<T as DartNullable>::Or: PartialEq`——因为那句子句是按**本类自己**
-的投影字段拼的,而 `_MenuItem` 只是**装着**一个需要它的 `DropdownMenuItem<T>`。
+**这条记录改过两次,这是第三版,前两版都别信。**
+
+- 第一版:「毛病在 `_comparableType`,它对带界的 derive 是瞎的」——**方向对,措辞错**。
+- 第二版:「根本不在 `_comparableType`」——**错**。我是在**探错了类**(探的 
+  `DropdownButton`,报错的是 `_MenuItem<T>`)之后靠推理翻的案,而且就在刚写完「规则不
+  触发就打印节点、别再推」之后。
+
+**实际是两件事,ws979/ws980 一件,ws981 另一件:**
+
+1. `_MenuItem<T>` 的 `where` 只有 `T: PartialEq`,少了 `<T as DartNullable>::Or:
+   PartialEq`——子句按**本类自己**的投影字段拼,而它只是**装着**一个需要它的
+   `DropdownMenuItem<T>`。两套界都要发(每个类型参数一份 + 每个投影字段的**基**一份;
+   基不一定是类型参数)。**82 → 81。**
+2. `_comparableType` **确实**是瞎的,但瞎的是**投影**这件事:带投影字段的类
+   derive 不出 `PartialEq`(derive 写不出 `<T as DartNullable>::Or: PartialEq`),
+   没有句柄字段的话手写的那份也不发——于是它**一个 `PartialEq` 都没有**,而
+   `_comparableType` 说它可比,装着它的类就拿 `==` 去比。夹具 `heldgenericeq` 复现,
+   gallery 今天没有这个形状(**81 → 81,集合逐字节相同**)。
 
 **(2026-09-10,ws971 试过两次都撤回)** 同一件事按在 `coerceInto` 里,两次都不对。
 第一次按 `slot.projected && have0.name == 'Null'`:**89 → 89,桩的集合一模一样**,
@@ -593,7 +605,6 @@ Dart 的循环变量是同一个对象。加 `mut` 只是把「诚实地 panic �
 
 | 轮 | 规则 / 读数 | 数 |
 |---|---|---|
-| ws908 | `Iterable` 早就是一个 trait(`DartIterable`),`Vec` 和 `Set` 都实现了它,而生成的 Rust 里 `dyn DartIterable` 出现 **0 次**:类型下降见到 Dart 的 `Iterable` 就无条件写成 `Vec<T>`,于是「静态类型写着 `Iterable`、手里是 `Set` 或 `LinkedList`」的位置每次都是类型错误。先量两个数再动手——`Iterable` 作为槽出现 **1662** 处(在类型下降处打点,不是文本 grep);一个体向 `Iterable` 要的成员是 **25 个名字 501 处**(`toList` 148、`forEach` 78、`where` 39、`first` 33)。既然要的东西都写在列表上,trait 就只带两件列表做不到的事:`iterator` 和 `dart_to_list`;`Iterable<T>` 落成 `Rc<dyn DartIterable<T>>`,`Vec`/`Set`/`VecDeque`/`LinkedList` 各一个 impl。边界只有两句话:**翻译过的代码说 `Iterable`,prelude 说 `List`**——prelude 成员产出的 `Iterable` 按 `List` 记账(`expression` 的收尾),prelude 形参的 `Iterable` 槽按 `List` 记账(`_overList`),其余全部交给 `coerceInto` 的一进一出两条规则。顺带删掉四条现在说的是假话的旧账:`normalName` 里 `Iterable => List`(把两个不同的 Rust 类型当成同一个,`sameRust` 每处都因此放行),后端 `_returned` 里那条返回时装箱的补丁(返回值本来就走 `_widened`),`_widenedInto` 里那条往翻译过的 `Iterable` 形参装箱的特例(通用 `coerce` 会做,而且它会先按元素类型转换),以及 `dart:` 的几个 Set 类不在 `normalName` 里 | stub **133**(集合一进一出:`OverlayState.rearrange` 掉了——`LinkedHashSet` 一直是以陌生人的身份走过每一条 `Set` 规则的,ws638 起挂到今天;新挂 `hash_sink._finalizeData`,`Uint8List` 的元素加宽被装箱抢在了前面)、拒绝 38、可达 69、0 error;`dyn DartIterable` **0 → 660 处 / 126 个文件**;夹具 `iterableread`、`iterableparam`、`listfromiterable` 三绿;run918 与 run907 **逐字节相同**(同一处 `widgets_framework.rs:5471` 的 `unwrap`,同样 18 帧、同样两行渲染树)——运行尺子没被这一轮动过 |
 | ws909 | ws908 换进来的那个桩:`Uint8List` 是 `Vec<u8>`,`Uint8Buffer.addAll(Iterable<int>)` 的槽是 `Rc<dyn DartIterable<i64>>`,中间要一次 `!widen`(`v as i64`)。那条规则在 `_widenedInto` 的**尾巴**上——ws907 时通用 `coerce` 对这两个是恒等,所以尾巴跑得到;现在 `coerce` 在中间就装箱返回了,尾巴再也到不了。把判定抽成 `_widensNarrowElements`,槽是 `Iterable` 时在 `coerce` **之前**先加宽,尾巴上那条留给 `List` 槽并加一位「已经加过」 | stub **133 → 132**(与 ws907 的集合逐条比:新增 0,少了 `OverlayState.rearrange`)、拒绝 38、可达 69、0 error;夹具 `iterableread`/`iterableparam`/`listfromiterable` 三绿;新写的 `iterablebound` **是红的**,它钉住的是下一条:界是 `Iterable<E>` 的类型参数,声明按界拼、实参的槽却按实例化拼(`equality.rs` 三个桩) |
 | ws910 | 渲染树从 ws906 起就塌成两行,STATUS 记的线索是「6488 次卸载里 1192 次 `_dependents.remove` 没命中」。根因不在 Element 那一侧,在 prelude 的 `Map`:它维护一个惰性索引,而**索引是否还有效是拿建索引时的条数和现在的条数比出来的**。条数会回来。八条以下查找走线性扫描、索引根本不维护,于是一张跌破八条又长回同样条数的表,带着为**已经不在了的那批条目**建的索引被当成有效的:`contains_key` 对在场的键说不在、`remove` 找不到东西删、`insert` 把一个它看不见的键又追加了一遍。`InheritedElement._dependents` 每一帧都在做这件事——同一个元素被插了两次、只删掉一次,失效的 `_LayoutBuilderElement` 就留在依赖表里被通知,`renderObject` 拿 `None` 去 `unwrap`。改成一个 `version` 计数器:每一次改动 `entries` 都自增,索引记下它建立时的版本,追加是唯一能顺着走而不用重建的改动 | stub **132**、拒绝 38、可达 69、0 error;夹具 `mapindexstale` 由错答案(rust `11/12/4/null/107/null`,dart `11/11/8/103/107/11`)转绿;**run921:0 panic、432 帧(run919 是 18 帧)、渲染树 707 行、与 `ref_render_walk_settled.txt` 的类型差异 0** |
 | ws911 | 三件。一、**界是 `Iterable<E>` 的类型参数,声明按界拼、实参的槽却按实例化拼**:`_type` 把 `T extends Iterable<E>` 拼成界(现在是 `Rc<dyn DartIterable<E>>`),而 `_landingSlot` 把接收者的 `T := Set<E>` 代进去,说槽收 `Set`,于是 `coerceInto` 觉得两边同型、原样放行。让 `_landingSlot` 对这种参数交回 null,`_argument` 也按声明走(`_atBound`),读的一侧 `_listReceiver` 认得这种接收者(`_iterableSpelling`)。**只对 `Iterable` 界**——`_spelledAsBound` 还答 `String`/`int`/`double`/`bool`/`List`,那几种实例化和拼写同型,拿声明去换是把对的换错。二、**装箱不再无条件克隆**:`!as_iterable` 原先总补 `.clone()`,理由写的是「接收者常常是借用」,而对着生成的 Rust 数,`&Vec<`/`&Set<` 各 0 处,只有 26 个 `&mut Vec<` 形参是真借用;问一句「`expr` 发出来的东西已经是自己的了吗」(`_ownedWhenSpelled`:调用、字面量、构造、块值是,裸局部不是)。三、**给复制挂上计数器**(`DART2RUST_COUNT_COPIES`),这是第 3 条大改动的前置 | stub **132 → 130**(与 ws921 逐条比:新增 0,少了 `equality.rs` 的 `hash`/`equals`)、拒绝 38、可达 69、0 error;夹具 `iterablebound` 先红后绿;装箱里还带 `.clone()` 的 **274 → 42**(共 280 处装箱);run924 树 707 行、类型差异 0、0 panic |
@@ -634,6 +645,7 @@ Dart 的循环变量是同一个对象。加 `mut` 只是把「诚实地 panic �
 | ws975 | **super 体不再按实现者单态化,改成写一遍、吃 `&dyn Trait`**(`/tmp/work.md` 第一项)。Rust 没有 `super`,基类方法体本来做成对 `__Self` 泛型的自由函数,每个实现者复制一份。trait 加一个**借**的孪生 `dart_as_<trait>(&self) -> &(dyn Trait + 'static)`,每个实现者写成 `{ self }`——不用 `impl .. for Rc<Self>`(`Rc` 不是 `#[fundamental]`),也不复用已有的 `dart_self_<trait>()`(那个还回 `Rc`,每次 super 调用要付一对引用计数)。**`'static` 落在对象上、不在借上**:体内要从 `this_` 造 `Rc<dyn Trait>` 和 `'static` 闭包,写成 `+ '_` 时每个 trait 默认体都是「borrowed data escapes」(E0521;第一次量 **82 → 12463 stub**)。**够不够格由 IR 现算**(`_superTakesDyn`),不是发射时记下来——调用点常在另一个模块,记不住;turbofish 比签名多一个参数,就是 28 个新桩。**五处调用点**,不是 work.md 说的「一处改动」:trait 默认体、super 里的 super、异步包装、erased 孪生、`IrSuperDispatch` | **`.text` 136,627,376 → 108,334,192(−27.0 MB)**,二进制 329.1 → 283.9 MB(−43.1 MB),`_super_` 符号 **31,406 → 4,382**;work.md 估 −21.3 MB,实际更多——少了 27,000 个函数实例,`.eh_frame` 跟着少 2.0 MB、`.gcc_except_table` 少 2.6 MB。**尺子一格没动**:stub 82(集合逐字节相同)、拒绝 29、可达 69、第 0 轮错误 22 → 17;run975 连采五次:707 行 / 类型差异 0 / 0 panic。基线二进制是 09:10 那版(ws971 之后),ws972–974 三条小规则夹在中间,解释不了 27 MB,但这个差不是只归 ws975 一条 |
 | ws976 | **release 也 `panic = "abort"`**(`/tmp/work.md` 第三节)。`[profile.dev]` 早就是 abort,release 是唯一的例外;这个程序里没有东西 unwind——Dart 的 `throw` 是 `Err`,不是 panic。代价是 `runtime/src/lib.rs` 那个 `catch_unwind`(帧内 panic 之后还能继续 dump 渲染树),但那把尺子跑的是 **debug** 构建,本来就是 abort、本来就没有它;例外的一直是 release。**顺手回答了 work.md 第八节第 5 条**「`Result` 清理路径在 `.text` 里到底占多少,只有 `.gcc_except_table` 9.4 MB 这个影子」:**影子底下是 21.7 MB**。另:`bin/workspace.py` 是从**没打桩**的 `.crate/src` 重生成 `.crate-ws` 的,单独跑它会把 `stubs.py` 的成果扔掉——改 manifest 和改 prelude 一样,只能走 chain。我先犯了这个错,又把一次**失败**构建后残留的旧二进制的段大小当成读数报了出来:**读数之前先看构建自己的退出码** | `.text` 108,334,192 → **85,581,600**(−21.7 MB),二进制 283.9 → **245.1 MB**(−37.0 MB),`.gcc_except_table` 7,135,632 → 13,252;work.md 估 −9.4 MB(只算了表),实际是它的四倍,因为 landing pad 的**代码**也一起没了。**从 09:10 基线累计:`.text` 136.6 → 85.6 MB(−48.7 MB,−37%),二进制 329.1 → 245.1 MB(−80.1 MB)**。尺子:stub 82(集合与 ws975 逐字节相同)、拒绝 29、可达 69;run976 连采五次:707 行 / 类型差异 0 / 0 panic |
 | ws979+ws980 | **只是*装着*一个泛型的类,也得替它把界要出来**。`_MenuItem<T>` 的 `PartialEq` 只写了 `where T: PartialEq`,却比一个 `Option<DropdownMenuItem<T>>` 字段;而 `DropdownMenuItem<T>: PartialEq` 还要 `<T as DartNullable>::Or: PartialEq`——那句子句是按**本类自己**的投影字段拼的,`_MenuItem` 一个投影字段都没有,它只是**装着**一个需要它的东西(E0369)。**两套界都要**:每个类型参数一份,外加每个投影字段的**基**一份——基不一定是类型参数,`IterableProperty<T>._value` 是 `<Rc<dyn DartIterable<T>> as DartNullable>::Or`,要的是**那整个句柄**的 `Or`。**ws979 是我自己弄坏的**:它把投影基那一套**换掉**而不是加上去,于是清掉一个又弄出一个,我还在提交信息里把自己造的错说成「底下露出来的老错」。ws980 两套一起发,才真的掉了一格 | stub **82 → 81**(`_MenuItem.==`);拒绝 29、可达 69、0 error;run980 连采五次:707 行 / 类型差异 0 / 0 panic;夹具 43 个,41 AGREE + 2 个故意的红 |
+| ws981 | **`_comparableType` 走字段时看不见*投影字段*。**一个类只要有一个投影字段,derive 出来的 `PartialEq` 就得写 `<T as DartNullable>::Or: PartialEq` 这条 where——写不出来,于是这个类**根本没有 `PartialEq`**;而 `_comparableType` 照旧对它说「可比」,**装着**它的那个类的 `==` 就直接写 `self.x == other.x`(E0369)。两半一起改才成立:`generics.dart` 里 `f.type.projected` 一票否决,`emit_struct.dart` 里判定不可比的字段改走 `dart_eq`——只改前一半是把一个编译错误换成另一个。这条跟 ws979+ws980 是**两个不同的毛病**:那条是「装着泛型的类没替它把界要出来」,这条是「拿不到界的类被当成可比的」。我先把它俩当成一回事,又拿错了类去探针、据此写下一条否认 `_comparableType` 有份的「更正」,账本里那条撤回记录因此改了两次 | **stub 81 → 81,桩集合逐字节相同**——gallery 里没有「有投影字段的类,被一个没有句柄的类装着比」这个组合,这条**只在夹具上触发**。所以说清楚:**这是一条带夹具的正确性修补,数上是中性的,不是朝目标走的一步**;它跟 ws966 不同之处只在于 ws966 哪儿都不触发**且没有夹具**。拒绝 29、可达 69、0 error;run981 连采五次:707 行 / 类型差异 0 / 0 panic;夹具 **44 个,42 AGREE + 2 个故意的红** |
 
 ## 下一步
 

@@ -236,7 +236,11 @@ augment class RustBackend {
       final identityNames = byIdentity.map((f) => f.name).toSet();
       final terms = [
         for (final f in _allFields(cls))
-          identityNames.contains(f.name)
+          // ..and any field Rust cannot compare: `DartEq` composes through
+          // `Option`, `Vec` and `Rc`, which is exactly where `==` stops,
+          // and it is what Dart compares those by anyway.
+          identityNames.contains(f.name) ||
+                  !_comparableType(_fieldType(f), {cls.name})
               ? 'self.${snake(f.name)}.dart_eq(&other.${snake(f.name)})'
               : 'self.${snake(f.name)} == other.${snake(f.name)}',
       ];

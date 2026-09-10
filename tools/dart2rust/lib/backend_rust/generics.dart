@@ -258,6 +258,14 @@ augment class RustBackend {
         // the struct gets (see `byIdentity`), so it does not make the
         // class incomparable: `Vec<PointerData>` in `PointerDataPacket`.
         if (f.type.isFunction) continue;
+        // A *projected* field leaves the class with no `PartialEq` at all:
+        // a derive cannot write `<T as DartNullable>::Or: PartialEq`, which
+        // is why `comparable` refuses to derive over one -- and unless the
+        // class also has a handle field there is no manual impl either. So
+        // a holder of such a class cannot compare it with `==`
+        // ("binary operation `==` cannot be applied to `Option<Inner<T>>`",
+        // E0369, the `heldgenericeq` fixture, ws981).
+        if (f.type.projected) return false;
         if (!_comparableType(_fieldType(f), seen)) return false;
       }
     }
