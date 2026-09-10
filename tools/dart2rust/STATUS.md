@@ -377,6 +377,21 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 
 ## 撤回与作废(不要再试)
 
+- **往 `_preludeInterfaces` 里加 `Sink`(想给 `DigestSink implements Sink<Digest>` 补上
+  `impl DartSink`)——**可达 crate 69 → 65**,两趟都没救回来,已撤回(ws1033/1034,2026-09-11)。**
+  **往那张表里加一项不是局部动作**:`the_class.dart` 只在「prelude 有这个 trait」时
+  才把接口列进抽象类的**父 trait**,所以加进去以后 `Sink` 立刻成了
+  `pub trait HashSink: .. + Sink<Vec<i64>>` 的一员——而 `Sink<T>` 是
+  `Rc<dyn DartSink<T>>` 的**别名**,不是 trait,报 "expected trait, found type alias"。
+  这条错**在函数外面**,打不了桩,于是连crate带下游一起掉(和 ws990 那次 69 → 40 同形)。
+  第二趟把父 trait 也按 trait 名拼(加了一张 `_preludeInterfaceTraits`),别名的错没了,
+  接着是**实现者不满足**:`_Sha256Sink` 通过 `HashSink` 继承到 `DartSink<Vec<i64>>` 的要求,
+  自己却没拿到转发 impl(`_forwardingCall` 找不到,或它并不直接 `implements Sink`)。
+  **最要紧的一条**:ws1033 的桩集读数是 **54 → 49、掉 5 个**——看着是本轮最好的一次,
+  其实那 5 个是**跟着 4 个 crate 一起消失的**。目标里「可达 crate 不掉」是独立的一条,
+  就是为了照出这种事;只看桩数会把回归读成进展。
+  真要做,得先让**每个实现者**都拿得到转发 impl,再谈把接口列进父 trait。
+
 - **给「TFA 判死的接收者」上的成员调用加个类型绑定——量出来逐字节相同,已撤回
   (ws1009,2026-09-10)。**
   **更正(同日,提交信息里写错了):这一组是 2 个桩,不是 3 个。**
