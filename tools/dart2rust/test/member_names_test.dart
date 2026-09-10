@@ -20,7 +20,7 @@ void main() {
   expect(mutatingByteDataNames.length, 10, 'ByteData setters');
   expect(mutatingListNames.length, 22, 'what _listReceiver looks for');
   expect(mutatingThisFieldNames.length, 22, 'what _ThisWriteFinder looks for');
-  expect(mutatingRustOnlyNames.length, 19, 'Rust names with no Dart member');
+  expect(mutatingRustOnlyNames.length, 20, 'Rust names with no Dart member');
 
   expect(mutatingNames, {
     ...mutatingSequenceNames,
@@ -66,7 +66,7 @@ void main() {
       if (!noRustMutatorNames.contains(n)) _snake(n),
     ...mutatingRustOnlyNames,
   };
-  expect(inPlace.length, 51, 'Rust names that change the receiver');
+  expect(inPlace.length, 52, 'Rust names that change the receiver');
   expectTrue(inPlace.contains('add_all'), 'addAll snakes into it');
   expectTrue(inPlace.contains('set_uint16'), 'the byte-view setters are in it');
   expectTrue(
@@ -88,8 +88,8 @@ void main() {
   }, "the backend's markers, which _inPlace never carried");
   expect(
     inPlace.difference(mutatingWalkSelfRustNames).length,
-    41,
-    'KNOWN GAP: 41 in-place names do not put `mut` on their receiver',
+    42,
+    'KNOWN GAP: 42 in-place names do not put `mut` on their receiver',
   );
   expectTrue(
     inPlace.difference(mutatingWalkSelfRustNames).contains('add_all'),

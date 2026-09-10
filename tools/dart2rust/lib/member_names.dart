@@ -136,6 +136,9 @@ const mutatingRustOnlyNames = {
   'sort_by',
   'sort_natural',
   'add_entries',
+  // `list.last = v` writes through the last slot, so the receiver must be
+  // the place and not the clone a read takes.
+  'set_last',
   // The prelude's `Map::remove`, distinguished from `Vec::remove` by the
   // marker the backend puts in front of it.
   '!map_remove',

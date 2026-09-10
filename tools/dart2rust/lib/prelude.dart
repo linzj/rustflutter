@@ -4268,6 +4268,12 @@ pub trait DartList<T> {
     fn length(&self) -> i64;
     /// `sublist(start, [end])`: a copy of that range.
     fn sublist(&self, start: i64, end: Option<i64>) -> Vec<T>;
+    /// `list.last = value`: Dart writes through the last slot itself, so
+    /// this takes `&mut self` and the backend has to reach the *place*
+    /// rather than the clone a read takes (`set_last` is in
+    /// `mutatingRustOnlyNames` for that reason). An empty list is
+    /// `Bad state: No element`, as `last` itself is.
+    fn set_last(&mut self, value: T) -> Result<(), DartError>;
     /// `getRange(start, end)`: Dart's lazy view of the range, a copy here
     /// (`PipelineOwner.flushLayout`, run526).
     fn get_range(&self, start: i64, end: i64) -> Vec<T>;
@@ -4352,6 +4358,15 @@ impl<T: Comparable<T> + Clone> DartSortNatural for Vec<T> {
 }
 
 impl<T: Clone> DartList<T> for Vec<T> {
+    fn set_last(&mut self, value: T) -> Result<(), DartError> {
+        match self.last_mut() {
+            Some(slot) => {
+                *slot = value;
+                Ok(())
+            }
+            None => panic!("uncaught Dart exception: Bad state: No element"),
+        }
+    }
     fn length(&self) -> i64 {
         self.len() as i64
     }

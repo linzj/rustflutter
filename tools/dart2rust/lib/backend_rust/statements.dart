@@ -839,8 +839,23 @@ augment class RustBackend {
             '${_call(target, 'set_${snake(name)}', [argument], qualifier: qualifier, receiverClass: receiverClass, fails: true)};',
           );
         } else {
+          // `xs.last = v` writes through the *place*, not the clone a field
+          // read takes out of its cell. The call path already decides this
+          // (`_mutatesInPlace` and a receiver that really is a collection);
+          // a setter never reached it, because a setter is an `IrSetter` and
+          // not an `IrCall`. Without this the write compiles and lands on
+          // the copy -- `listsetlast` reads `1,2,3/6/6` against Dart's
+          // `1,2,9/12/12`.
+          final setter = 'set_${snake(name)}';
+          final receiverType = target?.rustType;
+          final place =
+              _mutatesInPlace(setter) &&
+                  (receiverType == null ||
+                      _isMutableCollection(type(receiverType)))
+              ? _mutPlace(target)
+              : null;
           _line(
-            '${_receiver(target)}.set_${snake(name)}(${expr(value)})$_propagate;',
+            '${place ?? _receiver(target)}.$setter(${expr(value)})$_propagate;',
           );
         }
       case IrIf(:final condition, :final then, :final otherwise):
