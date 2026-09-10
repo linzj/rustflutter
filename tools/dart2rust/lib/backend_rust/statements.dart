@@ -179,6 +179,19 @@ augment class RustBackend {
     return null;
   }
 
+  /// A braced body is a scope: a local declared inside it shadows only
+  /// until the brace closes, so what it unmade of `_cellLocals` comes back
+  /// after it. (An `IrBlock` emits no braces of its own -- Dart's block
+  /// scoping is flattened into the enclosing Rust body -- so it is not one
+  /// of these.)
+  void _scoped(void Function() body) {
+    final cells = _cellLocals;
+    final late = _lateCellLocals;
+    body();
+    _cellLocals = cells;
+    _lateCellLocals = late;
+  }
+
   void stmt(IrStmt s, {bool tail = false}) {
     switch (s) {
       case IrBlock(:final statements):
@@ -651,7 +664,7 @@ augment class RustBackend {
               : '${head}while ${expr(condition)} {',
         );
         _indent++;
-        stmt(body);
+        _scoped(() => stmt(body));
         _indent--;
         _line('}');
       case IrLocalDecl(:final name, :final type, :final init, :final cell):
@@ -677,6 +690,20 @@ augment class RustBackend {
             'let ${snake(name)}$held = std::rc::Rc::new(std::cell::${copy ? 'Cell' : 'RefCell'}::new($inner));',
           );
           return;
+        }
+        // ..and a plain declaration *unmakes* one: the name now denotes a
+        // new local, and every read and write below is its own. Dart's
+        // pattern binding shadows exactly this way -- `if (action case
+        // final Action<T>? action)` in `Actions.maybeFind` declares a
+        // second `action` beside the cell the closure captured -- and the
+        // reads went on saying `action.borrow()` on an `Option` (E0599).
+        // Rust resolves the name to the new `let` whatever this table
+        // says, so this is the table agreeing with the emitted code.
+        if (_cellLocals.containsKey(name)) {
+          _cellLocals = {..._cellLocals}..remove(name);
+        }
+        if (_lateCellLocals.contains(name)) {
+          _lateCellLocals = {..._lateCellLocals}..remove(name);
         }
         final annotation = type == null ? '' : ': ${this.type(type)}';
         // `mut` when the body writes the local, or calls a method on it
@@ -898,14 +925,14 @@ augment class RustBackend {
       case IrIf(:final condition, :final then, :final otherwise):
         _line('if ${expr(condition)} {');
         _indent++;
-        stmt(then, tail: tail);
+        _scoped(() => stmt(then, tail: tail));
         _indent--;
         if (otherwise == null) {
           _line('}');
         } else {
           _line('} else {');
           _indent++;
-          stmt(otherwise, tail: tail);
+          _scoped(() => stmt(otherwise, tail: tail));
           _indent--;
           _line('}');
         }
