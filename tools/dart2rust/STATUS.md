@@ -1356,7 +1356,15 @@ Listenable>` 上,而这句在 `RestorableChangeNotifier<T extends ChangeNotifier
 (`{ let __t1 = ..; move || .. }`),而 `coerceInto` 里那条「闭包要进函数手柄」的规则
 只认光杆 `IrClosure`。把块看穿之后 `!rc` **仍然没发**,所以还有第三个未知数。
 
-**下次从这里起,别再猜第三次**:调用方是 `_schedule_microtask`,**是翻译出来的**
+**第三次量过了,`!rc` 为什么不发已经清楚了(ws1021 的 trace,代码没留)**:
+那条规则包在 `if (sameRust(have0, slot) && ..)` 里,而这一处 **`sameRust` 是 false**——
+tear-off 记下来的函数类型和槽的函数类型不一致(名字都印成 `Function`,差别在参数/返回上),
+于是它走了**适配器**那条路,而适配器**不把结果放进手柄**。所以第二层的位置对、判据不对。
+顺带量到的两个数:全程序 **3,244 处**走到那条分支时 `boxed=true`(闭包本来就在手柄后面,不用管),
+**只有 11 处**是「未装箱的闭包进一个非空函数槽」,这一处是其中之一。
+**下一步是第四层**:让适配器那条路也把结果放进手柄,或者让 tear-off 记的类型和槽对上。
+
+**原来那条(已作废,留着防止重走)**:调用方是 `_schedule_microtask`,**是翻译出来的**
 (不是 prelude 的 `schedule_microtask`),所以 `translated` 为真、coercion 那条闸门应该跑得到。
 要打的是 `coerceInto` 对这个实参的 trace:`have0`、`slot`、`sameRust(have0, slot)`
 以及 `closure.boxed` 各是什么——`!rc` 那条包在
