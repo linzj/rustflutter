@@ -377,6 +377,21 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 
 ## 撤回与作废(不要再试)
 
+- **`x?.m(..)` 里 `m` 要 `&mut self` 就改走 `as_mut()`——两次都不成,已撤回(ws984,2026-09-10)。**
+  两个桩(`cupertino_route._handleDragCancel`、`services_restoration._removeChildData`)是
+  「cannot borrow `*it` as mutable, as it is behind a `&` reference」(E0596):`x?.dragEnd(0)`
+  降成 `x.as_ref().map(|it| it.drag_end(..))`,而 `drag_end` 要 `&mut self`。
+  nullaware 里本来就有一条 `as_mut()` 的路,闸门 `mutating` 只问「这个名字是不是*集合*修改器」;
+  改成也问 `_mutating`(就是决定被调方印不印 `&mut self` 的那套),**77 → 134**(+57)。
+  57 个新桩全是同一个错:`old_bucket.as_mut()`,而那个绑定没有 `mut`——IR 里那次调用的接收者是
+  绑定出来的 `it`,不是 `x`,所以 `receiverLocals` 从来没见过 `x`,`let mut` 的判定也就漏了。
+  补上第二半(`_WalkSelf` 记下 `x?.m(..)` 这一对,由后端回答 `&mut self`)之后 **134 → 80**,
+  **但两个目标桩一个都没掉**,净 +3。**两次都没碰到要修的东西,按「不许在坏改动上再叠一层」撤回**
+  (ws979 就是叠上去的,最后把自己造的错说成了老错)。
+  留下的事实:(1)`as_mut()` 这条路要的是**两半**——发射端和 `let mut` 的判定,少一半就是 57 个桩;
+  (2)那两个桩的接收者**不是局部变量**,所以 `place` 那三条(cell / 自己的字段 / 局部)都算不出位置来,
+  这才是它们没掉的原因——下次要从**位置**那一侧入手,不是从闸门。
+
 **(2026-09-10)这一节的出场规则。** 本节**只进不出**——一条撤回记录的价值就是防重踩
 (一程十四条落地撤回六条,其中四条能编过而且答案是错的)。唯一允许的压缩是:**一条
 实验后来被重做并结案时,缩成「当初为什么撤、后来为什么对」两句**,过程移出(git 有)。
