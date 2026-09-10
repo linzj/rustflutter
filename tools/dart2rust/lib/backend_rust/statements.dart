@@ -11,6 +11,39 @@ augment class RustBackend {
   /// would bury the ones that really are reassigned under a warning apiece.
   var _reassigned = <String>{};
 
+  /// The place a `for` loop should iterate mutably, or null when the
+  /// iterable hands out a value of its own.
+  ///
+  /// `m.values` is the one that has to be spelled apart: it collects a
+  /// fresh `Vec` of clones, so the loop must go through the map itself.
+  String? _iterMutPlace(IrExpr iterable) {
+    final it = _withoutClone(iterable);
+    if (it is IrCall &&
+        it.name == 'values' &&
+        it.args.isEmpty &&
+        it.target != null) {
+      final owner = _iterMutTarget(it.target!);
+      return owner == null ? null : '$owner.values_mut()';
+    }
+    final place = _iterMutTarget(it);
+    return place == null ? null : '$place.iter_mut()';
+  }
+
+  String? _iterMutTarget(IrExpr e) {
+    final it = _withoutClone(e);
+    // A local is the one thing this backend spells bare, and it is already
+    // `mut` when `_reassigned` says so.
+    if (it is IrLocal && !_cellLocals.containsKey(it.name)) {
+      return snake(it.name);
+    }
+    return _mutPlace(it);
+  }
+
+  IrExpr _withoutClone(IrExpr e) =>
+      e is IrCall && e.name == 'clone' && e.args.isEmpty && e.target != null
+      ? _withoutClone(e.target!)
+      : e;
+
   Set<String> _assignedIn(IrStmt statement) {
     final found = <String>{};
     // An assignment can also be an *expression* -- `f(total = x)` -- and the
@@ -367,7 +400,43 @@ augment class RustBackend {
         // is the element, not a reference to it, and `&xs` handed out
         // `&f64` where `f64` was wanted (14 in the colour code). The list
         // itself is only borrowed, as before.
-        _line('for ${snake(name)} in ${_asList(iterable)}.iter().cloned() {');
+        // ..*unless* the body mutates the loop variable. Dart's `final` is
+        // about the binding, not the object: `for (final childSet in ..)
+        // childSet.removeWhere(..)` changes the set the loop handed out,
+        // and against a clone it changes nothing. Adding `mut` to the
+        // binding only makes that compile -- the mutation still lands on
+        // the copy, which is a wrong answer where there used to be a stub,
+        // and `fx/forinmut` reads `4,4/abbccc|dddde` against Dart's
+        // `2,2/abb+|e+` when it is done that way.
+        //
+        // So iterate the place instead, and only when there *is* a place:
+        // a call's result or a parameter read owns what it hands out and
+        // nothing can be written back through it. Where there is none this
+        // falls through to the clone, and the body that mutates stays a
+        // stub rather than becoming a silent no-op.
+        // Asked of the loop's own body, and only about calls that really
+        // mutate. `_reassigned` is the member-wide `let mut` answer and
+        // counts every receiver -- `recipe.clone()` and `fields.clone()
+        // .len()` mark their locals there -- so reading a semantic
+        // decision out of it lent two collections that nothing writes
+        // (E0502 on a body that also reads the list, E0596 on one captured
+        // by a `Fn` closure; ws982 measured both, +7 stubs).
+        //
+        // This predicate is the whole rule. Two further guards were written
+        // while the cause was still misread -- skip when the element is a
+        // handle, skip when its type is unknown -- and each was ablated
+        // against the chain afterwards: 79 stubs either way, stub set
+        // byte-identical. They fired nowhere once the question being asked
+        // was the right one, so neither survives (the ws966 standard).
+        final mutated = _WalkSelf()..statement(body);
+        final mutPlace = mutated.inPlaceLocals.contains(name)
+            ? _iterMutPlace(iterable)
+            : null;
+        _line(
+          mutPlace != null
+              ? 'for ${snake(name)} in $mutPlace {'
+              : 'for ${snake(name)} in ${_asList(iterable)}.iter().cloned() {',
+        );
         _indent++;
         stmt(body);
         _indent--;

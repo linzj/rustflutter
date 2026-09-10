@@ -50,9 +50,31 @@ def types(lines):
     return [_MEASURED.sub('', line).rstrip() for line in lines if line.strip()]
 
 
+#: `run_main.sh` does `cd .crate-ws` before it writes anything, so its log
+#: lands there and not beside this script. Reading it from the wrong place
+#: returned an empty tree, and an empty tree is indistinguishable from a
+#: program that walked nothing: `nodes=0 panics=0 typediff=707`, five times,
+#: which reads exactly like a total regression. The five runs behind that
+#: reading had in fact each written a 118 KB log with a complete 707-node
+#: tree in it (2026-09-10).
+RUNS = os.path.join(TOOL, '.crate-ws')
+
+
 def read(path):
     if not os.path.exists(path):
         return []
+    return io.open(path, encoding='utf-8', errors='replace').read().splitlines()
+
+
+def read_run(log):
+    """The run's own log, where `run_main.sh` puts it.
+
+    Missing is an error, never an empty tree: silence there is what made a
+    broken lookup look like a broken compiler.
+    """
+    path = os.path.join(RUNS, log + '.run')
+    if not os.path.exists(path):
+        raise SystemExit('no run log at %s -- did run_main.sh fail?' % path)
     return io.open(path, encoding='utf-8', errors='replace').read().splitlines()
 
 
@@ -72,7 +94,7 @@ def main():
         log = '%s%d' % (prefix, i)
         subprocess.run([os.path.join(HERE, 'run_main.sh'), log], env=env,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        text = '\n'.join(read(log + '.run'))
+        text = '\n'.join(read_run(log))
         panics = text.count('panicked at')
         if BEGIN in text and END in text:
             got = types(text.split(BEGIN, 1)[1].split(END, 1)[0].splitlines())

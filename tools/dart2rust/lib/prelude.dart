@@ -1996,6 +1996,13 @@ impl<T: Clone> Set<T> {    /// `LinkedHashSet.of(elements)` / `Set.of(elements)`
         Set { items: Vec::new() }
     }
 
+    /// The elements in place, for `for (final s in sets) s.removeWhere(..)`.
+    /// Backed by a `Vec`, so lending an element out is safe: nothing here
+    /// hashes on the element the way a `HashSet` would.
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut T> {
+        self.items.iter_mut()
+    }
+
     /// `len()`, as a `Vec` and a `Map` say it: `length` is printed as
     /// `len()` for every collection.
     pub fn len(&self) -> usize {
@@ -2798,6 +2805,16 @@ impl<K: Clone, V: Clone> Map<K, V> {    /// `Map.of(other)`: a copy with the sam
 
     pub fn values(&self) -> Vec<V> {
         self.entries.iter().map(|(_, v)| v.clone()).collect()
+    }
+
+    /// The values in place, for `for (final v in m.values) v.add(x)`.
+    ///
+    /// `values()` hands out clones, so mutating one changed nothing --
+    /// Dart's loop variable is the object the map holds, not a copy of it.
+    /// Only the values are lent, so the key hashes the `index` was built
+    /// over are untouched and the `version` does not move.
+    pub fn values_mut(&mut self) -> impl Iterator<Item = &mut V> {
+        self.entries.iter_mut().map(|(_, v)| v)
     }
 
     pub fn entries(&self) -> Vec<MapEntry<K, V>> {

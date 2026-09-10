@@ -54,6 +54,24 @@ class _WalkSelf {
   /// Locals that are the receiver of some method call.
   final receiverLocals = <String>{};
 
+  /// Locals a call that mutates the receiver *in place* is made on, by
+  /// either spelling.
+  ///
+  /// Wider than [mutatedLocals] on purpose: that set is
+  /// [mutatingWalkSelfRustNames], which the `let mut` decision uses and in
+  /// which `remove_where` is one of the gaps `member_names.dart` records
+  /// rather than closes. Narrower than [receiverLocals], which counts any
+  /// receiver at all -- `saved_recipes.index_of(recipe.clone())` marks
+  /// `recipe` there, and a rule that reads a *semantic* answer out of that
+  /// over-approximation fires where nothing is mutated (ws982).
+  final inPlaceLocals = <String>{};
+
+  static final Set<String> _inPlaceNames = {
+    for (final name in mutatingNames)
+      if (!noRustMutatorNames.contains(name)) snake(name),
+    ...mutatingRustOnlyNames,
+  };
+
   /// Fields set through a setter on another object, by the receiver's
   /// class (`tween.end = ..` on a `Tween<dynamic>`: `{'Tween': {'end'}}`).
   final setterWrites = <String, Set<String>>{};
@@ -273,6 +291,11 @@ class _WalkSelf {
         // and hides this, which is how the fixture passed on its first try.
         final receiver = _underPromotion(target) ?? target;
         if (receiver is IrLocal) receiverLocals.add(receiver.name);
+        if (_inPlaceNames.contains(name) ||
+            _inPlaceNames.contains(snake(name))) {
+          final on = _heldIn(target) ?? target;
+          if (on is IrLocal) inPlaceLocals.add(on.name);
+        }
         if (_mutatingListMethods.contains(name)) {
           // A call on a value read out of one of this object's collections
           // acts on the collection (`_heldSlot`): `m[k]!.add(v)` writes the
