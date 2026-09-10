@@ -1274,6 +1274,17 @@ work.md §9 估 −8.5 MB,实测 **−8.57 MB**。二进制比 `.text` 掉得多
 | 混入体里闭包捕获 `this` | 1 | 混入的方法变成收 `this_: &(dyn ListNotifierMixin + 'static)` 的自由函数,**借来的接收者变不出能活过调用的句柄** |
 | `dart:ffi` 的写 | 2 | `Uint8List` 是值,写落进拷贝(ws1015 把读那一半做掉了,写这一半留着) |
 
+**`is HttpException` 试过了,是**一比一换**,不算进展(ws1016,已撤回)。**
+`is X` 要两样东西,光声明类型不够:`DartCoreAs` 的 impl(prelude 的异常结构体之间
+和 Rust 没有继承关系,得自己给一条)、外加 `_preludeClasses` 里有这个名字。
+两样补上以后 `IOClient.send` 翻得出来了——**拒绝 22 → 21,桩 65 → 66**,
+`21+66` 和 `22+65` 一样,目标一步没动,而且「桩只许掉」这条规矩挡着。
+后面那个桩要的是**一个真的 HTTP 客户端**:`HttpClientResponse` 在 prelude 里
+只是「为了让签名编得过」的空类型,`send__body` 要它的 `statusCode`、`contentLength`、
+`headers`。所以这一条真正的前置是 HTTP 客户端,不是 `is`。
+**配方留着**:补 `dart_core_as!(HttpException, SocketException, FileSystemException, OSError)`
+四个,加进 `_preludeClasses`,`is` 那一侧就通了——注意只补一个的话,拒绝会原地挪到下一个名字上。
+
 **另外 11 条各自独立**,和上面那个决定无关:动态派发 3、`GZipCodec`/`JsonEncoder` 3、
 `runZonedGuarded` 1、`is HttpException` 1、一处 super 进没翻译的观察者方法 1、
 ffi 回调蹦床 1、`_ffiCall`(真的调 DLL)1。
