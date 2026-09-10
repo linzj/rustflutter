@@ -672,7 +672,7 @@ augment class KernelFrontend {
         return IrAssignField(
           _fieldNameOf(value.interfaceTarget, value.name.text),
           written,
-          target: expression(receiver),
+          target: _receiver(receiver),
           owner:
               receiverClassHere?.name ??
               value.interfaceTarget.enclosingClass?.name,
@@ -687,6 +687,13 @@ augment class KernelFrontend {
       // ..and reached however it was reached: `_views[viewId]!.x = v` is a
       // handle out of a map, and the write goes through the cell just the
       // same (`PlatformDispatcher`, 1 refusal that took 3 callers).
+      // The receiver of a field *write* is a member access's receiver, as
+      // a read's is: an erased read is narrowed to the type Dart gives it
+      // (`_receiver`). `inheritedNotifier.notifier!._wasCalled = false` in
+      // `_InheritedResetNotifier extends InheritedNotifier<_ResetNotifier>`
+      // read `notifier` at the declaration's bound, `Rc<dyn Listenable>`,
+      // which has no such field -- while the *read* one line above it was
+      // already narrowed and compiled.
       final receiverClass = _staticClass(receiver);
       if (_closureCallsMethod(declaring) ||
           (receiverClass != null && _closureCallsMethod(receiverClass))) {
@@ -695,7 +702,7 @@ augment class KernelFrontend {
         return IrAssignField(
           _fieldNameOf(value.interfaceTarget, value.name.text),
           written,
-          target: expression(receiver),
+          target: _receiver(receiver),
           owner: receiverClass?.name ?? declaring.name,
         );
       }
@@ -705,7 +712,7 @@ augment class KernelFrontend {
         return IrAssignField(
           _fieldNameOf(value.interfaceTarget, value.name.text),
           written,
-          target: expression(receiver),
+          target: _receiver(receiver),
           owner: declaring.name,
         );
       }
