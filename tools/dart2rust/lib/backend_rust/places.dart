@@ -956,6 +956,7 @@ augment class RustBackend {
   /// called and dropped, never kept. The rest (`remove_where`, `update`,
   /// `put_if_absent`) declare an `Rc<dyn Fn>` and take the handle.
   static const _preludeLends = {
+    'time_sync',
     'first_where',
     'first_where_or',
     'last_where',

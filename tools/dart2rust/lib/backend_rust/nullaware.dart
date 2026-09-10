@@ -660,6 +660,15 @@ augment class RustBackend {
     if (owner == 'Object' && name == 'hash') {
       return 'object_hash(${args.map(expr).join(', ')})';
     }
+    // The prelude's callback slots that only *call* what they are given are
+    // `impl Fn`, and an `Rc<dyn Fn>` is not one -- the same lend an instance
+    // call gets (`_preludeLends` in `calls.dart`), on a *static* of a class
+    // the prelude owns. `Timeline.timeSync(label, () { .. })` is one, and it
+    // was handed `Rc::new(closure)`: "expected an `Fn()` closure, found
+    // `Rc<{closure}>`".
+    if (library[owner] == null && _preludeLends.contains(_identifier(name))) {
+      args = [for (final a in args) _lentFunction(a)];
+    }
     // `library.isAbstract`, not `library[owner]?.isAbstract`: an abstract
     // class of another module is in `abstractElsewhere` and nowhere else
     // (`Characters::new(..)` -- "expected a type, found a trait").

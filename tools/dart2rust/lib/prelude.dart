@@ -4775,9 +4775,14 @@ impl Timeline {
 
     /// `Timeline.timeSync(name, function, arguments:, flow:)`: the function,
     /// run between a start and a finish that record nothing here.
+    ///
+    /// `impl Fn`, because it is called and dropped here and never kept: a
+    /// slot spelled `Rc<dyn Fn>` makes the closure `'static`, and one
+    /// reading `&self` cannot be (`_TaskEntry.run`, "lifetime may not live
+    /// long enough"). `_preludeLends` names it on the backend's side.
     pub fn time_sync<T>(
         _name: String,
-        function: std::rc::Rc<dyn Fn() -> Result<T, DartError>>,
+        function: impl Fn() -> Result<T, DartError>,
         _arguments: Option<Map<std::rc::Rc<dyn DartAny>, std::rc::Rc<dyn DartAny>>>,
         _flow: Option<Flow>,
     ) -> Result<T, DartError> {
