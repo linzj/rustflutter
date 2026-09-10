@@ -390,6 +390,21 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 字面量;连带「对写下来的 null 做判空的三目,另一支是死的」一起,**stub 89 → 88**,
 夹具 `writtennull` 先红(一模一样的 `&_`,E0282)后绿。
 
+**(2026-09-10,ws978 试过又撤回;一次都没触发)** 生成的 `==` 里,**Rust 比不了的字段
+应该走 `dart_eq`**。`byIdentity` 只挑函数类型和光秃秃的句柄,于是**装着**翻译类的字段
+——`Option<Vec<DropdownMenuItem<T>>>`——落到了 `==` 上,而翻译类除非自己 derive 过,
+否则没有 `PartialEq`(E0369,`DropdownButton.==` 与 `_WindowingOwner.==`)。改成用
+上面十行处就有的 `_comparableType` 来判,**量出来 82 → 82,桩的集合逐字节相同**。
+
+**为什么没触发**(探针一跑就看见了,`DART2RUST_TRACE_EQ`):
+
+    EQ DropdownButton.items type=Option<Vec<DropdownMenuItem<T>>> comparable=true
+
+`_comparableType` **认为它可比**——`DropdownMenuItem<T>` 确实 derive 了 `PartialEq`。
+真正的毛病在 `_comparableType` 里面:那个 derive 带着 `where` 界,而 `DropdownButton`
+在这个实例化上没给出来。**要重做需要什么**:别去改挑字段的那一步,去改
+`_comparableType`——它对「泛型翻译类的 derive 带界」这件事是瞎的。
+
 **(2026-09-10,ws971 试过两次都撤回)** 同一件事按在 `coerceInto` 里,两次都不对。
 第一次按 `slot.projected && have0.name == 'Null'`:**89 → 89,桩的集合一模一样**,
 一次都没触发。第二次按 `have0.name == 'Null' && slot.isFunction`,并把字面量的
