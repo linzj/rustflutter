@@ -23,6 +23,18 @@ class Reset implements Signal {
   // Declared on the concrete class only -- not on `Signal` -- so a receiver
   // erased to the bound cannot reach it.
   bool fired = false;
+
+  int _count = 0;
+
+  // ..and a real setter, which takes a different path in the lowering than
+  // a field write does: `IrSetter` rather than `IrAssignField`. ws1027
+  // narrowed the field write and ws1029 the setter call, and only doing
+  // both makes this fixture green.
+  int get count => _count;
+
+  set count(int value) {
+    _count = value * 2;
+  }
 }
 
 class Holder<T extends Signal> {
@@ -39,7 +51,9 @@ class ResetHolder extends Holder<Reset> {
     final bool was = signal!.fired;
     // The write: the statement that did not compile.
     signal!.fired = false;
-    return '$was${signal!.fired}${signal!.label}';
+    // ..and a setter *call* through the same erased receiver.
+    signal!.count = 21;
+    return '$was${signal!.fired}${signal!.label}${signal!.count}';
   }
 }
 
