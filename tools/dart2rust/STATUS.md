@@ -1260,11 +1260,38 @@ work.md §9 估 −8.5 MB,实测 **−8.57 MB**。二进制比 `.text` 掉得多
 | `identityHashCode` 落在值类上 | 1 | **不要动,和上面那 5 条是同一件事**(2026-09-10 查证:`_IdentityThemeDataCacheKey.hashCode` 传的 `baseTheme` 是 `ThemeData`,生成出来是 `pub struct ThemeData`,按值持有)|
 | 零散(`runZonedGuarded`、`is HttpException`、一处 super 进没翻译的类) | 3 | 各自独立 |
 
-### 有多少条是**对的**:6 条(2026-09-10 逐条查证)
+### 22 条里,有 11 条是**同一个决定**挡着的(2026-09-10 逐条查证)
+
+分完组才看清楚:剩下的**一半**根子是同一件事——**值语义**。没有稳定身份、
+拿不到一个能活过调用的句柄,于是编译器只能拒绝。这一条决定做完,它们一起掉;
+不做,单独去修任何一条都是拿一个对的拒绝换一个错答案(ws985 已经演示过一次)。
+
+| 挡在别名/counted 后面的 | 条数 | 查证 |
+|---|---|---|
+| `identical` 落在按值来的操作数上 | 5 | 操作数逐个看过:两个 `Map` 值、`ThemeData` 字段、`_lineMetrics`、`oldDelegate`、`other` |
+| `super.==` / `super.hashCode` 进 `Object` | 2 | 超类函数收 `&dyn Widget`,发射时不知道具体类;**870 个 `impl Widget for` 里 844 个不是 counted** |
+| `identityHashCode` 落在值类上 | 1 | `ThemeData` 发出来是 `pub struct`,按值持有 |
+| 混入体里闭包捕获 `this` | 1 | 混入的方法变成收 `this_: &(dyn ListNotifierMixin + 'static)` 的自由函数,**借来的接收者变不出能活过调用的句柄** |
+| `dart:ffi` 的写 | 2 | `Uint8List` 是值,写落进拷贝(ws1015 把读那一半做掉了,写这一半留着) |
+
+**另外 11 条各自独立**,和上面那个决定无关:动态派发 3、`GZipCodec`/`JsonEncoder` 3、
+`runZonedGuarded` 1、`is HttpException` 1、一处 super 进没翻译的观察者方法 1、
+ffi 回调蹦床 1、`_ffiCall`(真的调 DLL)1。
+
+**所以「拒绝归零」这个目标条件,现在可以说得很具体**:
+先做别名/counted → 22 掉到 11(其中 8 条今天就是对的,那 8 条正是靠这个决定才变成可做的);
+再把另外 11 条一条条做掉 → 才到 0。ws437 量过别名那一步是 **+901 桩**,
+所以它不是「顺手做掉」的东西,是一个要单独立项的决定。
+
+### 有多少条是**对的**:8 条(2026-09-10 逐条查证;**先写成 6 条,漏了 super 那 2 条**)
 
 **这一节的结论直接决定「拒绝归零」这个目标条件能不能字面达成:不能。**
-29 条里有 **6 条是编译器正确地拒绝给出一个错答案**——5 条 `identical` 加 1 条 `identityHashCode`,
-全都是同一个理由:**操作数是按值来的,没有地址**。五条的操作数逐个看过:
+29 条里有 **8 条是编译器正确地拒绝给出一个错答案**——5 条 `identical`、1 条 `identityHashCode`、
+以及 2 条 `super.==`/`super.hashCode` 进 `Object`,全都是同一个理由:**操作数是按值来的,没有地址**。
+(第一版写成 6 条,把 super 那 2 条漏在外面了;它们在上表里一直标着「不要动」。)
+那 2 条的判据**量过**:`Widget` 是个 trait,所以 `Rc<dyn Widget>` 有身份——听上去可以放行,
+但超类函数的接收者是 `&dyn Widget`,发射时不知道具体类是不是句柄,而 **870 个 `impl Widget for`
+里有 844 个不是 counted**(值结构体)。「所有实现者都是句柄」这条限制在 `Widget` 上差得最远。五条的操作数逐个看过:
 两个 `Map` 值、`ThemeData` 字段 `baseTheme`、`_lineMetrics`、参数 `oldDelegate`、参数 `other`。
 `_identical` 自己的注释把道理写全了:翻译出来的值类是 `Copy`,**一份拷贝的地址什么也不说明**,
 `identical(this, other)` 在那里会编得过而且**永远为 false**。
