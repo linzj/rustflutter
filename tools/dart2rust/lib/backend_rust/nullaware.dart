@@ -443,6 +443,26 @@ augment class RustBackend {
         if (have != null && have.name == 'Iterable') {
           return '${expr(args[0])}.dart_to_list()';
         }
+        // ..and a *translated* class that is an `Iterable` has its own
+        // `__to_list`, the name no Dart member has (`_emitToList`). Its
+        // Dart `toList` may take arguments -- `ObserverList.toList({bool
+        // growable = true})` becomes `to_list(&self, growable: bool)`,
+        // because Rust has no named parameters -- so calling `to_list()`
+        // here passed none to a one-parameter method
+        // (`FocusManager.notifyListeners`, whose Dart is
+        // `List<ValueChanged<..>>.of(_listeners)`).
+        // ..and a *translated* class that is an `Iterable` has its own
+        // `__to_list`, the name no Dart member has (`_emitToList`). Its
+        // Dart `toList` may take arguments -- `ObserverList.toList({bool
+        // growable = true})` becomes `to_list(&self, growable: bool)`,
+        // because Rust has no named parameters -- so calling `to_list()`
+        // here passed none to a one-parameter method
+        // (`FocusManager.notifyListeners`, whose Dart is
+        // `List<ValueChanged<..>>.of(_listeners)`).
+        final own = have == null ? null : library[have.name];
+        if (own?.iterableElement != null) {
+          return '${expr(args[0])}.__to_list()';
+        }
         return have != null && have.name != 'List' && !have.isFunction
             ? '${expr(args[0])}.to_list()'
             : '${expr(args[0])}.clone()';

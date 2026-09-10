@@ -1464,7 +1464,7 @@ Dart 里它自己也是 `<T>` 的;擦掉的是**元素类自己**的 `T`,而这�
 这一族是擦除孪生(ws544 量过:把 Dart 的界带上是 **+252 桩**),
 `material_date` 的 `T extends DateTime` 也在里面——**不是一轮能做的**。
 
-### `FocusManager.notifyListeners` 的 `to_list()` 少一个实参:不在后端那条 `to_list` 分支上(2026-09-11)
+### (已解决,ws1037)`FocusManager.notifyListeners` 的 `to_list()` 少一个实参
 
 `self._listeners.toList()`,`_listeners` 是 `ObserverList<VoidCallback>`,
 它自己声明了 `toList({bool growable = true})`,翻出来是 `to_list(&self, growable: bool)`。
@@ -1480,8 +1480,12 @@ Dart 里它自己也是 `<T>` 的;擦掉的是**元素类自己**的 `T`,而这�
 trace 打出来全程序走到那条分支的接收者**全是 `List<..>` / `Set<..>`**,
 `ObserverList` 那处根本不经过它。已撤回。
 
-**下次从这里起**:先打印那个调用点用的是哪条发射路径(它的 `IrCall` 从哪儿构造),
-别再从 `to_list` 这个名字去找——丢实参的地方在别处。
+**照着这句做,一次就找到了**(ws1037):Dart 根本不是 `_listeners.toList()`,是
+**`List<ValueChanged<..>>.of(_listeners)`**——落在 `nullaware.dart` 的 `List.from/of` 分支,
+和 `calls.dart` 那条 `to_list` 分支毫无关系。之前那次 trace「接收者全是 List/Set」不是死路,
+是在指路,我读成了死路。
+**改法用的是现成机制**:翻译出来的、自己是 `Iterable` 的类本来就有 `__to_list()`
+(`_emitToList` 发的,Dart 里没有这个名字),正是为这种场合准备的。
 
 ## 桩尾还剩什么(2026-09-10,ws988 之后 74 个,逐条看过)
 
