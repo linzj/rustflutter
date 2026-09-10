@@ -1064,6 +1064,31 @@ CFE 把一个 `Struct` 子类摊成:两个字段(`_Compound._typedDataBase`、`_
 把它们「清掉」等于让编译器开始说假话。要么这 2 条(以及另外那几条)留着,
 要么先做完第 1 条,让它们不再是对的。
 
+## 桩尾还剩什么(2026-09-10,ws988 之后 74 个,逐条看过)
+
+`b09ac222` 说「一条通用规则一轮就掉一格的阶段基本走完了」,这次把剩下的 74 个又过了一遍,确认了,并且把**每一条卡在哪儿**记下来,省得下次重新翻:
+
+- **`implements Iterator<E>` 的类没有 `impl DartIterator<E>`**(3 个桩:`_BoardIterator`、
+  `Board.iterator`/`element_at`、`transformations_demo.paint`)。后端有「这个类**是**一个 `Iterable`」那条路
+  (`_emitToList`/`_emitTraitToList`,按 `IrClass.iterableElement`),**没有「这个类是一个 `Iterator`」那条**。
+  类型那边是通的:`dart:core` 的 `Iterator` 已经规范化成 `DartIterator`(`types.dart:80`),
+  所以 `cls.interfaces` 里就有它。要发的是
+  `impl DartIterator<E> for X { fn move_next(&self) -> bool {..} fn current(&self) -> E {..} }`,
+  转给类自己的 `moveNext`/`current`。**要小心的两处**:`moveNext` 可能是失败的(要像 `_emitToList` 那样 panic 兜住),
+  `current` 在 counted 类上是**cell 字段**(`Rc<RefCell<Option<..>>>`),得按 cell 读。
+  **这是剩下的里面最像「一条通用规则」的一个。**
+
+- **类型参数丢了 Dart 那边的界**(3 个桩:`CalendarDelegate<T extends DateTime>` 的 `year` ×2、
+  `binarySearch` 的 `compare_to`)。**别再直接把界搬过去**——ws544 量过,**+252 个桩**:
+  擦除孪生把参数实例化成 `Rc<dyn Object>`,而句柄不是那个 trait。`DateTime` 还多一层:它是 prelude 的
+  **结构体**,Rust 没法拿结构体当界,得先让 `DateTime` 变成 trait。
+
+- **别名工程挡着的**:`merge_sort` 那 2 个(Dart 把同一个 list 同时当源和目标传)、ffi 的写路径、5 条 `identical` 拒绝。见〈拒绝归零要什么〉。
+
+- **要运行期的**:`Stream`/`StreamController`(prelude 一行都没有)、ffi 回调蹦床、真的 gzip/JSON 编码器。
+
+- **下游的**:`Uint8Buffer.removeRange` 这种,是 `typed_buffer.rs` 那 3 个桩的下游,不是 prelude 缺方法。
+
 ## 已知欠账
 
 **(2026-09-10)这一节的出场规则。** 三次压缩都只压尺寸、没定出场条件,于是 1266 行
