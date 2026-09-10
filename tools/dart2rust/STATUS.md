@@ -1335,6 +1335,26 @@ CFE 把一个 `Struct` 子类摊成:两个字段(`_Compound._typedDataBase`、`_
 把它们「清掉」等于让编译器开始说假话。要么这 2 条(以及另外那几条)留着,
 要么先做完第 1 条,让它们不再是对的。
 
+### `RestorableChangeNotifier._disposeOldValue` 是**两层**,第一层修好了也不动尺子(ws1019,已撤回)
+
+`scheduleMicrotask(_value!.dispose)`。`_value` 声明在 `RestorableListenable<T extends
+Listenable>` 上,而这句在 `RestorableChangeNotifier<T extends ChangeNotifier>` 里,
+所以读出来是 `Rc<dyn Listenable>`,`dispose` 不在上面。
+
+**第一层的改法是对的、也确实生效了**:撕下来的方法(tear-off)的接收者**就是**一次成员访问的
+接收者,该走 `_receiver`(把擦除过的读窄化到 Dart 给的类型),而那条路上写的是裸的
+`expression(receiver)`(`raw_casts.dart` 里绑定 `bindReceiver` 那两处)。
+改完 `dispose` 就找得到了——**但桩没掉**,错误换成了第二层:
+
+    expected `Rc<dyn Fn() -> Result<(), Rc<...>>>`, found closure
+
+也就是 tear-off 造出来的闭包没有进它的函数手柄(ws1008/ws1013 那一族)。
+第二层一直都在,只是被第一层挡着看不见。
+
+**按「逐字节相同就撤回」撤了**(和 `_nativeEffect`、ws1016 一样)。
+**要做就得两层一起做**,单独做第一层量不出来。同一个文件里已经有先例可抄:
+prelude 集合方法的 tear-off 会被改写成它代表的那次调用,好让调用的规则生效。
+
 ## 桩尾还剩什么(2026-09-10,ws988 之后 74 个,逐条看过)
 
 `b09ac222` 说「一条通用规则一轮就掉一格的阶段基本走完了」,这次把剩下的 74 个又过了一遍,确认了,并且把**每一条卡在哪儿**记下来,省得下次重新翻:
