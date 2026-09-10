@@ -227,8 +227,20 @@ def write_workspace(src, out, mods, crate_of, graph):
         # 32 session directories at 2.4 GB each, and 255 more were
         # `-working` stubs left behind by the OOM guard's `pkill -9`. The
         # chain prunes those before it starts; see run_chain.sh.
+        # `[profile.release] panic = "abort"`: the unwind tables and landing
+        # pads are 9.4 MB of a 284 MB binary (`.gcc_except_table` alone,
+        # measured 2026-09-10) and nothing in this program unwinds -- a Dart
+        # `throw` is an `Err`, not a panic. `[profile.dev]` has said `abort`
+        # since long before, so this only makes release agree with it.
+        #
+        # It costs the `catch_unwind` in `runtime/src/lib.rs`, which keeps
+        # dumping the render tree after a panic inside a frame. That
+        # instrument runs on the *debug* build (`bin/run_main.sh`), which is
+        # abort already and so never had it either; release was the odd one
+        # out. If a release-mode ruler is ever wanted, this is the line that
+        # has to be reconsidered -- see 「量产构建与测量构建分家」.
         '[workspace]\nresolver = "2"\nmembers = [\n%s]\n\n[profile.dev]\n'
-        'debug = false\npanic = "abort"\n'
+        'debug = false\npanic = "abort"\n\n[profile.release]\npanic = "abort"\n'
         % ''.join('    "%s",\n' % m for m in members))
     # the prelude crate
     pd = os.path.join(out, 'dart_prelude', 'src')
