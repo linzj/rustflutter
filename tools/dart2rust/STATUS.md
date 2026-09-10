@@ -1257,7 +1257,22 @@ work.md §9 估 −8.5 MB,实测 **−8.57 MB**。二进制比 `.text` 掉得多
 | 动态派发(`DynamicGet`/`DynamicInvocation`) | 4 | 真的按名字派发。**「名字在闭世界里只有一个声明者」只能解决 33 处里的 1 处**(量过:`slug` 有 2 个声明者,`toJson` 有 18 个) |
 | `const GZipCodec` / `const JsonEncoder` | 3 | 真的 gzip 和 JSON 编码器——一个库,不是一条规则 |
 | `super` 进 `Object` 的 `==`/`hashCode` | 2 | **不要动。ws985 量过:改了就是把一个对的拒绝换成一个错答案** |
-| 零散(`runZonedGuarded`、`identityHashCode`、`is HttpException`、一处 super 进没翻译的类) | 4 | 各自独立 |
+| `identityHashCode` 落在值类上 | 1 | **不要动,和上面那 5 条是同一件事**(2026-09-10 查证:`_IdentityThemeDataCacheKey.hashCode` 传的 `baseTheme` 是 `ThemeData`,生成出来是 `pub struct ThemeData`,按值持有)|
+| 零散(`runZonedGuarded`、`is HttpException`、一处 super 进没翻译的类) | 3 | 各自独立 |
+
+### 有多少条是**对的**:6 条(2026-09-10 逐条查证)
+
+**这一节的结论直接决定「拒绝归零」这个目标条件能不能字面达成:不能。**
+29 条里有 **6 条是编译器正确地拒绝给出一个错答案**——5 条 `identical` 加 1 条 `identityHashCode`,
+全都是同一个理由:**操作数是按值来的,没有地址**。五条的操作数逐个看过:
+两个 `Map` 值、`ThemeData` 字段 `baseTheme`、`_lineMetrics`、参数 `oldDelegate`、参数 `other`。
+`_identical` 自己的注释把道理写全了:翻译出来的值类是 `Copy`,**一份拷贝的地址什么也不说明**,
+`identical(this, other)` 在那里会编得过而且**永远为 false**。
+ws985 已经用夹具证过一次:把这类拒绝"修好"就是拿一个对的拒绝换一个错答案。
+
+**所以要么这 6 条留着(数字停在 6),要么先把值类改成 counted 让它们真有身份**——
+后者是别名/counted 那个工程,ws437 量过 **+901 桩**。
+在那之前,报告里不该把 29 说成"还差 29 步":能动的是 23 条。
 
 **ffi 那 11 条卡在同一个地方,而且和 `merge_sort` 那 2 个桩是同一个地方。**
 CFE 把一个 `Struct` 子类摊成:两个字段(`_Compound._typedDataBase`、`_offsetInBytes`)、
