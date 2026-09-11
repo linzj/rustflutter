@@ -972,6 +972,30 @@ augment class RustBackend {
     // `Queue.removeFirst()`/`removeLast()` on an empty queue.
     'remove_first',
     'remove_last',
+    // `dart:io`'s synchronous file calls. Dart throws `FileSystemException`
+    // from every one of them and `on FileSystemException catch` is how
+    // programs read a missing file; the prelude used to `panic!` through a
+    // `raise(self) -> !` that no longer exists (ws1077).
+    'create_sync',
+    'open_sync',
+    'close_sync',
+    'length_sync',
+    'read_as_bytes_sync',
+    'read_as_string_sync',
+    'write_as_string_sync',
+    'write_as_bytes_sync',
+    'delete_sync',
+    'position_sync',
+    'set_position_sync',
+    'read_sync',
+    'read_into_sync',
+    'write_from_sync',
+    'write_string_sync',
+    'write_byte_sync',
+    'truncate_sync',
+    'flush_sync',
+    // `Error.throwWithStackTrace(e, st)`, which is a `throw`.
+    'throw_with_stack_trace',
   };
 
   /// The prelude methods whose callback parameter is `impl Fn`: it is

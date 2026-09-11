@@ -669,6 +669,16 @@ augment class RustBackend {
       'LinkedHashSet',
       'HashSet',
     };
+    // `utf8.decode(bytes)` on malformed bytes is Dart's `FormatException`.
+    // By the *receiver*, not by the name: `JsonCodec.decode` is called
+    // `decode` too and does not fail, and putting the bare name in
+    // `_preludeFailing` propagated from it -- two stubs, `E0277` on an
+    // `Rc<dyn DartAny>` (ws1077).
+    if (name == 'decode' &&
+        (target?.rustType?.name ?? '') == 'Utf8Codec' &&
+        args.isNotEmpty) {
+      return '$receiver.decode(${args.map(expr).join(', ')})$_propagate';
+    }
     // An empty one has no first and no last, and Dart throws `Bad state:
     // No element` for both. The prelude says `Result` for the queue-like
     // receivers since ws1076; the `Vec` ones used to index -- `xs[0]` on an

@@ -5096,10 +5096,6 @@ impl FileSystemException {
         }
     }
 
-    fn raise(self) -> ! {
-        panic!("uncaught Dart exception: {}", self)
-    }
-
     fn failed(self) -> DartError {
         std::rc::Rc::new(self) as DartError
     }
@@ -5209,10 +5205,8 @@ impl File {
             .map_err(|e| FileSystemException::of("Cannot create file", &self.path, e))
     }
 
-    pub fn create_sync(&self, recursive: bool, exclusive: bool) {
-        if let Err(e) = self.try_create(recursive, exclusive) {
-            e.raise()
-        }
+    pub fn create_sync(&self, recursive: bool, exclusive: bool) -> Result<(), DartError> {
+        self.try_create(recursive, exclusive).map(|_| ()).map_err(|e| e.failed())
     }
 
     pub fn create(&self, recursive: bool, exclusive: bool) -> DartFuture<File> {
@@ -5244,10 +5238,10 @@ impl File {
         Ok(RandomAccessFile { path: self.path.clone(), file: std::rc::Rc::new(std::cell::RefCell::new(file)) })
     }
 
-    pub fn open_sync(&self, mode: FileMode) -> RandomAccessFile {
+    pub fn open_sync(&self, mode: FileMode) -> Result<RandomAccessFile, DartError> {
         match self.try_open(mode) {
-            Ok(file) => file,
-            Err(e) => e.raise(),
+            Ok(file) => Ok(file),
+            Err(e) => Err(e.failed()),
         }
     }
 
@@ -5261,10 +5255,10 @@ impl File {
             .map_err(|e| FileSystemException::of("Cannot retrieve length of file", &self.path, e))
     }
 
-    pub fn length_sync(&self) -> i64 {
+    pub fn length_sync(&self) -> Result<i64, DartError> {
         match self.try_length() {
-            Ok(n) => n,
-            Err(e) => e.raise(),
+            Ok(n) => Ok(n),
+            Err(e) => Err(e.failed()),
         }
     }
 
@@ -5276,10 +5270,10 @@ impl File {
         std::fs::read(&self.path).map_err(|e| FileSystemException::of("Cannot open file", &self.path, e))
     }
 
-    pub fn read_as_bytes_sync(&self) -> Vec<i64> {
+    pub fn read_as_bytes_sync(&self) -> Result<Vec<i64>, DartError> {
         match self.try_read() {
-            Ok(bytes) => bytes.into_iter().map(|b| b as i64).collect(),
-            Err(e) => e.raise(),
+            Ok(bytes) => Ok(bytes.into_iter().map(|b| b as i64).collect()),
+            Err(e) => Err(e.failed()),
         }
     }
 
@@ -5287,10 +5281,10 @@ impl File {
         io_ready(self.try_read().map(|bytes| bytes.into_iter().map(|b| b as i64).collect()))
     }
 
-    pub fn read_as_string_sync(&self, _encoding: Utf8Codec) -> String {
+    pub fn read_as_string_sync(&self, _encoding: Utf8Codec) -> Result<String, DartError> {
         match self.try_read() {
-            Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
-            Err(e) => e.raise(),
+            Ok(bytes) => Ok(String::from_utf8_lossy(&bytes).into_owned()),
+            Err(e) => Err(e.failed()),
         }
     }
 
@@ -5316,20 +5310,16 @@ impl File {
         Ok(())
     }
 
-    pub fn write_as_string_sync(&self, contents: String, mode: FileMode, _encoding: Utf8Codec, flush: bool) {
-        if let Err(e) = self.try_write(contents.as_bytes(), mode, flush) {
-            e.raise()
-        }
+    pub fn write_as_string_sync(&self, contents: String, mode: FileMode, _encoding: Utf8Codec, flush: bool) -> Result<(), DartError> {
+        self.try_write(contents.as_bytes(), mode, flush).map(|_| ()).map_err(|e| e.failed())
     }
 
     pub fn write_as_string(&self, contents: String, mode: FileMode, _encoding: Utf8Codec, flush: bool) -> DartFuture<File> {
         io_ready(self.try_write(contents.as_bytes(), mode, flush).map(|_| self.clone()))
     }
 
-    pub fn write_as_bytes_sync(&self, bytes: Vec<i64>, mode: FileMode, flush: bool) {
-        if let Err(e) = self.try_write(&bytes_of(&bytes, 0, None), mode, flush) {
-            e.raise()
-        }
+    pub fn write_as_bytes_sync(&self, bytes: Vec<i64>, mode: FileMode, flush: bool) -> Result<(), DartError> {
+        self.try_write(&bytes_of(&bytes, 0, None), mode, flush).map(|_| ()).map_err(|e| e.failed())
     }
 
     pub fn write_as_bytes(&self, bytes: Vec<i64>, mode: FileMode, flush: bool) -> DartFuture<File> {
@@ -5342,10 +5332,8 @@ impl File {
             .map_err(|e| FileSystemException::of("Cannot delete file", &self.path, e))
     }
 
-    pub fn delete_sync(&self, _recursive: bool) {
-        if let Err(e) = self.try_delete() {
-            e.raise()
-        }
+    pub fn delete_sync(&self, _recursive: bool) -> Result<(), DartError> {
+        self.try_delete().map(|_| ()).map_err(|e| e.failed())
     }
 
     pub fn delete(&self, _recursive: bool) -> DartFuture<FileSystemEntity> {
@@ -5374,10 +5362,10 @@ impl RandomAccessFile {
         self.path.clone()
     }
 
-    pub fn length_sync(&self) -> i64 {
+    pub fn length_sync(&self) -> Result<i64, DartError> {
         match self.io("Cannot retrieve length of file", self.file.borrow().metadata()) {
-            Ok(m) => m.len() as i64,
-            Err(e) => e.raise(),
+            Ok(m) => Ok(m.len() as i64),
+            Err(e) => Err(e.failed()),
         }
     }
 
@@ -5385,16 +5373,16 @@ impl RandomAccessFile {
         io_ready(self.io("Cannot retrieve length of file", self.file.borrow().metadata()).map(|m| m.len() as i64))
     }
 
-    pub fn position_sync(&self) -> i64 {
+    pub fn position_sync(&self) -> Result<i64, DartError> {
         use std::io::Seek;
         match self.io("Cannot retrieve position", self.file.borrow_mut().stream_position()) {
-            Ok(p) => p as i64,
-            Err(e) => e.raise(),
+            Ok(p) => Ok(p as i64),
+            Err(e) => Err(e.failed()),
         }
     }
 
     pub fn position(&self) -> DartFuture<i64> {
-        DartFuture::ready(Ok(self.position_sync()))
+        DartFuture::ready(self.position_sync())
     }
 
     fn try_set_position(&self, position: i64) -> Result<(), FileSystemException> {
@@ -5403,10 +5391,8 @@ impl RandomAccessFile {
             .map(|_| ())
     }
 
-    pub fn set_position_sync(&self, position: i64) {
-        if let Err(e) = self.try_set_position(position) {
-            e.raise()
-        }
+    pub fn set_position_sync(&self, position: i64) -> Result<(), DartError> {
+        self.try_set_position(position).map(|_| ()).map_err(|e| e.failed())
     }
 
     pub fn set_position(&self, position: i64) -> DartFuture<RandomAccessFile> {
@@ -5429,10 +5415,10 @@ impl RandomAccessFile {
         Ok(out)
     }
 
-    pub fn read_sync(&self, count: i64) -> Vec<i64> {
+    pub fn read_sync(&self, count: i64) -> Result<Vec<i64>, DartError> {
         match self.try_read(count.max(0) as usize) {
-            Ok(bytes) => bytes.into_iter().map(|b| b as i64).collect(),
-            Err(e) => e.raise(),
+            Ok(bytes) => Ok(bytes.into_iter().map(|b| b as i64).collect()),
+            Err(e) => Err(e.failed()),
         }
     }
 
@@ -5443,10 +5429,10 @@ impl RandomAccessFile {
     /// `readInto(buffer, [start, end])`: the bytes read into the caller's
     /// buffer -- handed in as `&mut` (`IrMutRef`), a `Uint8List` or a
     /// `List<int>` alike (`DartByteSink`) -- and their count.
-    pub fn read_into_sync<B: DartByteSink + ?Sized>(&self, buffer: &mut B, start: i64, end: Option<i64>) -> i64 {
+    pub fn read_into_sync<B: DartByteSink + ?Sized>(&self, buffer: &mut B, start: i64, end: Option<i64>) -> Result<i64, DartError> {
         match self.try_read_into(buffer, start, end) {
-            Ok(n) => n,
-            Err(e) => e.raise(),
+            Ok(n) => Ok(n),
+            Err(e) => Err(e.failed()),
         }
     }
 
@@ -5470,41 +5456,33 @@ impl RandomAccessFile {
         self.io("Cannot write file", self.file.borrow_mut().write_all(bytes))
     }
 
-    pub fn write_from_sync(&self, buffer: Vec<i64>, start: i64, end: Option<i64>) {
-        if let Err(e) = self.try_write(&bytes_of(&buffer, start, end)) {
-            e.raise()
-        }
+    pub fn write_from_sync(&self, buffer: Vec<i64>, start: i64, end: Option<i64>) -> Result<(), DartError> {
+        self.try_write(&bytes_of(&buffer, start, end)).map(|_| ()).map_err(|e| e.failed())
     }
 
     pub fn write_from(&self, buffer: Vec<i64>, start: i64, end: Option<i64>) -> DartFuture<RandomAccessFile> {
         io_ready(self.try_write(&bytes_of(&buffer, start, end)).map(|_| self.clone()))
     }
 
-    pub fn write_string_sync(&self, string: String, _encoding: Utf8Codec) {
-        if let Err(e) = self.try_write(string.as_bytes()) {
-            e.raise()
-        }
+    pub fn write_string_sync(&self, string: String, _encoding: Utf8Codec) -> Result<(), DartError> {
+        self.try_write(string.as_bytes()).map(|_| ()).map_err(|e| e.failed())
     }
 
     pub fn write_string(&self, string: String, _encoding: Utf8Codec) -> DartFuture<RandomAccessFile> {
         io_ready(self.try_write(string.as_bytes()).map(|_| self.clone()))
     }
 
-    pub fn write_byte_sync(&self, value: i64) -> i64 {
-        if let Err(e) = self.try_write(&[value as u8]) {
-            e.raise()
-        }
-        1
+    pub fn write_byte_sync(&self, value: i64) -> Result<i64, DartError> {
+        self.try_write(&[value as u8]).map_err(|e| e.failed())?;
+        Ok(1)
     }
 
     fn try_truncate(&self, length: i64) -> Result<(), FileSystemException> {
         self.io("Cannot truncate file", self.file.borrow_mut().set_len(length.max(0) as u64))
     }
 
-    pub fn truncate_sync(&self, length: i64) {
-        if let Err(e) = self.try_truncate(length) {
-            e.raise()
-        }
+    pub fn truncate_sync(&self, length: i64) -> Result<(), DartError> {
+        self.try_truncate(length).map(|_| ()).map_err(|e| e.failed())
     }
 
     pub fn truncate(&self, length: i64) -> DartFuture<RandomAccessFile> {
@@ -5516,17 +5494,15 @@ impl RandomAccessFile {
         self.io("Cannot flush file", self.file.borrow_mut().flush())
     }
 
-    pub fn flush_sync(&self) {
-        if let Err(e) = self.try_flush() {
-            e.raise()
-        }
+    pub fn flush_sync(&self) -> Result<(), DartError> {
+        self.try_flush().map(|_| ()).map_err(|e| e.failed())
     }
 
     pub fn flush(&self) -> DartFuture<RandomAccessFile> {
         io_ready(self.try_flush().map(|_| self.clone()))
     }
 
-    pub fn close_sync(&self) {
+    pub fn close_sync(&self) -> Result<(), DartError> {
         self.flush_sync()
     }
 
@@ -5593,10 +5569,8 @@ impl Directory {
         }
     }
 
-    pub fn create_sync(&self, recursive: bool) {
-        if let Err(e) = self.try_create(recursive) {
-            e.raise()
-        }
+    pub fn create_sync(&self, recursive: bool) -> Result<(), DartError> {
+        self.try_create(recursive).map(|_| ()).map_err(|e| e.failed())
     }
 
     pub fn create(&self, recursive: bool) -> DartFuture<Directory> {
@@ -5610,10 +5584,8 @@ impl Directory {
             .map_err(|e| FileSystemException::of("Deletion failed", &self.path, e))
     }
 
-    pub fn delete_sync(&self, recursive: bool) {
-        if let Err(e) = self.try_delete(recursive) {
-            e.raise()
-        }
+    pub fn delete_sync(&self, recursive: bool) -> Result<(), DartError> {
+        self.try_delete(recursive).map(|_| ()).map_err(|e| e.failed())
     }
 
     pub fn delete(&self, recursive: bool) -> DartFuture<FileSystemEntity> {
@@ -6307,10 +6279,15 @@ impl DartSink<Vec<i64>> for _ByteCallbackSink {
 }
 
 impl Error {
-    /// `Error.throwWithStackTrace(error, stackTrace)`: a throw, which on
-    /// this side is a panic (see the backend's `_thrown`).
-    pub fn throw_with_stack_trace<E: std::fmt::Debug>(error: E, _stack: StackTrace) -> ! {
-        panic!("uncaught Dart exception: {:?}", error)
+    /// `Error.throwWithStackTrace(error, stackTrace)`: a throw, and a Dart
+    /// `throw` is an `Err` on this side. The stack is dropped -- this
+    /// prelude has no way to attach one to an error object -- but the
+    /// *error* is the one the program threw, which is what a `catch` reads.
+    pub fn throw_with_stack_trace(
+        error: std::rc::Rc<dyn DartAny>,
+        _stack: StackTrace,
+    ) -> Result<std::convert::Infallible, DartError> {
+        Err(error)
     }
 }
 
@@ -9751,7 +9728,7 @@ impl Utf8Decoder {
     pub fn convert(&self, code_units: Vec<i64>, start: i64, end: Option<i64>) -> Result<String, DartError> {
         let s = (start.max(0) as usize).min(code_units.len());
         let e = end.map(|n| (n.max(0) as usize).min(code_units.len())).unwrap_or(code_units.len());
-        Ok(Utf8Codec.decode(code_units[s..e].to_vec(), Some(true)))
+        Utf8Codec.decode(code_units[s..e].to_vec(), Some(true))
     }
 
     /// `utf8.decoder.fuse(other)`: the two conversions in a row.
@@ -11039,15 +11016,19 @@ pub struct Utf8Codec;
 impl Utf8Codec {
     /// `utf8.decode(bytes, {allowMalformed})`: lossy when malformed is
     /// allowed, and a panic (Dart's `FormatException`) when it is not.
-    pub fn decode(&self, bytes: Vec<i64>, allow_malformed: Option<bool>) -> String {
+    pub fn decode(
+        &self,
+        bytes: Vec<i64>,
+        allow_malformed: Option<bool>,
+    ) -> Result<String, DartError> {
         let raw: Vec<u8> = bytes.into_iter().map(|b| b as u8).collect();
         match String::from_utf8(raw) {
-            Ok(s) => s,
+            Ok(s) => Ok(s),
             Err(e) => {
                 if allow_malformed.unwrap_or(false) {
-                    String::from_utf8_lossy(e.as_bytes()).into_owned()
+                    Ok(String::from_utf8_lossy(e.as_bytes()).into_owned())
                 } else {
-                    panic!("uncaught Dart exception: FormatException: {}", e)
+                    Err(dart_format_exception(format!("{}", e)))
                 }
             }
         }
