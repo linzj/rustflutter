@@ -237,6 +237,21 @@ augment class RustBackend {
   /// before the source, which Dart evaluates first: both are `?` sites, so
   /// the only difference is which of two throws is reported.
   String _chain(IrIterChain chain, {String tail = ''}) {
+    // A step's callback is Dart code and Dart code throws. Rust's adapters
+    // take a closure that returns a plain value -- `filter` wants a `bool`,
+    // not a `Result<bool, _>` -- so the step bodies were written with no
+    // failure channel and a throw inside one of them was a panic
+    // (`work.md` step 3). The chain is a loop instead, which carries `?`;
+    // the closures are the ordinary fallible kind (`_closure`), called on
+    // the spot.
+    //
+    // Only where something surrounds the expression to propagate into:
+    // with no `_failure` the loop would have nowhere to send the error, so
+    // the adapters below stand and the old unwrap with them.
+    if (_failure != null && chain.steps.isNotEmpty) {
+      final loop = _chainLoop(chain, collects: tail.contains('collect'));
+      if (loop != null) return loop;
+    }
     final bound = <String>[];
     // A bare `forEach` hands the closure each element by value, as Dart
     // does: `keys.forEach(_updateProperty)` gave it `&Rc<..>` (53).
@@ -253,6 +268,59 @@ augment class RustBackend {
     final body =
         '${_asList(chain.source)}.iter()${owned ? '.cloned()' : ''}$steps$tail';
     return bound.isEmpty ? body : '{ ${bound.join(' ')} $body }';
+  }
+
+  /// The chain as a `for` loop, or null for a step this does not spell.
+  ///
+  /// Every step is the ordinary fallible closure (`|x| -> Result<T, E>`)
+  /// called immediately, so a `throw` inside one is an `Err` the loop
+  /// propagates -- which is what Rust's adapters cannot do. The source is
+  /// iterated by value (`.iter().cloned()`), so each step's parameter binds
+  /// the item itself and the annotations `_closure` writes are the right
+  /// ones.
+  String? _chainLoop(IrIterChain chain, {required bool collects}) {
+    final body = StringBuffer();
+    var closes = 1;
+    for (final step in chain.steps) {
+      // A step written as a closure is rendered as one; a step that is a
+      // *value* (`where(shouldNotSkip)`) is already the function, and the
+      // loop hands it the item by value, so there is nothing to wrap.
+      final f = step.$2 is IrClosure
+          ? '(${_stepClosure(step.$2, step: step.$1, cloned: true, fallible: true)})'
+          : '(${expr(step.$2)})';
+      switch (step.$1) {
+        case 'map':
+          body.write('let __e = $f(__e)$_propagate; ');
+        case 'filter':
+          body.write('if !($f(__e.clone())$_propagate) { continue; } ');
+        case 'filter_map':
+          body.write(
+            'let __e = match $f(__e)$_propagate '
+            '{ Some(__v) => __v, None => continue }; ',
+          );
+        case 'flat_map':
+          // `expand(f)` whose body is an `Iterable<T>` hands back the
+          // handle, which Rust cannot iterate: its list is what the loop
+          // goes on with.
+          final iterable =
+              step.$2 is IrClosure &&
+              (step.$2 as IrClosure).returns.name == 'Iterable';
+          body.write(
+            'for __e in $f(__e)$_propagate'
+            '${iterable ? '.dart_to_list()' : ''} { ',
+          );
+          closes++;
+        case 'for_each':
+          body.write('let _ = $f(__e)$_propagate; ');
+        default:
+          return null;
+      }
+    }
+    if (collects) body.write('__o.push(__e); ');
+    return '{ ${collects ? 'let mut __o = Vec::new(); ' : ''}'
+        'for __e in ${_asList(chain.source)}.iter().cloned() { '
+        '$body${'} ' * closes}'
+        '${collects ? '__o ' : ''}}';
   }
 
   /// A value read as a list: an `Iterable<T>` is a `Rc<dyn DartIterable<T>>`
@@ -306,6 +374,7 @@ augment class RustBackend {
     String step = '',
     String? bound,
     bool cloned = false,
+    bool fallible = false,
   }) {
     // A function *value* as the step (`where(shouldNotSkip)`): called
     // from a closure of the step's own shape -- `filter` hands `&&T`,
@@ -314,7 +383,11 @@ augment class RustBackend {
     // so it is built once and outside.
     if (e is! IrClosure) {
       final item = step == 'filter' ? '(*__x).clone()' : '__x.clone()';
-      return '|__x| (${bound ?? expr(e)})($item).unwrap()';
+      // A `Result` the caller carries when it can (`_chainLoop`), and the
+      // old unwrap where the adapters still stand.
+      return fallible
+          ? '|__x| (${bound ?? expr(e)})($item)'
+          : '|__x| (${bound ?? expr(e)})($item).unwrap()';
     }
     // `filter` hands `&&T`, and a body written for the item -- `asset.
     // endsWith(other)`, a tear-off's own parameter passed on bare --
@@ -335,8 +408,16 @@ augment class RustBackend {
     // `__p_r#box` is a prefixed identifier, which Rust 2021 reserves
     // (`TextPainter.getBoxesForSelection`, ws797).
     String temp(IrParam p) => '__p_${snake(p.name).replaceAll('r#', '')}';
+    // Typed when the *loop* calls it (`fallible`): there is no adapter to
+    // infer from, and the item is the Dart value itself, so the declared
+    // type is the right annotation -- which is exactly what it is not when
+    // `iter()` hands the body a reference.
     final params = e.params
-        .map((p) => byValue(p) ? temp(p) : snake(p.name))
+        .map(
+          (p) => byValue(p)
+              ? temp(p)
+              : '${snake(p.name)}${fallible ? ': ${type(p.type)}' : ''}',
+        )
         .join(', ');
     final unwrapped = e.params
         .where(byValue)
@@ -354,14 +435,29 @@ augment class RustBackend {
     final savedRefs = _refLocals;
     _refLocals = {
       ..._refLocals,
+      // ..but not when the *loop* calls the step (`fallible`): it hands the
+      // item by value, so the body spells it as a value. Left in, a body
+      // reading `element` wrote `&**element` -- one deref too many, E0614.
       for (final p in e.params)
-        if (!byValue(p)) snake(p.name),
+        if (!byValue(p) && !fallible) snake(p.name),
     };
     // A step of a std iterator chain (`all`, `map`, `filter`) returns a
     // plain value: a failing call inside unwraps, and the tail is bare.
     // Loud, and recorded: an exception in a `where` predicate panics.
     final savedFailure = _failure;
-    _failure = null;
+    final savedStepRustReturns = _rustReturns;
+    // A step that the caller reads as a `Result` says so, and its body's
+    // calls propagate instead of unwrapping (`_chainLoop`, work.md step 3).
+    _failure = fallible && _resultModel ? _error : null;
+    // ..and it is not inside the try body's flow closure either: a `return`
+    // in it is this closure's own, not `Ok(Some(..))` (`_closure` says the
+    // same thing next door; without it an `expand` inside a `try` came out
+    // `Result<Option<Result<..>>, _>`).
+    final savedStepFlow = _inFlowClosure;
+    if (fallible && _resultModel) {
+      _rustReturns = 'Result<${type(e.returns)}, $_error>';
+      _inFlowClosure = false;
+    }
     // Which copies are cells, for the body: a shared field's copy is its
     // cell (`_copyOf`), read through `borrow()` as the boxed closure's is
     // (`_closure`); as a plain local it was asked the set's methods
@@ -379,6 +475,12 @@ augment class RustBackend {
         if (_sharedField(c.name) != null && _lateField(c.name) != null) c.name,
     };
     final savedSpells = _spellsReturn;
+    // Kept on for the loop too: it is what puts the *upcast* on the step's
+    // value (`places.dart`'s `_explicitUpcast`), and without it a `map`
+    // producing an `Rc<DiagnosticsProperty<..>>` where the chain collects
+    // `Rc<dyn DiagnosticsNode>` was 17 E0308s. The `return Ok(Some(..))`
+    // spelling that came with it is a *different* switch, and that one is
+    // off above (`_inFlowClosure`).
     _spellsReturn = true;
     // ..and against the step's *own* return, as `_closure` does for the
     // boxed kind: left at the enclosing method's, a step returning a
@@ -395,6 +497,8 @@ augment class RustBackend {
     _spellsReturn = savedSpells;
     _cellLocals = savedCells;
     _lateCellLocals = savedLateCells;
+    _rustReturns = savedStepRustReturns;
+    _inFlowClosure = savedStepFlow;
     final body = _out.sublist(saved).map(_inlineSafe).join(' ');
     _out.removeRange(saved, _out.length);
     _indent = savedIndent;
@@ -417,16 +521,27 @@ augment class RustBackend {
     // worth: `xs.forEach(list.remove)` hands it a `bool`-returning
     // tear-off, which Dart's `void Function(T)` slot discards (the
     // tearcol fixture).
+    final returns = fallible ? ' -> Result<_, $_error>' : '';
     if (step == 'for_each') {
-      return '|$params| { $unwrapped${copies}let _ = { $body }; }';
+      // Under the `Result` model the body already ends in an `Ok`, whatever
+      // the Dart closure returns, so the fallible spelling is the ordinary
+      // one -- `forEach`'s discarding is the *loop*'s business.
+      // The body ends either way: a value body the `Result` model already
+      // wrapped in `Ok`, or a bare statement (`if (..) { x = y; }`) that is
+      // `()` and needs one. Told apart by how the rendered body ends --
+      // a statement closes with `;` or `}`.
+      final closed = RegExp(r'[;}]$').hasMatch(body.trimRight());
+      return fallible
+          ? '|$params|$returns { $unwrapped$copies$body${closed ? ' Ok(())' : ''} }'
+          : '|$params| { $unwrapped${copies}let _ = { $body }; }';
     }
     // `expand(f)` is `flat_map`, which wants something Rust can iterate:
     // an `Iterable<T>` closure body is the handle since ws908, and its
     // list is what the chain goes on with.
-    if (step == 'flat_map' && e.returns.name == 'Iterable') {
+    if (step == 'flat_map' && e.returns.name == 'Iterable' && !fallible) {
       return '|$params| { $unwrapped$copies{ $body }.dart_to_list() }';
     }
-    return '|$params| { $unwrapped$copies$body }';
+    return '|$params|$returns { $unwrapped$copies$body }';
   }
 
   /// A read of a static, or of an enum value.
