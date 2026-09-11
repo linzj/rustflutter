@@ -271,6 +271,186 @@ augment class RustBackend {
 
   /// One element of a list literal: the first with its upcast spelled, a
   /// bare closure behind an `Rc` where the list holds functions.
+  /// A list literal that is really a *table*, as one loop over a `static`.
+  ///
+  /// The gallery's code viewer is 126 functions holding 13.8 MB of `.text`,
+  /// 16.4% of every function symbol in the binary, and every one of them is
+  /// the same shape: a `TextSpan::new(Some("<a line of source>"), None,
+  /// code_style.<a style>, None, ..)` per line of the demo it shows. 302
+  /// bytes of machine code per span, 45,669 spans.
+  ///
+  /// The criterion is a *shape*, written down before the code, because the
+  /// one thing this rule must not become is a special case for the code
+  /// viewer (work_size.md's C):
+  ///
+  ///   * at least [_tableRows] elements, every one an `IrNew` of the same
+  ///     class and constructor with the same number of arguments;
+  ///   * each argument position is one of three things across the elements:
+  ///     the *same* rendered text everywhere (a constant), a Rust string
+  ///     literal everywhere (the payload -- at most one such position), or
+  ///     one of at most [_tableChoices] distinct texts (a choice -- at most
+  ///     two such positions);
+  ///   * at least one position actually varies.
+  ///
+  /// Anything else returns null and the list is emitted element by element
+  /// as it always was.
+  ///
+  /// What comes out is the varying parts as a `static` table -- so the
+  /// strings land in `.rodata`, which is where Dart keeps them -- and one
+  /// constructor call inside a `for`.
+  static const _tableRows = 16;
+  static const _tableChoices = 8;
+  static final _tableText = RegExp(r'^(".*")\.to_string\(\)$', dotAll: true);
+  static final _tableSome = RegExp(
+    r'^Some\((".*")\.to_string\(\)\)$',
+    dotAll: true,
+  );
+
+  String? _tabulated(List<IrExpr> elements, IrType element) {
+    // `DART2RUST_TRACE_TABLE=1` says why a long list was not tabulated.
+    // Guessing at that is what work.md's rounds kept punishing.
+    final trace =
+        Platform.environment['DART2RUST_TRACE_TABLE'] == '1' &&
+        elements.length >= _tableRows;
+    String? no(String why) {
+      if (trace)
+        stderr.writeln('TRACE_TABLE ${elements.length} elements: $why');
+      return null;
+    }
+
+    if (elements.length < _tableRows) return null;
+    // Through the upcast the element type puts on each one: a
+    // `List<InlineSpan>` of `TextSpan`s is 69 of the gallery's long lists,
+    // and asking about the wrapper rather than the call inside it found
+    // none of them (traced, not guessed).
+    final lifted = elements.first is IrUpcast
+        ? (elements.first as IrUpcast).type
+        : null;
+    IrExpr inner(IrExpr e) => e is IrUpcast ? e.value : e;
+    if (lifted != null) {
+      for (final e in elements) {
+        if (e is! IrUpcast || e.type.name != lifted.name) {
+          return no(
+            'an element is ${e.runtimeType}, not an upcast to '
+            '${lifted.name}',
+          );
+        }
+      }
+    }
+    final first = inner(elements.first);
+    if (first is! IrNew) return no('first is ${first.runtimeType}');
+    for (final raw in elements) {
+      final e = inner(raw);
+      if (e is! IrNew) return no('an element is ${e.runtimeType}');
+      if (e.type.name != first.type.name) {
+        return no('${e.type.name} beside ${first.type.name}');
+      }
+      if (e.constructor != first.constructor) {
+        return no('ctor ${e.constructor} beside ${first.constructor}');
+      }
+      if (e.args.length != first.args.length) {
+        return no('arity ${e.args.length} beside ${first.args.length}');
+      }
+    }
+    // Rendered once, here: every decision below is about the text each
+    // argument comes out as, and rendering it twice is how a cache goes
+    // stale.
+    final rows = [
+      for (final e in elements)
+        [for (final a in (inner(e) as IrNew).args) expr(a)],
+    ];
+    final width = first.args.length;
+    // `null` for a constant column, a payload marker, or the choices.
+    String? payloadAt;
+    final template = <int, String>{};
+    final choices = <int, List<String>>{};
+    final constant = <int, String>{};
+    for (var i = 0; i < width; i++) {
+      final texts = {for (final r in rows) r[i]};
+      if (texts.length == 1) {
+        constant[i] = texts.first;
+        continue;
+      }
+      final asText = [
+        for (final r in rows)
+          _tableText.firstMatch(r[i])?.group(1) ??
+              _tableSome.firstMatch(r[i])?.group(1),
+      ];
+      if (payloadAt == null && !asText.contains(null)) {
+        payloadAt = '$i';
+        template[i] = _tableSome.hasMatch(rows.first[i])
+            ? 'Some(__p.to_string())'
+            : '__p.to_string()';
+        continue;
+      }
+      if (texts.length <= _tableChoices && choices.length < 2) {
+        choices[i] = texts.toList();
+        continue;
+      }
+      return no(
+        'column $i has ${texts.length} texts, '
+        '${choices.length} choice columns already',
+      );
+    }
+    if (payloadAt == null && choices.isEmpty) return no('nothing varies');
+
+    // The columns, in the order the table's tuple carries them.
+    final columns = <int>[
+      if (payloadAt != null) int.parse(payloadAt),
+      ...choices.keys,
+    ]..sort();
+    String cell(int row, int i) => i.toString() == payloadAt
+        ? (_tableText.firstMatch(rows[row][i])?.group(1) ??
+              _tableSome.firstMatch(rows[row][i])!.group(1)!)
+        : '${choices[i]!.indexOf(rows[row][i])}';
+    final names = {for (final (n, i) in columns.indexed) i: '__t$n'};
+    final types = [
+      for (final i in columns) i.toString() == payloadAt ? '&str' : 'u8',
+    ];
+    final table = [
+      for (var r = 0; r < rows.length; r++)
+        columns.length == 1
+            ? cell(r, columns.first)
+            : '(${columns.map((i) => cell(r, i)).join(', ')})',
+    ];
+
+    // The element itself, built from a synthetic `IrNew` whose arguments
+    // are the texts above: rendering it through `_listElement` is what puts
+    // the first element's upcast on it, which the loop's single `push`
+    // needs as much as the old first element did.
+    final synthetic = IrNew(first.type, [
+      for (var i = 0; i < width; i++)
+        IrLiteral(
+          constant.containsKey(i)
+              ? constant[i]!
+              : i.toString() == payloadAt
+              ? template[i]!.replaceFirst('__p', names[i]!)
+              // No `*`: the `for &(..)` above binds the tuple by value.
+              : '__c$i[${names[i]} as usize].clone()',
+          const IrType('raw'),
+        ),
+    ], constructor: first.constructor)..rustType = first.rustType;
+    // ..put back inside the upcast the elements wore, so the loop's one
+    // `push` is the same expression the N pushes were.
+    final pushed = lifted == null
+        ? synthetic
+        : (IrUpcast(
+            synthetic,
+            lifted,
+            handle: (elements.first as IrUpcast).handle,
+            explicit: (elements.first as IrUpcast).explicit,
+          )..rustType = elements.first.rustType);
+    final pattern = columns.length == 1
+        ? names[columns.first]!
+        : '(${columns.map((i) => names[i]!).join(', ')})';
+    final tuple = columns.length == 1 ? types.first : '(${types.join(', ')})';
+    return '{ static __TAB: &[$tuple] = &[${table.join(', ')}]; '
+        '${choices.entries.map((c) => 'let __c${c.key} = [${c.value.join(', ')}]; ').join()}'
+        'let mut __v: Vec<${type(element)}> = Vec::new(); '
+        'for &$pattern in __TAB { '
+        '__v.push(${_listElement(0, pushed, element)}); } __v }';
+  }
+
   String _listElement(int index, IrExpr e, IrType element) {
     final first = index == 0 ? _explicitUpcast(e) : e;
     return element.isFunction && first is IrClosure && !first.boxed

@@ -238,6 +238,12 @@ augment class RustBackend {
       // ..with the element type spelled where it is known: `Vec::new()`
       // took the first push's type -- one closure's, which the next
       // closure was not (intl's `verifiedLocale`, run591).
+      // A list that is really a *table*: the same constructor over and over
+      // with only a string and a choice among a few values changing. One
+      // loop instead of N calls (`_tabulated`).
+      IrListLiteral(:final elements, :final element)
+          when _tabulated(elements, element) != null =>
+        _tabulated(elements, element)!,
       IrListLiteral(:final elements, :final element)
           when elements.isNotEmpty && _WalkSelf.failingIn(elements) =>
         '{ let mut __v${_mentionsUnknown(element) ? '' : ': Vec<${type(element)}>'} = Vec::new(); '
