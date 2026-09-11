@@ -73,46 +73,85 @@ name=${1:-}
 [ -n "$name" ] || { echo "usage: bin/fx.sh <fixture name>   (fixtures in $src)" >&2; exit 2; }
 [ -f "$src/$name.dart" ] || { echo "no fixture $name.dart in $src" >&2; exit 2; }
 mkdir -p "$work"
-# `bin/fx/build.py` writes beside the fixture it reads, so the source is
-# copied into the build directory rather than built in place.
-cp "$src/$name.dart" "$work/$name.dart"
 cd "$here" || exit 1
 
-log=$work/$name.build.log
-if ! FX_MAIN="print(fx.use());" FX_AOT=${FX_AOT:-1} \
-        python3 bin/fx/build.py "$work" "$name" > "$log" 2>&1; then
-    echo "BUILD FAILED"; tail -25 "$log"; exit 1
+# What this fixture's answer depends on, hashed in two parts (see
+# `bin/fx/fingerprint.sh` for why the split is sound). `bin/allfx.sh`
+# computes them once and passes them down; a lone `bin/fx.sh` computes its
+# own.
+if [ -n "${DART2RUST_FX_FP_CODE:-}" ] && [ -n "${DART2RUST_FX_FP_PRELUDE:-}" ]; then
+    fp_code=$DART2RUST_FX_FP_CODE
+    fp_prelude=$DART2RUST_FX_FP_PRELUDE
+else
+    eval "$(bin/fx/fingerprint.sh)" || exit 2
+    [ -n "${fp_code:-}" ] && [ -n "${fp_prelude:-}" ] ||
+        { echo "no fingerprint (is dart on PATH?)" >&2; exit 2; }
 fi
-grep -q '^ok True' "$log" || { echo "TRANSLATE FAILED"; tail -25 "$log"; exit 1; }
+key_code=$(printf '%s %s\n' "$fp_code" \
+    "$(md5sum "$src/$name.dart" | cut -d' ' -f1)" | md5sum | cut -d' ' -f1)
 
-# Translating is dart and costs no cargo; building and running is the whole
-# cost of a sweep. The crate's Rust -- the fixture's module, the prelude,
-# `lib.rs` -- is exactly what cargo would compile, so when it comes out
-# byte-identical to the last run that AGREED, the answer is the same answer
-# and there is nothing to learn from compiling it again.
+# The stamp is read *before* anything runs. It used to be read after the
+# translation, so the cache saved the cargo step and paid the dill, the
+# front end and the package emitter every time: 10.6 of the 14 seconds a
+# fixture cost, spent re-deriving an answer already on disk. A sweep over
+# an unmoved corpus took 8 minutes for nothing (measured 2026-09-11).
 #
-# `DART2RUST_FX_FORCE=1` compiles anyway.
+# The rule's name is part of it, so a stamp written under an older rule
+# does not match and the fixture is re-run once against the new one.
+# `panicgate1` stamps predate this split and re-run once.
+#
+# `DART2RUST_FX_FORCE=1` does the whole thing anyway.
 stamp=$work/$name.agreed
-# The rule's name is part of the stamp, so a stamp written under an older
-# rule does not match and the fixture is re-run once against the new one.
-# Every `.agreed` on disk before 2026-09-11 predates the panic gate.
-now="panicgate1 $(cat "$work/pk_$name"/*.rs 2>/dev/null | md5sum | cut -d' ' -f1)"
-if [ "${DART2RUST_FX_FORCE:-0}" != 1 ] && [ -s "$stamp" ] &&
-        [ "$now" = "$(cat "$stamp")" ]; then
-    echo "--- rust: $(cat "$work/$name.rust.out" 2>/dev/null)"
-    echo "--- dart: $(cat "$work/$name.dart.out" 2>/dev/null)"
+want="panicgate2 $key_code $fp_prelude"
+force=${DART2RUST_FX_FORCE:-0}
+if [ "$force" != 1 ] && [ -s "$stamp" ] && [ "$want" = "$(cat "$stamp")" ] &&
+        [ -s "$work/$name.rust.out" ] && [ -s "$work/$name.dart.out" ]; then
+    echo "--- rust: $(cat "$work/$name.rust.out")"
+    echo "--- dart: $(cat "$work/$name.dart.out")"
     echo AGREE
     exit 0
 fi
+had_code=$(awk '{print $2}' "$stamp" 2>/dev/null)
 rm -f "$stamp"
+
+# Only the prelude moved: refresh that one file and leave the rest alone.
+# `lib/prelude.dart` declares one name and the package emitter writes it
+# verbatim, so the fixture's own module, the entry wrapper and the whole
+# Dart side are provably unchanged -- and the Dart side is not re-run.
+if [ "$force" != 1 ] && [ "$had_code" = "$key_code" ] &&
+        [ -f "$work/pk_$name/dart_prelude.rs" ] && [ -s "$work/$name.dart.out" ]; then
+    pre=$work/prelude.$fp_prelude.rs
+    if [ ! -s "$pre" ]; then
+        # Written elsewhere and moved into place: a sweep runs fixtures side
+        # by side and two of them would otherwise write the same file at once.
+        dart run bin/fx/emit_prelude.dart "$pre.$$" || { echo "PRELUDE FAILED"; exit 1; }
+        mv -f "$pre.$$" "$pre"
+    fi
+    cp "$pre" "$work/pk_$name/dart_prelude.rs"
+    reused_dart=1
+else
+    # `bin/fx/build.py` writes beside the fixture it reads, so the source is
+    # copied into the build directory rather than built in place.
+    cp "$src/$name.dart" "$work/$name.dart"
+    log=$work/$name.build.log
+    if ! FX_MAIN="print(fx.use());" FX_AOT=${FX_AOT:-1} \
+            python3 bin/fx/build.py "$work" "$name" > "$log" 2>&1; then
+        echo "BUILD FAILED"; tail -25 "$log"; exit 1
+    fi
+    grep -q '^ok True' "$log" ||
+        { echo "TRANSLATE FAILED"; tail -25 "$log"; exit 1; }
+    reused_dart=0
+fi
 
 ( cd "$work/pk_$name" && cargo run -q -j "${DART2RUST_JOBS:-2}" --bin run ) \
     2> "$work/$name.cargo.log" | tail -1 > "$work/$name.rust.out"
 rc=${PIPESTATUS[0]}
 
-dart run --packages="$HOME/gallery_upstream/.dart_tool/package_config.json" \
-    "$work/entry_$name.dart" 2> "$work/$name.dart.err" \
-    | tail -1 > "$work/$name.dart.out"
+if [ "$reused_dart" != 1 ]; then
+    dart run --packages="$HOME/gallery_upstream/.dart_tool/package_config.json" \
+        "$work/entry_$name.dart" 2> "$work/$name.dart.err" \
+        | tail -1 > "$work/$name.dart.out"
+fi
 
 echo "--- rust: $(cat "$work/$name.rust.out")"
 echo "--- dart: $(cat "$work/$name.dart.out")"
@@ -124,7 +163,7 @@ if grep -qE "$panics" "$work/$name.cargo.log"; then
 fi
 [ "$rc" -eq 0 ] || { echo "CARGO FAILED"; tail -30 "$work/$name.cargo.log"; exit 1; }
 if diff -q "$work/$name.rust.out" "$work/$name.dart.out" > /dev/null; then
-    printf '%s\n' "$now" > "$stamp"
+    printf '%s\n' "$want" > "$stamp"
     echo AGREE
 else
     echo DISAGREE; exit 1
