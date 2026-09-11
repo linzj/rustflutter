@@ -470,9 +470,9 @@ augment class RustBackend {
             ? screamingSnake(name)
             : 'crate::$module::${screamingSnake(name)}';
         return _isMutableTopLevel(name)
-            ? '({ let __r = (**$spelled).borrow().clone(); __r })'
+            ? '({ let __r = $spelled.get()$_propagate.borrow().clone(); __r })'
             : _isLazyConst(name)
-            ? '(**$spelled).clone()'
+            ? '$spelled.get()$_propagate.clone()'
             : spelled;
       }(),
       // `x == null` on a `dynamic`: the handle is never an `Option`; Dart's

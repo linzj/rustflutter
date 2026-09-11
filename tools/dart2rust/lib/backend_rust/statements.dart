@@ -795,9 +795,9 @@ augment class RustBackend {
         // fields are (`GoogleFonts.config.allowRuntimeFetching = false` on
         // a counted `Config`, run510).
         final staticHolder = target is IrStatic
-            ? '(**${_lazyName(target.owner, target.name)})'
+            ? '${_lazyName(target.owner, target.name)}.get()$_propagate'
             : target is IrTopLevel
-            ? '(**${screamingSnake(target.name)})'
+            ? '${screamingSnake(target.name)}.get()$_propagate'
             : null;
         // What the static holds, and whether that is a *trait* handle: a
         // `dyn Trait` has no fields, only the accessor pair it declares, so
@@ -885,9 +885,15 @@ augment class RustBackend {
       case IrAssignTopLevel(:final name, :final value):
         // Through the cell: two derefs for the `LazyLock` and the `Isolate`,
         // then `borrow_mut`. The read side does the same with `borrow`.
-        _line('*(**${screamingSnake(name)}).borrow_mut() = ${expr(value)};');
+        _line(
+          '*${screamingSnake(name)}.get()$_propagate.borrow_mut() = '
+          '${expr(value)};',
+        );
       case IrAssignStatic(:final owner, :final name, :final value):
-        _line('*(**${_lazyName(owner, name)}).borrow_mut() = ${expr(value)};');
+        _line(
+          '*${_lazyName(owner, name)}.get()$_propagate.borrow_mut() = '
+          '${expr(value)};',
+        );
       case IrSetter(
         :final target,
         :final name,

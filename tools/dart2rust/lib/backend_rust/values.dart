@@ -446,11 +446,13 @@ augment class RustBackend {
     // Two derefs: through the `LazyLock`, then through the `Isolate` that
     // carries "one per isolate, not one per process".
     if (_isMutableStatic(owner, name)) {
-      return '({ let __r = (**${_lazyName(owner, name)}).borrow().clone(); __r })';
+      return '({ let __r = ${_lazyName(owner, name)}.get()$_propagate.borrow().clone(); __r })';
     }
     // A clone: the lock hands out a reference, and a read is a value.
     // `(**CHANGE_NOTIFIER__EMPTY_LISTENERS)` moved out of the lock (E0507).
-    if (_isLazy(owner, name)) return '(**${_lazyName(owner, name)}).clone()';
+    if (_isLazy(owner, name)) {
+      return '${_lazyName(owner, name)}.get()$_propagate.clone()';
+    }
     if (_freeStatics(owner)) return screamingSnake('${owner}_$name');
     return '$owner::${screamingSnake(name)}';
   }

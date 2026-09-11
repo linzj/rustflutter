@@ -377,13 +377,19 @@ augment class RustBackend {
         // mutable top-level gets, read with `borrow` and written with
         // `borrow_mut` in `IrAssignStatic`.
         final cell = constant.isMutable ? 'std::cell::RefCell<$held>' : held;
+        // The initialiser is a function that can fail, because Dart's can:
+        // `static final x = f()` where `f` throws leaves `x` unset and the
+        // next read runs it again (`DartLazy`). Under `_failure` the body's
+        // own calls propagate instead of unwrapping.
+        final savedFailure = _failure;
+        _failure = _resultModel ? _error : null;
         final made = constant.isMutable
             ? 'std::cell::RefCell::new(${constant.value is IrClosure && !(constant.value as IrClosure).boxed ? 'std::rc::Rc::new(${expr(constant.value)})' : expr(constant.value)})'
             : expr(constant.value);
+        _failure = savedFailure;
         _line(
           '${_vis(constant.name)}static ${_lazyName(cls.name, constant.name)}: '
-          'std::sync::LazyLock<Isolate<$cell>> = '
-          'std::sync::LazyLock::new(|| Isolate($made));',
+          'DartLazy<$cell> = DartLazy::new(|| Ok($made));',
         );
         _line('');
       });

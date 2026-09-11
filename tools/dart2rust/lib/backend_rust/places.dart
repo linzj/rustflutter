@@ -237,12 +237,12 @@ augment class RustBackend {
     // A mutable static lent to a callee that fills it (`fill(log)` on a
     // top-level list, the statmut fixture): through its cell.
     if (place is IrTopLevel && _isMutableTopLevel(place.name)) {
-      return '&mut *(**${screamingSnake(place.name)}).borrow_mut()';
+      return '&mut *${screamingSnake(place.name)}.get()$_propagate.borrow_mut()';
     }
     if (place is IrStatic &&
         !place.isEnumValue &&
         _isMutableStatic(place.owner, place.name)) {
-      return '&mut *(**${_lazyName(place.owner, place.name)}).borrow_mut()';
+      return '&mut *${_lazyName(place.owner, place.name)}.get()$_propagate.borrow_mut()';
     }
     return '&mut ${expr(place)}';
   }
@@ -779,7 +779,7 @@ augment class RustBackend {
               ?.type ??
           library.constantsElsewhere[target.name]?.type;
       if (held != null && _isMutableCollection(type(held))) {
-        return '(**${screamingSnake(target.name)})';
+        return '${screamingSnake(target.name)}.get()$_propagate';
       }
     }
     if (target is IrStatic &&
@@ -790,7 +790,7 @@ augment class RustBackend {
           .firstOrNull
           ?.type;
       if (held != null && _isMutableCollection(type(held))) {
-        return '(**${_lazyName(target.owner, target.name)})';
+        return '${_lazyName(target.owner, target.name)}.get()$_propagate';
       }
     }
     // A hollow mixin's field is read through the declaration's abstract

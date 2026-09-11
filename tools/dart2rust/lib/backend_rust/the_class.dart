@@ -83,13 +83,16 @@ augment class RustBackend {
           // cannot be either, so the two are emitted differently.
           if (constant.isMutable) {
             final held = holder.type(constant.type);
+            // Fallible, like a class's: Dart re-runs an initialiser that
+            // threw (`DartLazy`).
+            holder._failure = _resultModel ? _error : null;
+            final made = holder.expr(constant.value);
+            holder._failure = null;
             holder._line(
               '${holder._vis(constant.name)}static '
               '${screamingSnake(constant.name)}: '
-              'std::sync::LazyLock<Isolate<std::cell::RefCell<$held>>> = '
-              'std::sync::LazyLock::new(|| '
-              'Isolate(std::cell::RefCell::new('
-              '${holder.expr(constant.value)})));',
+              'DartLazy<std::cell::RefCell<$held>> = DartLazy::new(|| '
+              'Ok(std::cell::RefCell::new($made)));',
             );
             return;
           }
@@ -100,10 +103,13 @@ augment class RustBackend {
             // Behind `Isolate`, as the mutable ones are: a `static` must be
             // `Sync`, and an `Rc<dyn Object>` (`Object()` as a zone key) is
             // not; `Isolate` says "one per isolate" and carries that.
+            holder._failure = _resultModel ? _error : null;
+            final made = holder.expr(constant.value);
+            holder._failure = null;
             holder._line(
               'pub static ${screamingSnake(constant.name)}: '
-              'std::sync::LazyLock<Isolate<${holder.type(constant.type)}>> = '
-              'std::sync::LazyLock::new(|| Isolate(${holder.expr(constant.value)}));',
+              'DartLazy<${holder.type(constant.type)}> = '
+              'DartLazy::new(|| Ok($made));',
             );
             return;
           }

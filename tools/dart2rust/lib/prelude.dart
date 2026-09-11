@@ -2482,6 +2482,54 @@ impl<T> std::ops::DerefMut for Isolate<T> {
     }
 }
 
+/// A Dart lazy static: `static final x = ..` on a class, or a top-level
+/// `final`/`var` whose value is computed.
+///
+/// **Not** `LazyLock<Result<T, DartError>>`, which would cache the first
+/// failure. Dart does not cache one: an initialiser that throws leaves the
+/// variable uninitialised, and the *next* read runs it again. Measured
+/// against the VM before this was written -- an initialiser that throws
+/// twice and then succeeds is entered three times, and only the value is
+/// remembered:
+///
+/// ```text
+/// Bad state: not yet (1)|Bad state: not yet (2)|3|3|n=3
+/// ```
+///
+/// A `OnceCell` rather than `RefCell<Option<T>>` so a read can hand back a
+/// `&T` that does not move, which is what the emitted `X.get()?.clone()`
+/// and `*X.get()?.borrow_mut() = ..` need.
+///
+/// Re-entrant initialisation is *not* detected: Dart raises "Reading static
+/// variable 'x' during its initialization" and this simply lets the second
+/// `set` lose. That is a known gap, not a decision.
+pub struct DartLazy<T: 'static> {
+    init: fn() -> Result<T, DartError>,
+    cell: Isolate<std::cell::OnceCell<T>>,
+}
+
+impl<T: 'static> DartLazy<T> {
+    pub const fn new(init: fn() -> Result<T, DartError>) -> Self {
+        DartLazy { init, cell: Isolate(std::cell::OnceCell::new()) }
+    }
+
+    /// The value, initialising it if this is the first read -- or the error
+    /// the initialiser threw, with the cell left empty so the next read
+    /// tries again.
+    pub fn get(&self) -> Result<&T, DartError> {
+        if let Some(value) = self.cell.0.get() {
+            return Ok(value);
+        }
+        let value = (self.init)()?;
+        let _ = self.cell.0.set(value);
+        match self.cell.0.get() {
+            Some(value) => Ok(value),
+            // A cell set on the line above and empty on this one.
+            None => unreachable!(),
+        }
+    }
+}
+
 /// `dart:core`'s "no argument was passed" marker.
 ///
 /// Upstream's `copyWith` methods take a sentinel as the default so that

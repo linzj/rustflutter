@@ -122,7 +122,9 @@ fn announce_view() -> Result<(), DartError> {
     // The engine names the implicit view before adding it: `dart:ui`'s
     // top-level `_implicitViewId`, written from C++ (`runApp` renders into
     // it; "the platform did not provide one", run519).
-    *(**dart_ui::_IMPLICIT_VIEW_ID).borrow_mut() = Some(VIEW_ID);
+    // Through `DartLazy::get`, which is what a lazy static is now: Dart
+    // re-runs an initialiser that threw, so the read is fallible (ws1072).
+    *dart_ui::_IMPLICIT_VIEW_ID.get()?.borrow_mut() = Some(VIEW_ID);
     dart_ui::_add_view(
         VIEW_ID,
         1.0,
