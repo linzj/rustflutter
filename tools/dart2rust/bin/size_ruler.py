@@ -61,7 +61,7 @@ def flags_for(unwind_tables, icf):
         # `panic = "abort"` is already set for this profile, so nothing
         # unwinds and the tables describe a thing that cannot happen.
         flags.append('-C force-unwind-tables=no')
-    if icf:
+    if icf and icf != 'none':
         # `ld.gold` because it is the linker on this machine that has
         # `--icf`; the `lld` on PATH is the Android SDK's, and `rust-lld`
         # is inside the toolchain rather than on the path.
@@ -203,8 +203,10 @@ def main():
         '--unwind-tables', action='store_true',
         help='keep `.eh_frame` (the default is to build without it)')
     ap.add_argument(
-        '--icf', choices=['safe', 'all'],
-        help='fold identical functions at link time (ld.gold)')
+        '--icf', choices=['safe', 'all', 'none'], default='safe',
+        help='fold identical functions at link time (ld.gold); `safe` is '
+             'the default, `all` was measured at -4.9 MB of `.text` but no '
+             'ruler here can exercise a release-only link (see ws1083)')
     ap.add_argument('--report')
     ap.add_argument('--crates', type=int, default=10)
     args = ap.parse_args()
