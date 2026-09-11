@@ -48,20 +48,37 @@ def run(args, **kw):
     return subprocess.run(args, capture_output=True, text=True, **kw)
 
 
-def build():
-    """A release build of `dart_main`, with the ruler's own flags.
+def flags_for(unwind_tables, icf):
+    """The release flags, and the line that says which reading this is.
 
-    The flags stay *here* and out of the environment: `RUSTFLAGS` is part of
-    cargo's fingerprint, and the chain's debug build shares the process
-    environment with nothing (see `run_chain.sh:35-39`).
+    They stay *here* and out of the environment: `RUSTFLAGS` is part of
+    cargo's fingerprint, and a flag set globally would throw away the
+    chain's incremental debug build (`run_chain.sh:35-39`). Cargo has no
+    profile key for either of these, so the ruler's own build carries them.
     """
+    flags = []
+    if not unwind_tables:
+        # `panic = "abort"` is already set for this profile, so nothing
+        # unwinds and the tables describe a thing that cannot happen.
+        flags.append('-C force-unwind-tables=no')
+    if icf:
+        # `ld.gold` because it is the linker on this machine that has
+        # `--icf`; the `lld` on PATH is the Android SDK's, and `rust-lld`
+        # is inside the toolchain rather than on the path.
+        flags.append('-C link-arg=-fuse-ld=gold')
+        flags.append('-C link-arg=-Wl,--icf=%s' % icf)
+    return flags
+
+
+def build(unwind_tables, icf):
     env = dict(os.environ)
     env['RUSTC_BOOTSTRAP'] = '1'
     env['PATH'] = os.path.expanduser('~/.cargo/bin') + os.pathsep + env['PATH']
     threads = env.get('DART2RUST_THREADS', '8')
-    env['RUSTFLAGS'] = '-Zthreads=%s' % threads
+    env['RUSTFLAGS'] = ' '.join(
+        ['-Zthreads=%s' % threads] + flags_for(unwind_tables, icf))
     jobs = env.get('DART2RUST_JOBS', '8')
-    print('building release (-j %s, -Zthreads=%s) ..' % (jobs, threads))
+    print('building release (-j %s) RUSTFLAGS=%s' % (jobs, env['RUSTFLAGS']))
     sys.stdout.flush()
     r = subprocess.run(
         ['cargo', 'build', '--release', '-p', 'dart_main', '-j', jobs],
@@ -182,12 +199,18 @@ def monomorphic(syms):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--no-build', action='store_true')
+    ap.add_argument(
+        '--unwind-tables', action='store_true',
+        help='keep `.eh_frame` (the default is to build without it)')
+    ap.add_argument(
+        '--icf', choices=['safe', 'all'],
+        help='fold identical functions at link time (ld.gold)')
     ap.add_argument('--report')
     ap.add_argument('--crates', type=int, default=10)
     args = ap.parse_args()
 
     if not args.no_build:
-        build()
+        build(args.unwind_tables, args.icf)
     binary = os.path.join(WS, 'target', 'release', 'dart_main')
     if not os.path.exists(binary):
         sys.exit('no %s -- run without --no-build' % binary)
@@ -205,6 +228,7 @@ def main():
         print(text)
 
     sec = sections(stripped)
+    say('flags: %s' % (' '.join(flags_for(args.unwind_tables, args.icf)) or '(none)'))
     say('file %d   stripped %d   (release)'
         % (os.path.getsize(rel), os.path.getsize(stripped)))
     say('.text %d   .rodata %d   .data.rel.ro %d   .eh_frame %d   .eh_frame_hdr %d'
