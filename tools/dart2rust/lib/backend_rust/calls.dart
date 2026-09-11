@@ -685,6 +685,21 @@ augment class RustBackend {
       // it took `leaf_dart_ui` and 44 crates with it (ws1079).
       return '$receiver.$name(${args.map(expr).join(', ')})$_propagate';
     }
+    // `Sink.close()`: what a sink closes over is Dart code, and Dart code
+    // throws -- `ByteConversionSink.withCallback`'s callback is a
+    // `Fn(..) -> Result<(), DartError>` and `close` had nowhere to put its
+    // error, so it aborted on one. By the *receiver*, for the same reason
+    // `decode` is: `IOSink.close()` and `StreamController.close()` hand
+    // back a future, every translated class is free to declare a `close`
+    // of its own (`DrawerControllerState`, `ExpandingBottomSheetState`,
+    // `TextInputConnection` all do), and a bare `close` in
+    // `_preludeFailing` would `?` all of them.
+    const sinkLike = {'Sink', 'ByteConversionSink', 'ChunkedConversionSink'};
+    if (name == 'close' &&
+        args.isEmpty &&
+        sinkLike.contains(target?.rustType?.name ?? '')) {
+      return '$receiver.close()$_propagate';
+    }
     // An empty one has no first and no last, and Dart throws `Bad state:
     // No element` for both. The prelude says `Result` for the queue-like
     // receivers since ws1076; the `Vec` ones used to index -- `xs[0]` on an

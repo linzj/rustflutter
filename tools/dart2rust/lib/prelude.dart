@@ -4290,7 +4290,10 @@ pub fn dart_type_applied(base: &'static str, arguments: &[Type]) -> Type {
         arguments.iter().map(|t| t.name).collect::<Vec<_>>().join(", ")
     );
     let names = NAMES.get_or_init(|| Mutex::new(HashSet::new()));
-    let mut names = names.lock().expect("dart2rust: a Mutex cannot be poisoned under panic = abort");
+    // `into_inner` rather than `expect`: a lock is poisoned by a panic
+    // while it is held, this workspace aborts instead of unwinding, and
+    // the total spelling needs no claim about that at all.
+    let mut names = names.lock().unwrap_or_else(|e| e.into_inner());
     let kept: &'static str = match names.get(spelled.as_str()) {
         Some(known) => known,
         None => {
@@ -4932,7 +4935,12 @@ impl Timeline {
 /// chunked conversion.
 pub trait DartSink<T> {
     fn add(&self, data: T);
-    fn close(&self);
+    /// Fallible because what it closes over is Dart code: `_ByteCallbackSink`
+    /// calls a `Fn(..) -> Result<(), DartError>` and had nowhere to put the
+    /// error, so it aborted on one. Nothing outside this file implements or
+    /// calls it -- the gallery's one mention is inside an already-stubbed
+    /// body -- so the channel costs nothing to add.
+    fn close(&self) -> Result<(), DartError>;
 }
 
 pub type Sink<T> = std::rc::Rc<dyn DartSink<T>>;
@@ -5980,9 +5988,12 @@ pub fn _abi() -> i64 {
         ("windows", "aarch64") => 21,
         ("windows", "x86") => 22,
         ("windows", "x86_64") => 23,
+        // A refusal, by name: this table is what `dart:ffi` publishes, and
+        // a host it has no row for is a platform this compiler has not been
+        // taught, not a program that went wrong.
         (os, arch) => panic!(
-            "dart2rust: dart:ffi has no Abi.values index for {}_{}; a struct's \
-             layout cannot be read without one",
+            "dart2rust: not translated: dart:ffi has no Abi.values index for \
+             {}_{}; a struct's layout cannot be read without one",
             os, arch
         ),
     }
@@ -6293,10 +6304,9 @@ impl DartSink<Vec<i64>> for _ByteCallbackSink {
         self.accumulated.borrow_mut().extend(data);
     }
 
-    fn close(&self) {
+    fn close(&self) -> Result<(), DartError> {
         let all = self.accumulated.borrow().clone();
-        // A `Sink::close` cannot fail here; the callback's error is loud.
-        (self.callback)(all).expect("dart2rust: Sink::close has no error channel to carry the callback's failure");
+        (self.callback)(all)
     }
 }
 
@@ -7941,9 +7951,12 @@ pub fn future_new<T: Clone + 'static>(
 /// `CachingAssetBundle.loadStructuredBinaryData<T>`, run569) and a
 /// concrete type's is the plain `Option`.
 pub fn future_value<T: DartNullable + 'static>(value: <T as DartNullable>::Or) -> DartFuture<T> {
-    DartFuture::ready(Ok(T::option(value)
-        .or_else(T::dart_null)
-        .expect("dart2rust: Future.value() with no value where T is not nullable")))
+    DartFuture::ready(match T::option(value).or_else(T::dart_null) {
+        Some(value) => Ok(value),
+        // `Future<int>.value(null)`: Dart's `TypeError`, and a future is
+        // the one thing here that can carry it to whoever awaits.
+        None => Err(dart_null_check_failed()),
+    })
 }
 
 /// `Future<T>.value()` with no value: the `null` of `T` (`()` for a
@@ -7965,7 +7978,12 @@ pub fn future_sync<T: Clone + 'static>(
     computation: std::rc::Rc<dyn Fn() -> Result<FutureOr<T>, DartError>>,
 ) -> DartFuture<T> {
     match computation() {
-        Ok(FutureOr::Value(value)) => DartFuture::ready(Ok(value.expect("dart2rust: a FutureOr::Value holding nothing"))),
+        Ok(FutureOr::Value(Some(value))) => DartFuture::ready(Ok(value)),
+        // The same answer `then` gives for the same shape, and by the same
+        // reasoning: it is a value, so it goes in the future.
+        Ok(FutureOr::Value(None)) => DartFuture::ready(Err(dart_state_error(
+            "a FutureOr held no value",
+        ))),
         Ok(FutureOr::Future(future)) => future,
         Err(error) => DartFuture::ready(Err(error)),
     }
@@ -7981,7 +7999,7 @@ pub fn future_delayed<T: DartNullable + Clone + 'static>(
         timer_future(duration).await?;
         match computation {
             Some(computation) => computation()?.await,
-            None => Ok(T::dart_null().expect("dart2rust: Future.delayed with no computation where T is not nullable")),
+            None => T::dart_null().ok_or_else(dart_null_check_failed),
         }
     }))
 }
@@ -11656,7 +11674,8 @@ impl ByteData {
     }
 
     pub fn get_uint16(&self, at: i64, _endian: Endian) -> i64 {
-        u16::from_le_bytes(self.four(at, 2)[..2].try_into().expect("dart2rust: a fixed-length slice is its own array")) as i64
+        let at = at as usize;
+        u16::from_le_bytes([self.bytes[at], self.bytes[at + 1]]) as i64
     }
     pub fn set_uint16(&mut self, at: i64, value: i64, _endian: Endian) {
         let bytes = (value as u16).to_le_bytes();
@@ -11674,7 +11693,7 @@ impl ByteData {
     }
 
     pub fn get_int32(&self, at: i64, _endian: Endian) -> i64 {
-        i32::from_le_bytes(self.four(at, 4)[..4].try_into().expect("dart2rust: a fixed-length slice is its own array")) as i64
+        i32::from_le_bytes(self.four(at)) as i64
     }
 
     pub fn set_int32(&mut self, at: i64, value: i64, _endian: Endian) {
@@ -11683,7 +11702,7 @@ impl ByteData {
     }
 
     pub fn get_uint32(&self, at: i64, _endian: Endian) -> i64 {
-        u32::from_le_bytes(self.four(at, 4)[..4].try_into().expect("dart2rust: a fixed-length slice is its own array")) as i64
+        u32::from_le_bytes(self.four(at)) as i64
     }
 
     pub fn set_uint32(&mut self, at: i64, value: i64, _endian: Endian) {
@@ -11692,7 +11711,7 @@ impl ByteData {
     }
 
     pub fn get_float32(&self, at: i64, _endian: Endian) -> f64 {
-        f32::from_le_bytes(self.four(at, 4)[..4].try_into().expect("dart2rust: a fixed-length slice is its own array")) as f64
+        f32::from_le_bytes(self.four(at)) as f64
     }
 
     pub fn set_float32(&mut self, at: i64, value: f64, _endian: Endian) {
@@ -11701,7 +11720,7 @@ impl ByteData {
     }
 
     pub fn get_float64(&self, at: i64, _endian: Endian) -> f64 {
-        f64::from_le_bytes(self.eight(at)[..8].try_into().expect("dart2rust: a fixed-length slice is its own array"))
+        f64::from_le_bytes(self.eight(at))
     }
 
     pub fn set_float64(&mut self, at: i64, value: f64, _endian: Endian) {
@@ -11709,10 +11728,14 @@ impl ByteData {
         self.bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
     }
 
-    fn four(&self, at: i64, n: usize) -> [u8; 4] {
+    /// Four bytes at `at`, as an array rather than a slice: the five
+    /// readers above used to take `[..n]` of this and `try_into()` it
+    /// back, which cannot fail and said so in five `.expect(..)` -- five
+    /// abort sites for a conversion from `[u8; 4]` to `[u8; 4]`.
+    fn four(&self, at: i64) -> [u8; 4] {
         let at = at as usize;
         let mut out = [0u8; 4];
-        out[..n].copy_from_slice(&self.bytes[at..at + n]);
+        out.copy_from_slice(&self.bytes[at..at + 4]);
         out
     }
 

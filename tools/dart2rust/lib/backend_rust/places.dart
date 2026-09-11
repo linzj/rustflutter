@@ -543,6 +543,14 @@ augment class RustBackend {
     if (target is IrIfNull && target.assignsLeft) {
       final place = _mutPlace(target.left);
       if (place != null) {
+        // The `.expect` stays, and is on `bin/panic_ruler.py`'s list by
+        // name. It cannot be restructured the way the lazy cell above it
+        // was: what is wanted here is a `&mut T` out of a place that was
+        // filled two tokens earlier, and the `None` arm of a `match` on
+        // `as_mut()` cannot re-borrow the place to fill it (NLL problem
+        // case 3). `get_or_insert_with` is the shape with no abort in it,
+        // and it needs the *value* -- but `IrIfNull.assignsLeft`'s right
+        // side is the store, not the thing stored.
         return '{ if ${expr(target.left)}.is_none() { ${expr(target.right)}; } '
             '$place.as_mut()${_hardUnwrap('as-mut')} }';
       }

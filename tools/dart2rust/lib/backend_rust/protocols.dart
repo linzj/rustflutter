@@ -15,9 +15,25 @@ augment class RustBackend {
           : _substitute(f.initial!, const {}, _implBinding),
     );
     _lazyExpanding.remove(f.name);
+    // Written as a `match` on the cell rather than "fill it, then read it
+    // back": the read-back could not fail, and said so in an
+    // `.expect("dart2rust: a lazy late cell, read on the line after it is
+    // written")` -- 494 of them, every one an abort the program could in
+    // principle reach. A branch that *returns the value it just computed*
+    // needs no reading back and no abort at all. The `None` arm is the
+    // first read; the `Some` arm is every read after it.
+    //
+    // The borrow in the non-`Copy` arm ends at its `;`, before `$init`
+    // runs: an initialiser that touches the same object would otherwise
+    // panic on a live borrow, which is how the `if .borrow().is_none()`
+    // shape had to be written too.
     return _isCopy(_heldDecl(f))
-        ? '{ if $receiver.$name.get().is_none() { let __v = $init; $receiver.$name.set(Some(__v)); } $receiver.$name.get()${_hardUnwrap('lazy-tail-copy')} }'
-        : '{ if $receiver.$name.borrow().is_none() { let __v = $init; *$receiver.$name.borrow_mut() = Some(__v); } let __r = $receiver.$name.borrow().clone()${_hardUnwrap('lazy-tail-rc')}; __r }';
+        ? '{ match $receiver.$name.get() { Some(__v) => __v, '
+              'None => { let __v = $init; $receiver.$name.set(Some(__v)); __v } } }'
+        : '{ let __r = $receiver.$name.borrow().clone(); '
+              'match __r { Some(__v) => __v, '
+              'None => { let __v = $init; '
+              '*$receiver.$name.borrow_mut() = Some(__v.clone()); __v } } }';
   }
 
   /// `?` inside a body this file writes itself, which is always a

@@ -151,10 +151,45 @@ LEGITIMATE = (
 )
 
 
+#: Sites argued onto the list **one at a time, by their whole message** --
+#: the only way onto it now that the `dart2rust:` prefix is not a licence.
+#: Each of these is a single site stating a fact about this translator's own
+#: machinery, and the argument for each is written next to it. A message
+#: that covers many sites does not belong here: the 494 lazy-cell reads were
+#: one emitter, and the answer to those was to stop emitting an abort at all
+#: (`protocols.dart`, `_lazyRead`), not to name them.
+NAMED = (
+    # `(f ??= <>{}).add(x)`: the place was filled two tokens earlier. It
+    # cannot be restructured the way the lazy cell was -- what is wanted is
+    # a `&mut T`, and the `None` arm of a match on `as_mut()` cannot
+    # re-borrow the place to fill it (NLL problem case 3). The shape with
+    # no abort in it is `get_or_insert_with`, and that needs the value,
+    # while `IrIfNull.assignsLeft`'s right side is the store.
+    'dart2rust: an Option this function just tested with is_none',
+    # The object protocol sets a handle's `Weak` at construction and reads
+    # it afterwards. A read before the set is this compiler emitting the
+    # two in the wrong order, which no program can ask for.
+    'dart2rust: `this` taken before the object had a handle',
+    # A `Future` polled after it completed is a Rust contract violation,
+    # not a Dart one: `Poll::Ready` twice. The alternative spelling is
+    # `Poll::Pending`, which hangs -- a wrong answer in place of a loud one.
+    'dart2rust: a FutureOr polled after it was taken',
+    # `Map`'s hash index, read on the line after it is assigned.
+    'dart2rust: the index was written just above',
+    # The prelude's own scheduler invariant. Nothing a program does reaches
+    # it: `Completer.complete` on a settled future returns `Err` before it
+    # would call this (`dart_state_error("Future already completed")`).
+    'dart2rust: a Future resolved twice',
+)
+
+
 def _legitimate(kind):
     if kind in ('unreachable!', 'todo!'):
         return True
-    return any('("%s")' % one == kind[kind.find('('):] for one in LEGITIMATE)
+    tail = kind[kind.find('('):]
+    # `_bucket` so that a NAMED entry is written in full here and still
+    # matches the folded, 60-character form the report counts under.
+    return any('("%s")' % _bucket(one) == tail for one in LEGITIMATE + NAMED)
 
 
 def _uncommented(text):
