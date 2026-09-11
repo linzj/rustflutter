@@ -703,25 +703,16 @@ augment class RustBackend {
             !have.isAsync &&
             type(needReturns) == '()' &&
             type(have.returnType) != '()';
-        // An inherent *operator* is a `std::ops` method: it takes `self` by
-        // value and hands back the `Output` itself, not a `Result`. So the
-        // conversion binds the value rather than mapping a `Result`, and
-        // the trait's own `Result` is put on here (`impl EdgeInsetsGeometry
-        // for EdgeInsets`'s `op_mul` got `*self * other.map(|__v| ..)`,
-        // which mapped the *operand*, 6 at ws757).
-        final infallible =
-            have.operator != null && operatorTraits.containsKey(have.operator);
-        final wrapsOk = _returnType(need).startsWith('Result<');
-        String infallibleText(String inner) => wrapsOk ? 'Ok($inner)' : inner;
+        // An operator used to be a `std::ops` method here -- `self` by
+        // value, the `Output` itself and no `Result` -- and this branch
+        // bound the value instead of mapping a `Result`. Since ws1074 an
+        // operator is an ordinary inherent method, so there is one shape
+        // left and the `infallible` fork is gone.
         _line(
           dropsValue
-              ? (infallible
-                    ? infallibleText('{ let _ = $call; () }')
-                    : '$call.map(|_| ())')
+              ? '$call.map(|_| ())'
               : identical(shaped, held)
-              ? (infallible ? infallibleText(call) : call)
-              : infallible
-              ? '{ let __v = $call; ${infallibleText(expr(shaped))} }'
+              ? call
               : '$call.map(|__v| ${expr(shaped)})',
         );
       }
@@ -929,16 +920,10 @@ augment class RustBackend {
       );
     }).toList();
     final op = method.operator;
-    if (op != null && operatorTraits.containsKey(op)) {
-      // `std::ops` takes its operands by value, so `*self` moves -- which is
-      // free for a `Copy` struct and an error for one that is not. A class
-      // carrying an identity token is never `Copy` (the token is an `Rc`),
-      // and `BorderRadius * other` said so: "cannot move out of `*self`
-      // which is behind a shared reference" (ws1064).
-      final own = cls.identityToken ? 'self.clone()' : '*self';
-      if (op == 'unary-') return '-$own';
-      return '$own $op ${args.single}';
-    }
+    // An operator is an ordinary inherent method now (ws1074): it goes down
+    // the path below like every other member, which is also where its
+    // `Result` is handled. It used to be spelled `*self $op arg` against an
+    // `impl std::ops::*` that no longer exists.
     // `Type::method(self, ...)`, not `self.method(...)`. Inside `impl Base for
     // This` the trait's own method has the same name, and `self.method(...)`
     // leans on Rust preferring the inherent one -- true today, and an infinite
@@ -948,7 +933,7 @@ augment class RustBackend {
     // `set__status` forwarded to `Value::_status`, which is the getter.
     final name = op == null
         ? (method.isSetter ? 'set_${snake(method.name)}' : snake(method.name))
-        : _operatorName(op);
+        : _methodName(method);
     // An inherent method that takes `self: &Rc<Self>` (`_receiverOf`) is
     // reached from the trait's `&self` through the stored handle (1297
     // "expected `&Rc<X>`, found `&X`" at ws276).

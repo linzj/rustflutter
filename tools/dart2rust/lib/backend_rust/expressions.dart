@@ -77,6 +77,14 @@ augment class RustBackend {
         op == '==' || op == '!=' ? _explicitUpcast(_plain(right)) : right,
         type,
       ),
+      // A translated class's `operator -()` is one of its methods, and it
+      // fails like any method: there is no `impl std::ops::Neg` to land on
+      // any more (ws1074). Rust's own `-` on numbers is left alone.
+      IrUnary(op: '-', :final operand)
+          when operand.rustType != null &&
+              library[operand.rustType!.name] != null &&
+              !operand.rustType!.nullable =>
+        '${expr(operand)}.op_neg()$_propagate',
       IrUnary(:final op, :final operand) => '($op${expr(operand)})',
       IrCall(
         :final target,

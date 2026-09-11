@@ -237,7 +237,12 @@ augment class RustBackend {
       final name = left.rustType?.name;
       final counted = name != null && (library[name]?.counted ?? false);
       if (counted && !left.rustType!.nullable) {
-        return '((*${expr(left)}).clone() $op ${expr(right)})';
+        // On the *handle*, not on the value behind it. The old
+        // `(*left).clone() $op right` was there because `impl std::ops::Mul`
+        // was `for Struct`; the method it replaced takes `self: &Rc<Self>`
+        // when the class hands `this` out (`_receiverOf`), and derefs to
+        // `&self` when it does not -- `rc.op_mul(..)` is right either way.
+        return '${expr(left)}.op_${mapping.$2}(${expr(right)})$_propagate';
       }
     }
     // `==` on a type parameter's values (`T`, `T?`) is Dart's `==`, the
@@ -326,6 +331,14 @@ augment class RustBackend {
       final other = identical(coerced, bare) ? right : coerced;
       final eq = '${expr(left)}.dart_eq(&${expr(other)})';
       return op == '==' ? eq : '(!$eq)';
+    }
+    // A translated class's operator is one of its methods, and it fails
+    // like any method. Rust's own `+` on numbers is left alone.
+    if (mapping != null &&
+        leftName != null &&
+        library[leftName] != null &&
+        !left.rustType!.nullable) {
+      return '${expr(left)}.op_${mapping.$2}(${expr(right)})$_propagate';
     }
     return '(${expr(left)} $op ${expr(right)})';
   }

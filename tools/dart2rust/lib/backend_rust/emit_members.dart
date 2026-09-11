@@ -669,98 +669,31 @@ augment class RustBackend {
   }
 
   void _emitOperator(IrMethod method, String op) {
-    {
-      final mapping = operatorTraits[op];
-      if (mapping == null) {
-        // `~/` has no Rust trait. Emitted as an inherent method rather than
-        // forced into one that means something else.
-        // ..and as a method in every respect: it returns `Result` and
-        // its body may `?`, as the trait's declaration of the same
-        // operator does (`stdOperators`).
-        _line('');
-        _line('impl${_implGenerics(cls)} ${cls.name}${_generics(cls)} {');
-        _indent++;
-        _emitMethod(method, as: _operatorName(op));
-        _indent--;
-        _line('}');
-        return;
-      }
-      final (trait, fn) = mapping;
-      final rhs = method.params.isEmpty ? null : method.params.single;
-      _line('');
-      _doc(method.doc);
-      final generic = rhs == null ? '' : '<${type(rhs.type)}>';
-      _line(
-        'impl${_implGenerics(cls)} std::ops::$trait$generic for '
-        '${cls.name}${_generics(cls)} {',
-      );
-      _indent++;
-      _line('type Output = ${type(method.returnType)};');
-      _line('');
-      final params = [
-        'self',
-        if (rhs != null) '${snake(rhs.name)}: ${type(rhs.type)}',
-      ].join(', ');
-      // The inherent method holds the body, so its parameter says `mut`
-      // where the body writes to it, exactly as a method's does
-      // (`Priority operator +(int offset)` clamps `offset` before using
-      // it: "cannot assign to immutable argument", E0384, ws960). The
-      // forwarder above only hands the value on and keeps the plain
-      // spelling -- a `mut` it never uses is a denied `unused_mut`.
-      final assigned = _assignedIn(method.body);
-      final ownParams = [
-        'self',
-        if (rhs != null)
-          '${assigned.contains(rhs.name) ? 'mut ' : ''}'
-              '${snake(rhs.name)}: ${type(rhs.type)}',
-      ].join(', ');
-      // The body lives in an inherent method the trait impl forwards to.
-      // Inside `impl std::ops::Add for Matrix3`, the trait is in scope, and
-      // `cascaded.add(arg)` in the body of `operator +` -- Dart's own
-      // `add`, `&mut self` -- resolved to the by-value `Add::add` first:
-      // 8 `E0382`s and an infinite recursion in vector_math.
-      final own = _operatorName(method.operator!);
-      _line(
-        'fn $fn($params) -> Self::Output { '
-        'Self::$own(${['self', if (rhs != null) snake(rhs.name)].join(', ')}) }',
-      );
-      _indent--;
-      _line('}');
-      _line('');
-      _line('impl${_implGenerics(cls)} ${cls.name}${_generics(cls)} {');
-      _indent++;
-      _line('pub fn $own($ownParams) -> ${type(method.returnType)} {');
-      _indent++;
-      _returns = method.returnType;
-      _here = '${cls.name}.${method.name}';
-      _asyncBody = method.isAsync;
-      _methodTypeParams = method.typeParameters;
-      _reassigned = assigned;
-      _mutRefParams = {
-        for (final p in method.params)
-          if (p.mutRef) p.name,
-      };
-      _cellLocals = {};
-      // An operator's signature is `std::ops`'s and cannot say `Result`:
-      // inside it a failing call unwraps.
-      final savedFailure = _failure;
-      _failure = null;
-      // ..and takes `self` by value: `this` inside is `self`, not `*self`
-      // (`Priority.operator -` doing `this + (-offset)`, E0614 at ws463).
-      _selfByValue = true;
-      final closed = _body(
-        method.body,
-        method.isAsync ? _awaited(method.returnType) : method.returnType,
-      );
-      _selfByValue = false;
-      if (!closed) _closeOpenIf(method.body);
-      _failure = savedFailure;
-      _returns = null;
-      _indent--;
-      _line('}');
-      _indent--;
-      _line('}');
-    }
+    // Every operator is an inherent method, `std::ops` or not.
+    //
+    // It used to be `impl std::ops::Add for X { fn add(self, rhs) -> Self::
+    // Output { Self::op_add(self, rhs) } }` beside an inherent `op_add`
+    // whose signature was std's and so could not say `Result` -- "inside it
+    // a failing call unwraps", which is a *panic* where Dart's
+    // `operator +` throws, and `try { a + b } catch (e)` is ordinary Dart.
+    // There is nothing to negotiate with: the 60 `impl std::ops::*` in the
+    // gallery were read by nothing but this compiler's own `a + b`, which
+    // is a spelling it chooses. `~/` has taken this path since it was
+    // written, because Rust has no trait for it, so the shape is proven.
+    //
+    // The call sites say `a.op_add(b)?` instead (`operators.dart`,
+    // `emit_impl.dart`), and `_methodName` already spelled the trait's
+    // declaration `op_add`, so the two agree by construction.
+    _line('');
+    _line('impl${_implGenerics(cls)} ${cls.name}${_generics(cls)} {');
+    _indent++;
+    // By `_methodName`, which is what every call site and every trait
+    // declaration spells: `_operatorName('&')` is `bit_and` while the
+    // callers say `op_bitand`, and emitting the one while calling the
+    // other was 99 E0599s on `Offset & Size` (ws1074).
+    _emitMethod(method, as: _methodName(method));
+    _indent--;
+    _line('}');
   }
 
   /// A Rust-legal name for a Dart operator.
