@@ -884,8 +884,16 @@ augment class RustBackend {
       first = false;
     }
     if (arms.isEmpty || arms.last.$1 != null) {
+      // Not an "uncaught Dart exception": the arms are the *census's*
+      // answer for what this slot holds, so a value outside them says the
+      // census was incomplete -- a fact about this compiler, not about the
+      // program it translated. By work.md's own test ("does this panic say
+      // something about that program, or about this translator?") it
+      // belongs in the `dart2rust:` family and stays a panic. Five of the
+      // sixteen generated `uncaught` were this, wearing the wrong label.
       out.write(
-        ' else { panic!("uncaught Dart exception: a dynamic slot held an unexpected type") }',
+        ' else { panic!("dart2rust: a dynamic slot held a type the census '
+        'did not predict") }',
       );
     }
     out.write(' }');
