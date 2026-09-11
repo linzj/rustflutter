@@ -655,7 +655,17 @@ augment class RustBackend {
         // ..unless it is reached through an ancestor's trait (`via`): the
         // trait's method already returns the `Result`, and `Ok(ModalRoute::
         // will_pop(self))` doubled it (30 `will_pop` forwarders at ws535).
+        // The arguments this forwarder passes on are *Dart's* casts: a
+        // `covariant` parameter is a downcast at the call and Dart throws
+        // there, so the cast propagates rather than unwrapping. Only here --
+        // the forwarder's own value goes on through `.map(|__v| ..)` below,
+        // whose closure returns a plain value and cannot carry a `?`.
+        final savedFailure = _failure;
+        _failure = _resultModel && _returnType(need).startsWith('Result<')
+            ? _error
+            : null;
         final inherent = _inherentCall(have, need, via);
+        _failure = savedFailure;
         final call = have.isAsync && _resultModel && via == null
             ? 'Ok($inherent)'
             : inherent;
