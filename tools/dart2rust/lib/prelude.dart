@@ -1740,7 +1740,7 @@ dart_any_display!(
     u32 => "int", i32 => "int", u64 => "int", usize => "int", isize => "int",
     f32 => "double", char => "String",
     Duration => "Duration", Symbol => "Symbol", StackTrace => "StackTrace", Uri => "Uri", Exception => "Exception", FormatException => "FormatException", ArgumentError => "ArgumentError", UnimplementedError => "UnimplementedError", IndexError => "IndexError", RangeError => "RangeError", FileSystemException => "FileSystemException", SocketException => "SocketException", HttpException => "HttpException", AssertionError => "AssertionError",
-    StateError => "StateError", TypeError => "TypeError", NoSuchMethodError => "NoSuchMethodError", Error => "Error", UnsupportedError => "UnsupportedError", ConcurrentModificationError => "ConcurrentModificationError",
+    StateError => "StateError", TypeError => "TypeError", NoSuchMethodError => "NoSuchMethodError", LateInitializationError => "LateInitializationError", Error => "Error", UnsupportedError => "UnsupportedError", ConcurrentModificationError => "ConcurrentModificationError",
 );
 
 dart_any_generic!(
@@ -6358,6 +6358,21 @@ pub fn dart_null_as<T: DartNullable>() -> T {
 /// used to `panic!`, which is a `TypeError` the program cannot catch --
 /// and `on TypeError catch` around a null assert is ordinary Dart. Now it
 /// is the error, and the caller propagates it.
+/// What Dart throws when a `late` field or variable is read before it has
+/// been written: `LateInitializationError: Field 'x' has not been
+/// initialized.`
+///
+/// A `late` is held here as the `Option` that has no value yet, so the read
+/// is the one place that can tell. It used to be `.unwrap()`, which is a
+/// panic -- and `try { .. } catch` around a `late` read is ordinary Dart, so
+/// that was a path the program still had and could no longer take.
+pub fn dart_late_init_failed(kind: &str, name: &str) -> DartError {
+    std::rc::Rc::new(LateInitializationError::new(format!(
+        "{} '{}' has not been initialized.",
+        kind, name
+    ))) as DartError
+}
+
 pub fn dart_null_check_failed() -> DartError {
     std::rc::Rc::new(TypeError::new(
         "Null check operator used on a null value".to_string(),
@@ -9291,6 +9306,10 @@ dart_error!(TypeError, "TypeError");
 /// `toJson` -- so it has to be a value that a `catch` can hold, not a
 /// panic.
 dart_error!(NoSuchMethodError, "NoSuchMethodError");
+/// `late int x;` read before it is written. Dart throws this and it is an
+/// `Error`, so `try { .. } catch (e)` around a `late` read is ordinary Dart;
+/// the message is Dart's own, down to the trailing full stop.
+dart_error!(LateInitializationError, "LateInitializationError");
 /// `Error`, the root of dart:core's errors: as `dart_error!` writes one,
 /// with the text of a subtype's value read as an `Error` (see `Exception`).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -9384,7 +9403,8 @@ dart_core_as!(
     AssertionError => |e| Error { message: format!("{}", e), rendered: Some(format!("{}", e)) },
     UnsupportedError => |e| Error { message: format!("{}", e), rendered: Some(format!("{}", e)) },
     UnimplementedError => |e| Error { message: format!("{}", e), rendered: Some(format!("{}", e)) },
-    ConcurrentModificationError => |e| Error { message: format!("{}", e), rendered: Some(format!("{}", e)) }
+    ConcurrentModificationError => |e| Error { message: format!("{}", e), rendered: Some(format!("{}", e)) },
+    LateInitializationError => |e| Error { message: format!("{}", e), rendered: Some(format!("{}", e)) }
 );
 
 /// `String.fromCharCodes(codes)`: UTF-16 code units to a String.

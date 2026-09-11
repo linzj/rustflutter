@@ -123,9 +123,14 @@ augment class KernelFrontend {
         // `RawScrollbarState._getPrimaryDelta`, run666).
         if ((_tryWrites.contains(node.variable) || node.variable.isLate) &&
             node.variable.type.nullability != Nullability.nullable) {
+          // `!late` and not `unwrap`: reading a `late` local before it is
+          // written throws `LateInitializationError` in Dart and `try { ..
+          // } catch (e)` around one is ordinary Dart, so the backend owns
+          // what the empty `Option` becomes (`places.dart`'s `_lateRead`).
+          // An `unwrap` here was a panic, and a panic is never a pass.
           return IrCall(
             IrCall(IrLocal(name), 'clone', const []),
-            'unwrap',
+            '!late',
             const [],
           )..rustType = _type(node.variable.type);
         }

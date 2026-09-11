@@ -28,7 +28,7 @@ augment class RustBackend {
       IrLocal(:final name) =>
         _cellLocals.containsKey(name)
             ? '${_cellLocals[name]! ? '${snake(name)}.get()' : '{ let __r = ${snake(name)}.borrow().clone(); __r }'}'
-                  '${_lateCellLocals.contains(name) ? '.unwrap()' : ''}'
+                  '${_lateCellLocals.contains(name) ? _lateRead(name) : ''}'
             : _closureCaptured.contains(name)
             ? '${snake(name)}.clone()'
             : snake(name),

@@ -570,7 +570,7 @@ augment class RustBackend {
           ? null
           : _cellFieldOf(target.owner!, target.name);
       if (decl != null && decl.isLate) {
-        return '$cell.borrow_mut().as_mut().unwrap()';
+        return '$cell.borrow_mut().as_mut()${_lateRead(target.name)}';
       }
     }
     return '$cell.borrow_mut()';
@@ -716,7 +716,7 @@ augment class RustBackend {
           ? null
           : _cellFieldOf(target.owner!, target.name);
       if (decl != null && decl.isLate) {
-        return '$cell.borrow().as_ref().unwrap()';
+        return '$cell.borrow().as_ref()${_lateRead(target.name)}';
       }
     }
     return '$cell.borrow()';
@@ -1018,6 +1018,25 @@ augment class RustBackend {
 
   /// `?` when a function surrounds the expression, `.unwrap()` otherwise.
   String get _propagate => _failure != null ? '?' : '.unwrap()';
+
+  /// A read of a `late` field or local that has no value yet.
+  ///
+  /// Dart throws `LateInitializationError` there, and it is an `Error`:
+  /// `try { .. } catch (e)` around a `late` read is ordinary Dart. This
+  /// was `.unwrap()`, which is a panic -- a path the program still had,
+  /// and the process died instead of taking it.
+  ///
+  /// The `Option` a `late` is held in is the one place that can tell, so
+  /// this is appended wherever that `Option` is opened. `fallible` is for
+  /// the trait accessors, which are written outside any method body and
+  /// carry no `_failure` of their own -- they return `Result` when the
+  /// result model is on, and say so themselves.
+  /// [kind] is Dart's own word for what went unwritten -- it says "Field
+  /// 'x' has not been initialized." for a field and "Local 'x' .." for a
+  /// local, and the message is the only thing a `catch` can read.
+  String _lateRead(String name, {bool? fallible, String kind = 'Field'}) =>
+      '.ok_or_else(|| dart_late_init_failed("$kind", "$name"))'
+      '${(fallible ?? _failure != null) ? '?' : '.unwrap()'}';
 
   /// Set while the operand of an `await` is printed: the call's own `?`
   /// belongs after the `.await`.

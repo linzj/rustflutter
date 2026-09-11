@@ -785,7 +785,7 @@ augment class RustBackend {
         // value goes in wrapped. This is the only place that happens.
         final own = target == null || target is IrThis
             ? _lateField(name)
-            : null;
+            : _lateFieldOf(owner, target, name);
         final written = own != null || (shared?.isLate ?? false)
             ? 'Some(${expr(value)})'
             : expr(value);

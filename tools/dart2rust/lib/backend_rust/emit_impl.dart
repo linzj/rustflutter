@@ -204,7 +204,9 @@ augment class RustBackend {
       // `late` throws; this panics), the write wraps. `RenderObject`'s
       // `late bool _needsCompositing` alone was 363 mismatches in
       // `rendering` (194 `set`, 169 reads).
-      final late = field.isLate ? '.unwrap()' : '';
+      final late = field.isLate
+          ? _lateRead(field.name, fallible: _resultModel)
+          : '';
       // A getter this class declares *overrides* the base's field: Dart
       // resolves the name to the getter, and a call through the trait is
       // the one path that can tell (`_SwitchDefaultsM3.padding` is
@@ -561,7 +563,9 @@ augment class RustBackend {
           !need.isStatic &&
           (need.isSetter ? need.params.length == 1 : need.params.isEmpty)) {
         final cell = _sharedField(field.name);
-        final late = field.isLate ? '.unwrap()' : '';
+        final late = field.isLate
+            ? _lateRead(field.name, fallible: _resultModel)
+            : '';
         final name = snake(field.name);
         if (need.isSetter) {
           if (cell != null) {

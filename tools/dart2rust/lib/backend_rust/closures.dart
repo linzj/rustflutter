@@ -510,6 +510,22 @@ augment class RustBackend {
     return null;
   }
 
+  /// The `late` field of *another* object's class by that name, or null.
+  ///
+  /// By the class the front end named as the owner, and failing that by the
+  /// target's own static type. A `late` field is an `Option` whoever holds
+  /// it, so a write to one has to wrap -- and asking only about *this*
+  /// class left `b.s = 'written'` on a plain class writing a `String` into
+  /// an `Option<String>` (the lateinit fixture found it).
+  IrFieldDecl? _lateFieldOf(String? owner, IrExpr? target, String name) {
+    final owned = library[owner ?? target?.rustType?.name ?? ''];
+    if (owned == null) return null;
+    for (final f in _allFields(owned)) {
+      if (f.name == name) return f.isLate ? f : null;
+    }
+    return null;
+  }
+
   /// Another class's field, when a read or write of it goes through a cell.
   ///
   /// The same question `_sharedField` answers for this class, asked of the
@@ -627,12 +643,12 @@ augment class RustBackend {
         return '${read}_cell()$_propagate';
       }
       final value = '$read()$_propagate';
-      return late != null ? '$value.unwrap()' : value;
+      return late != null ? '$value${_lateRead(field.name)}' : value;
     }
     if (late != null && _sharedField(field.name) == null) {
       return _isCopy(_declSpelling(() => type(late.type)))
-          ? '$read.unwrap()'
-          : '$read.clone().unwrap()';
+          ? '$read${_lateRead(field.name)}'
+          : '$read.clone()${_lateRead(field.name)}';
     }
     // A shared field is carried as a *handle*: the closure and the object must
     // see the same cell, which is the whole reason it is shared. Cloning an

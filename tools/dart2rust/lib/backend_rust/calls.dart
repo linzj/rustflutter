@@ -324,6 +324,14 @@ augment class RustBackend {
     // `this` shared: the object's own handle, not a fresh `Rc` around a
     // reference (`Rc::new(this_)` wanted `'static`, 168 lifetime errors)
     // or a copy (a new identity).
+    // A `late` local read: the front end spells it `x.clone().!late`, and
+    // the `Option` it opens is the one place that can tell whether Dart
+    // would have thrown here. Dart calls it a `Local`.
+    if (name == '!late' && args.isEmpty) {
+      final read = target is IrCall ? target.target : target;
+      return '$receiver'
+          '${_lateRead(read is IrLocal ? read.name : '', kind: 'Local')}';
+    }
     if (name == '!rc' && args.isEmpty && target is IrThis) {
       final own = _thisHandle();
       if (own != null) return own;

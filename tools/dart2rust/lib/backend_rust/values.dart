@@ -176,7 +176,9 @@ augment class RustBackend {
     // Dart says the value of `x = v` is `v`, so `__set` stays bare
     // (`_opacityAnimation = CurvedAnimation(parent: _opacityController =
     // AnimationController(..), ..)` in `_SortArrowState.initState`, ws937).
-    final own = (target == null || target is IrThis) ? _lateField(name) : null;
+    final own = (target == null || target is IrThis)
+        ? _lateField(name)
+        : _lateFieldOf(null, target, name);
     final wrapped = own != null || (shared?.isLate ?? false);
     String stored(String bare) => wrapped ? 'Some($bare)' : bare;
     if (_fieldsAreAccessors && (target == null || target is IrThis)) {

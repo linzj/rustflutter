@@ -336,7 +336,7 @@ augment class RustBackend {
             : '({ let __r = $receiver.${snake(name)}.borrow().clone(); __r })';
         // Out of the cell it is a value, so the `late` unwrap is on a value
         // too. This is the one shape that does need `T: Clone`.
-        return shared.isLate ? '$read.unwrap()' : read;
+        return shared.isLate ? '$read${_lateRead(name)}' : read;
       }
       final late = _lateField(name);
       if (late != null) {
@@ -346,8 +346,8 @@ augment class RustBackend {
         // Cloned out, as every other field read is now: `as_ref()` handed
         // back a `&_ImageFilter` where the getter returns one by value (4).
         return _isCopy(_declSpelling(() => type(late.type)))
-            ? '$receiver.${snake(name)}.unwrap()'
-            : '$receiver.${snake(name)}.clone().unwrap()';
+            ? '$receiver.${snake(name)}${_lateRead(name)}'
+            : '$receiver.${snake(name)}.clone()${_lateRead(name)}';
       }
     }
     // Another object's field, when the front end named its class and that
@@ -370,7 +370,7 @@ augment class RustBackend {
         final read = _fieldIsCopy(cell, owner == null ? null : library[owner])
             ? '$receiver.${snake(name)}.get()'
             : '{ let __r = $receiver.${snake(name)}.borrow().clone(); __r }';
-        return cell.isLate ? '$read.unwrap()' : read;
+        return cell.isLate ? '$read${_lateRead(name)}' : read;
       }
       // Another object's `late` field: `other._argb` in `Hct.==` is an
       // `Option<i64>` on that side too, and reads unwrap it as `this`'s do.
@@ -379,8 +379,8 @@ augment class RustBackend {
         for (final f in _allFields(owned)) {
           if (f.name != name || !f.isLate) continue;
           return _isCopy(_declSpelling(() => type(f.type)))
-              ? '$receiver.${snake(name)}.unwrap()'
-              : '$receiver.${snake(name)}.clone().unwrap()';
+              ? '$receiver.${snake(name)}${_lateRead(name)}'
+              : '$receiver.${snake(name)}.clone()${_lateRead(name)}';
         }
       }
     }
@@ -407,8 +407,8 @@ augment class RustBackend {
       final late = _lateField(name);
       if (late != null) {
         return _isCopy(_declSpelling(() => type(late.type)))
-            ? '$receiver.${snake(name)}.unwrap()'
-            : '$receiver.${snake(name)}.clone().unwrap()';
+            ? '$receiver.${snake(name)}${_lateRead(name)}'
+            : '$receiver.${snake(name)}.clone()${_lateRead(name)}';
       }
     }
     // A field of a *trait object*: the accessor the trait declares, since
