@@ -1052,6 +1052,11 @@ augment class RustBackend {
   /// Dart name at a top-level call and with the snake one elsewhere, and
   /// `_invoke1_with_return` beside it is already the snake spelling.
   static const _preludeFailingStatics = {
+    // `jsonDecode`/`jsonEncode`: malformed input is a `FormatException`
+    // and an unencodable value a `JsonUnsupportedObjectError` (ws1079).
+    'json_decode',
+    'jsonEncode',
+    'json_encode',
     // `int.parse`/`double.parse`: Dart's `FormatException` (ws1076).
     'dart_parse_int',
     'dart_parse_int_radix',

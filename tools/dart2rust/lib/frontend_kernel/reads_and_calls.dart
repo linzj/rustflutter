@@ -387,9 +387,16 @@ augment class KernelFrontend {
     // value behind the slot's handle, so the copy the arm holds is
     // written and put back as the slot's object.
     final field = target;
-    IrExpr noSuch() => IrLiteral(
-      'panic!("uncaught Dart exception: NoSuchMethodError: `$name` on an ${candidates.first.classNode.name}")',
-      const IrType('raw'),
+    // A `throw`, not a `panic!`: Dart raises `NoSuchMethodError` for a
+    // member the class does not have and a program can catch it. As an
+    // `IrThrowValue` the backend spells it where it is -- `return Err(..)`
+    // inside anything that can fail, and the old panic only where nothing
+    // can carry it (`_thrown`).
+    IrExpr noSuch() => IrThrowValue(
+      IrLiteral(
+        'dart_no_such_method_of("${candidates.first.classNode.name}", "$name")',
+        const IrType('raw'),
+      ),
     );
     final arms = <(IrType?, IrExpr)>[];
     for (final c in candidates) {

@@ -674,10 +674,14 @@ augment class RustBackend {
     // `decode` too and does not fail, and putting the bare name in
     // `_preludeFailing` propagated from it -- two stubs, `E0277` on an
     // `Rc<dyn DartAny>` (ws1077).
-    if (name == 'decode' &&
-        (target?.rustType?.name ?? '') == 'Utf8Codec' &&
-        args.isNotEmpty) {
-      return '$receiver.decode(${args.map(expr).join(', ')})$_propagate';
+    final codec = target?.rustType?.name ?? '';
+    if (args.isNotEmpty &&
+        ((name == 'decode' && (codec == 'Utf8Codec' || codec == 'JsonCodec')) ||
+            (name == 'encode' && codec == 'JsonCodec'))) {
+      // `Utf8Codec.encode` is *not* in this list: it takes a `String` and
+      // hands back bytes, and nothing about it can fail. Propagating from
+      // it took `leaf_dart_ui` and 44 crates with it (ws1079).
+      return '$receiver.$name(${args.map(expr).join(', ')})$_propagate';
     }
     // An empty one has no first and no last, and Dart throws `Bad state:
     // No element` for both. The prelude says `Result` for the queue-like

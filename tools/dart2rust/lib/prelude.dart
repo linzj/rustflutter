@@ -4936,7 +4936,7 @@ impl JsonUtf8Encoder {
     /// `encoder.convert(value)`: the JSON text's UTF-8 bytes, as Dart's
     /// `List<int>` (`JSONMessageCodec.encodeMessage`, ws493).
     pub fn convert<V: DartAny>(&self, value: V) -> Result<Vec<i64>, DartError> {
-        Ok(JsonCodec.encode(value, None).into_bytes().into_iter().map(|b| b as i64).collect())
+        Ok(JsonCodec.encode(value, None)?.into_bytes().into_iter().map(|b| b as i64).collect())
     }
 
     /// `JsonUtf8Encoder([indent, toEncodable, bufferSize])`: a name with a
@@ -9403,6 +9403,18 @@ impl fmt::Display for Exception {
 /// call that returns the error already made is the shape that types.
 /// The concrete type survives the boxing, which is what lets `on
 /// NoSuchMethodError catch` downcast back to it.
+/// The same error by the class's *name*, for a member the compiler already
+/// knows nothing answers: the slot dispatch's arm for a class that has no
+/// `[]=` (`UninitializedLocaleData`, intl). Dart throws `NoSuchMethodError`
+/// there and a program can catch it; this used to be a `panic!` written by
+/// the front end (ws1079).
+pub fn dart_no_such_method_of(class_name: &str, name: &str) -> DartError {
+    std::rc::Rc::new(NoSuchMethodError::new(format!(
+        "Class '{}' has no instance member '{}'",
+        class_name, name
+    ))) as DartError
+}
+
 pub fn dart_no_such_method(object: std::rc::Rc<dyn DartAny>, name: String) -> DartError {
     std::rc::Rc::new(NoSuchMethodError::new(format!(
         "Class '{}' has no instance member '{}'",
@@ -9958,11 +9970,11 @@ impl JsonCodec {
         &self,
         value: V,
         _to_encodable: Option<std::rc::Rc<dyn Fn(Option<std::rc::Rc<dyn DartAny>>) -> Result<Option<std::rc::Rc<dyn DartAny>>, DartError>>>,
-    ) -> String {
+    ) -> Result<String, DartError> {
         let value: std::rc::Rc<dyn DartAny> = std::rc::Rc::new(value);
         let mut out = String::new();
-        json_write(&mut out, &value);
-        out
+        json_write(&mut out, &value)?;
+        Ok(out)
     }
 
     /// `json.decode(source, reviver: ..)`: what a translated `dynamic`
@@ -9971,13 +9983,17 @@ impl JsonCodec {
     /// text is Dart's `FormatException`, which the signature (no
     /// `Result`: the call is not a failing one to the front end) can only
     /// panic with.
-    pub fn decode(&self, source: String, reviver: Option<JsonReviver>) -> std::rc::Rc<dyn DartAny> {
+    pub fn decode(
+        &self,
+        source: String,
+        reviver: Option<JsonReviver>,
+    ) -> Result<std::rc::Rc<dyn DartAny>, DartError> {
         let mut parser = JsonParser { text: source.as_bytes(), at: 0, reviver };
         parser.skip_space();
-        let value = parser.value();
+        let value = parser.value()?;
         parser.skip_space();
         if parser.at != parser.text.len() {
-            parser.fail("Unexpected trailing text");
+            return Err(parser.fail("Unexpected trailing text"));
         }
         parser.revive(None, value)
     }
@@ -9985,19 +10001,22 @@ impl JsonCodec {
     /// `json.decoder`: a `Converter<String, Object?>` -- and `Object?` is a
     /// `dynamic` here, whose null is the `Null` object.
     pub fn decoder(&self) -> Converter<String, std::rc::Rc<dyn DartAny>> {
-        Converter::new(std::rc::Rc::new(|source: String| Ok(JsonCodec.decode(source, None))))
+        Converter::new(std::rc::Rc::new(|source: String| JsonCodec.decode(source, None)))
     }
 
     /// `json.encoder`: a `Converter<Object?, String>`.
     pub fn encoder(&self) -> Converter<std::rc::Rc<dyn DartAny>, String> {
-        Converter::new(std::rc::Rc::new(|value: std::rc::Rc<dyn DartAny>| Ok(JsonCodec.encode(value, None))))
+        Converter::new(std::rc::Rc::new(|value: std::rc::Rc<dyn DartAny>| JsonCodec.encode(value, None)))
     }
 }
 
 /// `Object? reviver(Object? key, Object? value)`, as translated code spells it.
 /// `dart:convert`'s top-level `jsonDecode(source, {reviver})`: the codec's
 /// (`flutter_localized_locales`' `_loadJSON`, run599).
-pub fn json_decode(source: String, reviver: Option<JsonReviver>) -> std::rc::Rc<dyn DartAny> {
+pub fn json_decode(
+    source: String,
+    reviver: Option<JsonReviver>,
+) -> Result<std::rc::Rc<dyn DartAny>, DartError> {
     JsonCodec.decode(source, reviver)
 }
 
@@ -10019,10 +10038,10 @@ pub fn json_encode<V: JsonPiece>(
     _to_encodable: Option<
         std::rc::Rc<dyn Fn(std::rc::Rc<dyn DartAny>) -> Result<std::rc::Rc<dyn DartAny>, DartError>>,
     >,
-) -> String {
+) -> Result<String, DartError> {
     let mut out = String::new();
-    value.json_write(&mut out);
-    out
+    value.json_write(&mut out)?;
+    Ok(out)
 }
 
 pub type JsonReviver = std::rc::Rc<
@@ -10036,12 +10055,12 @@ struct JsonParser<'a> {
 }
 
 impl<'a> JsonParser<'a> {
-    fn fail(&self, what: &str) -> ! {
-        panic!(
-            "uncaught Dart exception: FormatException: {} (at character {})",
-            what,
-            self.at + 1
-        )
+    /// The `FormatException` Dart's `jsonDecode` throws for malformed
+    /// input. It *returns* the error now: it used to be a `-> !` that
+    /// panicked, and `on FormatException catch` around `jsonDecode` is
+    /// ordinary Dart.
+    fn fail(&self, what: &str) -> DartError {
+        dart_format_exception(format!("{} (at character {})", what, self.at + 1))
     }
 
     fn peek(&self) -> Option<u8> {
@@ -10054,107 +10073,118 @@ impl<'a> JsonParser<'a> {
         }
     }
 
-    fn expect(&mut self, literal: &str) {
+    fn expect(&mut self, literal: &str) -> Result<(), DartError> {
         if self.text[self.at..].starts_with(literal.as_bytes()) {
             self.at += literal.len();
+            Ok(())
         } else {
-            self.fail(&format!("Expected '{}'", literal));
+            Err(self.fail(&format!("Expected '{}'", literal)))
         }
     }
 
     /// The reviver's say on one decoded value, if there is one.
-    fn revive(&self, key: Option<std::rc::Rc<dyn DartAny>>, value: std::rc::Rc<dyn DartAny>) -> std::rc::Rc<dyn DartAny> {
+    fn revive(
+        &self,
+        key: Option<std::rc::Rc<dyn DartAny>>,
+        value: std::rc::Rc<dyn DartAny>,
+    ) -> Result<std::rc::Rc<dyn DartAny>, DartError> {
         match &self.reviver {
-            None => value,
-            Some(reviver) => match reviver(key, dart_nullable(value)) {
-                Ok(revived) => revived.unwrap_or_else(|| std::rc::Rc::new(Null) as std::rc::Rc<dyn DartAny>),
-                Err(error) => panic!("uncaught Dart exception in a JSON reviver: {}", dart_error_text(&error)),
-            },
+            None => Ok(value),
+            // The reviver is Dart code and throws like any: its error is
+            // the decode's, not a panic.
+            Some(reviver) => Ok(reviver(key, dart_nullable(value))?
+                .unwrap_or_else(|| std::rc::Rc::new(Null) as std::rc::Rc<dyn DartAny>)),
         }
     }
 
-    fn value(&mut self) -> std::rc::Rc<dyn DartAny> {
+    fn value(&mut self) -> Result<std::rc::Rc<dyn DartAny>, DartError> {
         match self.peek() {
             Some(b'{') => self.object(),
             Some(b'[') => self.array(),
-            Some(b'"') => std::rc::Rc::new(self.string()) as std::rc::Rc<dyn DartAny>,
+            Some(b'"') => Ok(std::rc::Rc::new(self.string()?) as std::rc::Rc<dyn DartAny>),
             Some(b't') => {
-                self.expect("true");
-                std::rc::Rc::new(true) as std::rc::Rc<dyn DartAny>
+                self.expect("true")?;
+                Ok(std::rc::Rc::new(true) as std::rc::Rc<dyn DartAny>)
             }
             Some(b'f') => {
-                self.expect("false");
-                std::rc::Rc::new(false) as std::rc::Rc<dyn DartAny>
+                self.expect("false")?;
+                Ok(std::rc::Rc::new(false) as std::rc::Rc<dyn DartAny>)
             }
             Some(b'n') => {
-                self.expect("null");
-                std::rc::Rc::new(Null) as std::rc::Rc<dyn DartAny>
+                self.expect("null")?;
+                Ok(std::rc::Rc::new(Null) as std::rc::Rc<dyn DartAny>)
             }
             Some(b'-' | b'0'..=b'9') => self.number(),
-            Some(_) => self.fail("Unexpected character"),
-            None => self.fail("Unexpected end of input"),
+            Some(_) => Err(self.fail("Unexpected character")),
+            None => Err(self.fail("Unexpected end of input")),
         }
     }
 
-    fn object(&mut self) -> std::rc::Rc<dyn DartAny> {
+    fn object(&mut self) -> Result<std::rc::Rc<dyn DartAny>, DartError> {
         self.at += 1;
         let mut map: Map<String, std::rc::Rc<dyn DartAny>> = Map::new();
         self.skip_space();
         if self.peek() == Some(b'}') {
             self.at += 1;
-            return std::rc::Rc::new(map) as std::rc::Rc<dyn DartAny>;
+            return Ok(std::rc::Rc::new(map) as std::rc::Rc<dyn DartAny>);
         }
         loop {
             self.skip_space();
             if self.peek() != Some(b'"') {
-                self.fail("Expected string");
+                return Err(self.fail("Expected string"));
             }
-            let key = self.string();
+            let key = self.string()?;
             self.skip_space();
-            self.expect(":");
+            self.expect(":")?;
             self.skip_space();
-            let value = self.value();
-            let value = self.revive(Some(std::rc::Rc::new(key.clone()) as std::rc::Rc<dyn DartAny>), value);
+            let value = self.value()?;
+            let value = self.revive(
+                Some(std::rc::Rc::new(key.clone()) as std::rc::Rc<dyn DartAny>),
+                value,
+            )?;
             map.insert(key, value);
             self.skip_space();
             match self.peek() {
                 Some(b',') => self.at += 1,
                 Some(b'}') => {
                     self.at += 1;
-                    return std::rc::Rc::new(map) as std::rc::Rc<dyn DartAny>;
+                    return Ok(std::rc::Rc::new(map) as std::rc::Rc<dyn DartAny>);
                 }
-                _ => self.fail("Expected ',' or '}'"),
+                _ => return Err(self.fail("Expected ',' or '}'")),
             }
         }
     }
 
-    fn array(&mut self) -> std::rc::Rc<dyn DartAny> {
+    fn array(&mut self) -> Result<std::rc::Rc<dyn DartAny>, DartError> {
         self.at += 1;
         let mut list: Vec<std::rc::Rc<dyn DartAny>> = Vec::new();
         self.skip_space();
         if self.peek() == Some(b']') {
             self.at += 1;
-            return std::rc::Rc::new(list) as std::rc::Rc<dyn DartAny>;
+            return Ok(std::rc::Rc::new(list) as std::rc::Rc<dyn DartAny>);
         }
         loop {
             self.skip_space();
-            let value = self.value();
+            let value = self.value()?;
             let index = list.len() as i64;
-            let value = self.revive(Some(std::rc::Rc::new(index) as std::rc::Rc<dyn DartAny>), value);
+            let value = self.revive(
+                Some(std::rc::Rc::new(index) as std::rc::Rc<dyn DartAny>),
+                value,
+            )?;
             list.push(value);
             self.skip_space();
             match self.peek() {
                 Some(b',') => self.at += 1,
                 Some(b']') => {
                     self.at += 1;
-                    return std::rc::Rc::new(list) as std::rc::Rc<dyn DartAny>;
+                    return Ok(std::rc::Rc::new(list) as std::rc::Rc<dyn DartAny>);
                 }
-                _ => self.fail("Expected ',' or ']'"),
+                _ => return Err(self.fail("Expected ',' or ']'")),
             }
         }
     }
 
-    fn number(&mut self) -> std::rc::Rc<dyn DartAny> {
+    fn number(&mut self) -> Result<std::rc::Rc<dyn DartAny>, DartError> {
         let start = self.at;
         let mut integral = true;
         if self.peek() == Some(b'-') {
@@ -10183,37 +10213,37 @@ impl<'a> JsonParser<'a> {
         let text = std::str::from_utf8(&self.text[start..self.at]).unwrap_or("");
         if integral {
             if let Ok(i) = text.parse::<i64>() {
-                return std::rc::Rc::new(i) as std::rc::Rc<dyn DartAny>;
+                return Ok(std::rc::Rc::new(i) as std::rc::Rc<dyn DartAny>);
             }
         }
         match text.parse::<f64>() {
-            Ok(d) => std::rc::Rc::new(d) as std::rc::Rc<dyn DartAny>,
-            Err(_) => self.fail("Invalid number"),
+            Ok(d) => Ok(std::rc::Rc::new(d) as std::rc::Rc<dyn DartAny>),
+            Err(_) => Err(self.fail("Invalid number")),
         }
     }
 
-    fn hex4(&mut self) -> u32 {
+    fn hex4(&mut self) -> Result<u32, DartError> {
         let end = self.at + 4;
         if end > self.text.len() {
-            self.fail("Unterminated unicode escape");
+            return Err(self.fail("Unterminated unicode escape"));
         }
         let digits = std::str::from_utf8(&self.text[self.at..end]).unwrap_or("");
         match u32::from_str_radix(digits, 16) {
             Ok(code) => {
                 self.at = end;
-                code
+                Ok(code)
             }
-            Err(_) => self.fail("Invalid unicode escape"),
+            Err(_) => Err(self.fail("Invalid unicode escape")),
         }
     }
 
-    fn string(&mut self) -> String {
+    fn string(&mut self) -> Result<String, DartError> {
         self.at += 1;
         let mut out: Vec<u8> = Vec::new();
         loop {
             let byte = match self.peek() {
                 Some(b) => b,
-                None => self.fail("Unterminated string"),
+                None => return Err(self.fail("Unterminated string")),
             };
             self.at += 1;
             match byte {
@@ -10221,7 +10251,7 @@ impl<'a> JsonParser<'a> {
                 b'\\' => {
                     let escaped = match self.peek() {
                         Some(b) => b,
-                        None => self.fail("Unterminated string"),
+                        None => return Err(self.fail("Unterminated string")),
                     };
                     self.at += 1;
                     match escaped {
@@ -10234,12 +10264,12 @@ impl<'a> JsonParser<'a> {
                         b'r' => out.push(b'\r'),
                         b't' => out.push(b'\t'),
                         b'u' => {
-                            let mut code = self.hex4();
+                            let mut code = self.hex4()?;
                             if (0xD800..0xDC00).contains(&code)
                                 && self.text[self.at..].starts_with(b"\\u")
                             {
                                 self.at += 2;
-                                let low = self.hex4();
+                                let low = self.hex4()?;
                                 if (0xDC00..0xE000).contains(&low) {
                                     code = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00);
                                 } else {
@@ -10250,13 +10280,13 @@ impl<'a> JsonParser<'a> {
                             let mut buffer = [0u8; 4];
                             out.extend_from_slice(ch.encode_utf8(&mut buffer).as_bytes());
                         }
-                        _ => self.fail("Invalid escape"),
+                        _ => return Err(self.fail("Invalid escape")),
                     }
                 }
                 b => out.push(b),
             }
         }
-        String::from_utf8(out).unwrap_or_else(|_| self.fail("Invalid UTF-8"))
+        String::from_utf8(out).map_err(|_| self.fail("Invalid UTF-8"))
     }
 }
 
@@ -10854,7 +10884,10 @@ pub fn dart_cast_map<K: FromDynamic + DartEq, V: FromDynamic>(value: &std::rc::R
 /// `dynamic` key that is a string passes too), and a `dynamic`, which is
 /// asked what it holds (`json_write`).
 pub trait JsonPiece {
-    fn json_write(&self, out: &mut String);
+    /// `Result`, because Dart's encoder throws: a map key that is not a
+    /// string is `JsonUnsupportedObjectError`, and a program can catch it
+    /// (work.md step 6, the last three).
+    fn json_write(&self, out: &mut String) -> Result<(), DartError>;
 }
 
 fn json_write_string(out: &mut String, s: &str) {
@@ -10874,57 +10907,67 @@ fn json_write_string(out: &mut String, s: &str) {
 }
 
 impl JsonPiece for String {
-    fn json_write(&self, out: &mut String) {
-        json_write_string(out, self)
+    fn json_write(&self, out: &mut String) -> Result<(), DartError> {
+        json_write_string(out, self);
+        Ok(())
     }
 }
 impl JsonPiece for i64 {
-    fn json_write(&self, out: &mut String) {
-        out.push_str(&self.to_string())
+    fn json_write(&self, out: &mut String) -> Result<(), DartError> {
+        out.push_str(&self.to_string());
+        Ok(())
     }
 }
 impl JsonPiece for f64 {
-    fn json_write(&self, out: &mut String) {
-        out.push_str(&self.to_string())
+    fn json_write(&self, out: &mut String) -> Result<(), DartError> {
+        out.push_str(&self.to_string());
+        Ok(())
     }
 }
 impl JsonPiece for bool {
-    fn json_write(&self, out: &mut String) {
-        out.push_str(if *self { "true" } else { "false" })
+    fn json_write(&self, out: &mut String) -> Result<(), DartError> {
+        out.push_str(if *self { "true" } else { "false" });
+        Ok(())
     }
 }
 impl JsonPiece for Null {
-    fn json_write(&self, out: &mut String) {
-        out.push_str("null")
+    fn json_write(&self, out: &mut String) -> Result<(), DartError> {
+        out.push_str("null");
+        Ok(())
     }
 }
 impl JsonPiece for () {
-    fn json_write(&self, out: &mut String) {
-        out.push_str("null")
+    fn json_write(&self, out: &mut String) -> Result<(), DartError> {
+        out.push_str("null");
+        Ok(())
     }
 }
 impl<T: JsonPiece> JsonPiece for Option<T> {
-    fn json_write(&self, out: &mut String) {
+    fn json_write(&self, out: &mut String) -> Result<(), DartError> {
         match self {
             Some(v) => v.json_write(out),
-            None => out.push_str("null"),
+            None => {
+                out.push_str("null");
+                Ok(())
+            }
         }
     }
 }
 impl<T: JsonPiece> JsonPiece for Vec<T> {
-    fn json_write(&self, out: &mut String) {
+    fn json_write(&self, out: &mut String) -> Result<(), DartError> {
         out.push('[');
         for (i, v) in self.iter().enumerate() {
             if i > 0 {
                 out.push(',');
             }
-            v.json_write(out);
+            v.json_write(out)?;
         }
         out.push(']');
+        Ok(())
     }
 }
 impl<K: JsonKey, V: JsonPiece> JsonPiece for Map<K, V> {
-    fn json_write(&self, out: &mut String) {
+    fn json_write(&self, out: &mut String) -> Result<(), DartError> {
         out.push('{');
         let mut first = true;
         for (k, v) in self.entries.iter() {
@@ -10932,15 +10975,16 @@ impl<K: JsonKey, V: JsonPiece> JsonPiece for Map<K, V> {
                 out.push(',');
             }
             first = false;
-            json_write_string(out, &k.json_key());
+            json_write_string(out, &k.json_key()?);
             out.push(':');
-            v.json_write(out);
+            v.json_write(out)?;
         }
         out.push('}');
+        Ok(())
     }
 }
 impl JsonPiece for std::rc::Rc<dyn DartAny> {
-    fn json_write(&self, out: &mut String) {
+    fn json_write(&self, out: &mut String) -> Result<(), DartError> {
         json_write(out, self)
     }
 }
@@ -10948,28 +10992,40 @@ impl JsonPiece for std::rc::Rc<dyn DartAny> {
 /// A map's key as JSON's string: a `String`, or a `dynamic` holding one
 /// (Dart's encoder refuses any other key).
 pub trait JsonKey {
-    fn json_key(&self) -> String;
+    fn json_key(&self) -> Result<String, DartError>;
 }
 impl JsonKey for String {
-    fn json_key(&self) -> String {
-        self.clone()
+    fn json_key(&self) -> Result<String, DartError> {
+        Ok(self.clone())
     }
 }
 impl JsonKey for std::rc::Rc<dyn DartAny> {
-    fn json_key(&self) -> String {
+    fn json_key(&self) -> Result<String, DartError> {
         match self.as_any().downcast_ref::<String>() {
-            Some(s) => s.clone(),
-            None => panic!("uncaught Dart exception: JsonUnsupportedObjectError: a map key of type '{}'", self.runtime_type().name),
+            Some(s) => Ok(s.clone()),
+            None => Err(json_unsupported(format!(
+                "a map key of type '{}'",
+                self.runtime_type().name
+            ))),
         }
     }
 }
 impl<K: JsonKey> JsonKey for Option<K> {
-    fn json_key(&self) -> String {
+    fn json_key(&self) -> Result<String, DartError> {
         match self {
             Some(k) => k.json_key(),
-            None => panic!("uncaught Dart exception: JsonUnsupportedObjectError: a null map key"),
+            None => Err(json_unsupported("a null map key".to_string())),
         }
     }
+}
+
+/// Dart's `JsonUnsupportedObjectError`, which its encoder throws for a key
+/// or a value it cannot write. An `Error`, and catchable.
+fn json_unsupported(what: String) -> DartError {
+    std::rc::Rc::new(Error::new(format!(
+        "JsonUnsupportedObjectError: {}",
+        what
+    ))) as DartError
 }
 
 /// A `dynamic` written as JSON: asked, by type, for each shape a value
@@ -10982,8 +11038,7 @@ macro_rules! json_dynamic_shapes {
     ($out:ident, $any:ident; $($t:ty),* $(,)?) => {
         $(
             if let Some(v) = $any.downcast_ref::<$t>() {
-                v.json_write($out);
-                return;
+                return v.json_write($out);
             }
         )*
     };
@@ -10997,7 +11052,7 @@ macro_rules! json_dynamic_containers {
     };
 }
 
-fn json_write(out: &mut String, value: &std::rc::Rc<dyn DartAny>) {
+fn json_write(out: &mut String, value: &std::rc::Rc<dyn DartAny>) -> Result<(), DartError> {
     let any = value.as_any();
     json_dynamic_shapes!(out, any; String, i64, f64, bool, Null, (), Option<std::rc::Rc<dyn DartAny>>, Option<String>, Option<i64>, Option<f64>, Option<bool>);
     json_dynamic_containers!(out, any; std::rc::Rc<dyn DartAny>, Option<std::rc::Rc<dyn DartAny>>, String, Option<String>, i64, Option<i64>, f64, Option<f64>, bool, Option<bool>);
