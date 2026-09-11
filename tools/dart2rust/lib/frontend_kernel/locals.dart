@@ -1364,7 +1364,11 @@ augment class KernelFrontend {
     }
     final element = _iterableElement(static);
     if (element == null) return lowered;
-    return IrCall(lowered, '__to_list', const [])
+    // `fails`: the walk calls `iterator`, which is a Dart getter and can
+    // throw. The shim used to swallow that into
+    // `panic!("uncaught Dart exception")` because its signature said
+    // `-> Vec<E>`; it returns `Result` now, so the call propagates.
+    return IrCall(lowered, '__to_list', const [], fails: true)
       ..rustType = IrType('List', arguments: [_typeNested(element)]);
   }
 

@@ -461,7 +461,7 @@ augment class RustBackend {
         // `List<ValueChanged<..>>.of(_listeners)`).
         final own = have == null ? null : library[have.name];
         if (own?.iterableElement != null) {
-          return '${expr(args[0])}.__to_list()';
+          return '${expr(args[0])}.__to_list()$_propagate';
         }
         return have != null && have.name != 'List' && !have.isFunction
             ? '${expr(args[0])}.to_list()'

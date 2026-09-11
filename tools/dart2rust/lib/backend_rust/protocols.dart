@@ -203,17 +203,23 @@ augment class RustBackend {
     // Not a failing call: a `for-in` and a chain read the list where no
     // `?` can go, so a failing `iterator` getter is an uncaught exception
     // here, as it would be in Dart.
+    // `iterator` can throw, so the walk can, so `__to_list` says so. The
+    // signature is this compiler's own -- no Dart member is called
+    // `__to_list` -- and it used to be `-> Vec<E>`, which left the
+    // `Result` nowhere to go and `panic!("uncaught Dart exception")` as the
+    // only way out (work.md step 5).
     final fetched = getter.fails
-        ? 'match self.iterator() { Ok(__it) => __it, Err(__e) => panic!("uncaught Dart exception: {}", dart_str(&__e)) }'
+        ? 'self.iterator()${_resultModel ? '?' : ''}'
         : 'self.iterator()';
     final element_ = type(element);
     // `__to_list`, a name no Dart member has: `ObserverList` overrides
     // `toList` itself, and the walker beside it was a duplicate (E0592,
     // ws500).
     _line(
-      'pub fn __to_list(&self) -> Vec<$element_> { '
+      'pub fn __to_list(&self) -> ${_wrapped('Vec<$element_>')} { '
       'let __it = $fetched; let mut __out: Vec<$element_> = Vec::new(); '
-      'while __it.move_next() { __out.push(__it.current()); } __out }',
+      'while __it.move_next() { __out.push(__it.current()); } '
+      '${_resultModel ? 'Ok(__out)' : '__out'} }',
     );
   }
 
@@ -231,14 +237,13 @@ augment class RustBackend {
     // bare `self.iterator()` is then ambiguous (`TypedDataBuffer`, E0034 at
     // ws783).
     final own = '<Self as ${cls.name}${_useArguments(cls)}>::iterator(self)';
-    final fetched = _resultModel
-        ? 'match $own { Ok(__it) => __it, Err(__e) => panic!("uncaught Dart exception: {}", dart_str(&__e)) }'
-        : own;
+    final fetched = _resultModel ? '$own?' : own;
     final element_ = type(element);
     _line(
-      'fn __to_list(&self) -> Vec<$element_> { '
+      'fn __to_list(&self) -> ${_wrapped('Vec<$element_>')} { '
       'let __it = $fetched; let mut __out: Vec<$element_> = Vec::new(); '
-      'while __it.move_next() { __out.push(__it.current()); } __out }',
+      'while __it.move_next() { __out.push(__it.current()); } '
+      '${_resultModel ? 'Ok(__out)' : '__out'} }',
     );
     _line('');
   }
