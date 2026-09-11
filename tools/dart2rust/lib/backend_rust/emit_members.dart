@@ -94,6 +94,11 @@ augment class RustBackend {
         _out[signatureAt] = _out[signatureAt].replaceFirst('const fn ', 'fn ');
       }
       _line('');
+      // A redirecting constructor needs its `_const` twin too: it is a
+      // constructor like any other, and a constant may name it. Emitting the
+      // twin only on the path below left `AutofillConfiguration::new_const`
+      // unwritten while the constant called it (ws1066).
+      _emitConstTwin(ctor, name, params);
       return;
     }
     for (final check in ctor.asserts) {
@@ -322,6 +327,34 @@ augment class RustBackend {
         _out.sublist(signatureAt + 1).any((l) => l.contains('.clone()'))) {
       _out[signatureAt] = _out[signatureAt].replaceFirst('const fn ', 'fn ');
     }
+    _line('');
+    _emitConstTwin(ctor, name, params);
+  }
+
+  /// The `_const` twin of a constructor, for a class carrying an identity
+  /// token.
+  ///
+  /// A constant of such a class must not carry a token: Dart canonicalises
+  /// constants, so two `const X(1)` are one object, and a fresh token per
+  /// construction would make them two. The front end could emit the constant
+  /// as a struct literal instead -- and did, at ws1064 -- but that writes
+  /// every field of every constant out longhand, and `ThemeData`'s constants
+  /// are enormous: the gallery's translate went from minutes to the better
+  /// part of an hour. This keeps the constant a compact call and clears the
+  /// token afterwards, which is the same answer for a fraction of the text.
+  void _emitConstTwin(IrConstructor ctor, String name, String params) {
+    if (!cls.identityToken) return;
+    final args = ctor.params.map((p) => snake(p.name)).join(', ');
+    _line(
+      '${_vis(ctor.name ?? cls.name)}fn ${name}_const($params) '
+      '-> ${_wrapped('Self')} {',
+    );
+    _indent++;
+    _line('let mut __v = Self::$name($args)$_propagate;');
+    _line('__v.__identity = None;');
+    _line(_resultModel ? 'Ok(__v)' : '__v');
+    _indent--;
+    _line('}');
     _line('');
   }
 

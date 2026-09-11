@@ -185,18 +185,24 @@ augment class KernelFrontend {
         for (final e in constant.fieldValues.entries)
           e.key.asField.name.text: e.value,
       };
-      // ..except where the class carries an identity token. Rebuilding a
-      // constant as a constructor call would run the constructor, and the
-      // constructor mints a *fresh* token -- so two `const X(1)`, which Dart
-      // canonicalises into one object, would come out as two. A constant has
-      // to stay a constant there: the struct literal carries
-      // `__identity: None`, and two tokenless values of a class compare by
-      // their fields, which for a canonicalised constant is what `identical`
-      // means (see `IrClass.identityToken`). The rebuild is only ever an
-      // optimisation for readability; this is the one place it is wrong.
-      final rebuilt = _carriesIdentityToken(cls)
-          ? null
-          : _asConstructorCall(cls, byName, node, constant.typeArguments);
+      // ..through the `_const` twin where the class carries an identity
+      // token. The ordinary constructor mints a *fresh* token, so two
+      // `const X(1)` -- which Dart canonicalises into one object -- would
+      // come out as two; the twin clears it, and two tokenless values of a
+      // class compare by their fields, which for a canonicalised constant is
+      // what `identical` means (see `IrClass.identityToken`).
+      //
+      // Refusing the rebuild outright also works and is what ws1064 did, but
+      // it writes every field of every constant out longhand, and
+      // `ThemeData`'s constants are enormous: the translate went from minutes
+      // to the better part of an hour.
+      final rebuilt = _asConstructorCall(
+        cls,
+        byName,
+        node,
+        constant.typeArguments,
+        constTwin: _carriesIdentityToken(cls),
+      );
       if (rebuilt != null) {
         return _isOpen(cls)
             ? IrUpcast(
@@ -269,8 +275,9 @@ augment class KernelFrontend {
     Class cls,
     Map<String, Constant> byName,
     Expression node,
-    List<DartType> typeArguments,
-  ) {
+    List<DartType> typeArguments, {
+    bool constTwin = false,
+  }) {
     final ctor = cls.constructors.where((c) => c.name.text.isEmpty).toList();
     if (ctor.length != 1) return null;
     // Positional **and** named, in that order, because that is the order
@@ -361,7 +368,11 @@ augment class KernelFrontend {
           value is! NullConstant;
       args.add(wraps ? IrSome(lowered) : lowered);
     }
-    return IrNew(_constantType(cls, typeArguments), args);
+    return IrNew(
+      _constantType(cls, typeArguments),
+      args,
+      constructor: constTwin ? 'new_const' : null,
+    );
   }
 
   /// The type of a rebuilt constant, type arguments and all.

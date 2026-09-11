@@ -525,7 +525,16 @@ augment class KernelFrontend {
   /// read with `get()`. `Copy` is the promise that a bitwise duplicate is a
   /// *new* value, the opposite of what a token says, and taking it away cost
   /// 43 stubs for one refusal when it was measured (ws1060).
+  /// Cached, and that is not an optimisation. `constants.dart` asks this of
+  /// every constant in the program, and answering walks the class's fields
+  /// and its superclass chain: uncached it took the gallery's translate past
+  /// forty minutes, the same way `_appliedClosures` did at ws1056.
+  static final _identityTokenCache = <Class, bool>{};
+
   bool _carriesIdentityToken(Class node) =>
+      _identityTokenCache.putIfAbsent(node, () => _computeIdentityToken(node));
+
+  bool _computeIdentityToken(Class node) =>
       identityObserved.contains(node) &&
       !_countedClass(node) &&
       !node.isEnum &&
