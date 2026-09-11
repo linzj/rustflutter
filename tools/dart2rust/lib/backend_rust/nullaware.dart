@@ -377,16 +377,19 @@ augment class RustBackend {
     if (owner == 'Isolate' && name == 'run' && args.isNotEmpty) {
       return 'future_new(${expr(args.first)})';
     }
-    // `int.parse` and `double.parse`. Dart's throw on bad input and its
-    // `tryParse` returns null, which is `ok()`; `unwrap()` keeps the throw
-    // loud rather than turning it into a zero.
+    // `int.parse` and `double.parse`, through the prelude's own, which
+    // throw Dart's `FormatException` -- catchable, where Rust's
+    // `str::parse().unwrap()` was a panic (ws1076). The prelude's also know
+    // what Dart accepts (a leading `0x`, a sign) and `tryParse` is the same
+    // parse without the throw.
     if (owner == 'int' || owner == 'double') {
-      final rust = owner == 'int' ? 'i64' : 'f64';
+      final parse = owner == 'int' ? 'dart_parse_int' : 'dart_parse_double';
       if (name == 'parse' && args.length == 1) {
-        return '${expr(args.single)}.parse::<$rust>().unwrap()';
+        return '$parse(${expr(args.single)})$_propagate';
       }
       if (name == 'tryParse' && args.length == 1) {
-        return '${expr(args.single)}.parse::<$rust>().ok()';
+        return '${parse.replaceFirst('dart_', 'dart_try_')}'
+            '(${expr(args.single)})';
       }
       throw Unsupported('`$owner.$name`', '$owner.$name(..)');
     }

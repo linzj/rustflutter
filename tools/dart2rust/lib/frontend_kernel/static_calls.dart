@@ -115,7 +115,10 @@ augment class KernelFrontend {
       final named = node.arguments.named;
       final head = target.name.text == 'parse' ? 'parse' : 'try_parse';
       if (named.isEmpty) {
-        return IrStaticCall(null, '${head}_$owner', [
+        // By a `dart_`-prefixed name: a Dart top-level `parseInt` snake-cases
+        // to `parse_int` and shadowed the prelude's, so `int.parse(s)` inside
+        // it called *itself* (the preludethrows fixture, ws1076).
+        return IrStaticCall(null, 'dart_${head}_$owner', [
           expression(positional[0]),
         ]);
       }
@@ -124,7 +127,7 @@ augment class KernelFrontend {
       // (`DefaultMaterialLocalizations.parseCompactDate`, refused since it
       // was written).
       if (owner == 'int' && named.length == 1 && named.single.name == 'radix') {
-        return IrStaticCall(null, '${head}_int_radix', [
+        return IrStaticCall(null, 'dart_${head}_int_radix', [
           expression(positional[0]),
           coerce(
             expression(named.single.value),

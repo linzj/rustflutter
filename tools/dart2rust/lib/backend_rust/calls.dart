@@ -669,20 +669,25 @@ augment class RustBackend {
       'LinkedHashSet',
       'HashSet',
     };
+    // An empty one has no first and no last, and Dart throws `Bad state:
+    // No element` for both. The prelude says `Result` for the queue-like
+    // receivers since ws1076; the `Vec` ones used to index -- `xs[0]` on an
+    // empty `Vec` is a bounds panic, which is the same path lost a
+    // different way.
     if ((name == 'first' || name == 'last') &&
         args.isEmpty &&
         queueLike.contains(target?.rustType?.name ?? '')) {
-      return '$receiver.$name()';
+      return '$receiver.$name()$_propagate';
     }
     if (name == 'first' &&
         args.isEmpty &&
         library[receiverClass ?? ''] == null) {
-      return '$receiver[0].clone()';
+      return '$receiver.first().cloned().ok_or_else(dart_no_element)$_propagate';
     }
     // Cloned out, as `first` is: an element used by value moved out of
     // the `Vec` (`_requestTabTraversalFocus(sortedNodes.last)`, ws522).
     if (name == 'last' && args.isEmpty) {
-      return '$receiver[$receiver.len() - 1].clone()';
+      return '$receiver.last().cloned().ok_or_else(dart_no_element)$_propagate';
     }
     // A function local behind its handle, lent to an `impl Fn` slot: the
     // closure inside (`&*f`; a handle is not a function to Rust).

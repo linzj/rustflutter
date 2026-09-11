@@ -958,6 +958,20 @@ augment class RustBackend {
     'run_guarded',
     'run_unary_guarded',
     'run_unary',
+    // `first`/`last`/`single` on an empty iterable, `reduce` on one, and
+    // `fill_range(.., null)` on a list of non-nullables: Dart throws for
+    // each, and the prelude says `Result` for each since ws1076.
+    'first',
+    'last',
+    'single',
+    'fill_range',
+    // `LinkedListEntry.insertAfter`/`insertBefore` on an entry that is in
+    // no list: Dart's `StateError`.
+    'insert_after',
+    'insert_before',
+    // `Queue.removeFirst()`/`removeLast()` on an empty queue.
+    'remove_first',
+    'remove_last',
   };
 
   /// The prelude methods whose callback parameter is `impl Fn`: it is
@@ -1014,6 +1028,10 @@ augment class RustBackend {
   /// Dart name at a top-level call and with the snake one elsewhere, and
   /// `_invoke1_with_return` beside it is already the snake spelling.
   static const _preludeFailingStatics = {
+    // `int.parse`/`double.parse`: Dart's `FormatException` (ws1076).
+    'dart_parse_int',
+    'dart_parse_int_radix',
+    'dart_parse_double',
     'generate',
     '_invoke1_with_return',
     'runZonedGuarded',

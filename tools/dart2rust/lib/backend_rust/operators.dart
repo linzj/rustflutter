@@ -208,7 +208,9 @@ augment class RustBackend {
         '>>' => 'dart_shr',
         _ => 'dart_ushr',
       };
-      return '$helper((${expr(left)}) as i64, (${expr(right)}) as i64)';
+      // A negative shift count is Dart's `ArgumentError` (ws1076).
+      return '$helper((${expr(left)}) as i64, (${expr(right)}) as i64)'
+          '$_propagate';
     }
     if (!passthrough.contains(op)) {
       throw Unsupported('binary operator `$op`', '${expr(left)} $op ...');

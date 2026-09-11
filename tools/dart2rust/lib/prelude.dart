@@ -2085,7 +2085,7 @@ impl<T: Clone> Set<T> {    /// `LinkedHashSet.of(elements)` / `Set.of(elements)`
                 return Ok(x.clone());
             }
         }
-        panic!("uncaught Dart exception: Bad state: No element")
+        Err(dart_no_element())
     }
 
     pub fn first_where_or<F: Fn(T) -> Result<bool, DartError>, G: Fn() -> Result<T, DartError>>(&self, test: F, or_else: G) -> Result<T, DartError> {
@@ -2105,14 +2105,14 @@ impl<T: Clone> Set<T> {    /// `LinkedHashSet.of(elements)` / `Set.of(elements)`
 
 impl<T: DartEq + Clone> Set<T> {
     /// `single`: the one element; Dart's `StateError` for none or more.
-    pub fn single(&self) -> T
+    pub fn single(&self) -> Result<T, DartError>
     where
         T: Clone,
     {
         match self.items.len() {
-            1 => self.items[0].clone(),
-            0 => panic!("uncaught Dart exception: Bad state: No element"),
-            _ => panic!("uncaught Dart exception: Bad state: Too many elements"),
+            1 => Ok(self.items[0].clone()),
+            0 => Err(dart_no_element()),
+            _ => Err(dart_too_many_elements()),
         }
     }
 
@@ -2707,18 +2707,12 @@ impl<K: DartEq, V> Map<K, V> {
 /// on an empty set, as Dart throws (`BorderDirectional.paint` reads
 /// `_distinctVisibleColors().first`, run743).
 impl<T: Clone> Set<T> {
-    pub fn first(&self) -> T {
-        self.items
-            .first()
-            .cloned()
-            .unwrap_or_else(|| panic!("uncaught Dart exception: Bad state: No element"))
+    pub fn first(&self) -> Result<T, DartError> {
+        self.items.first().cloned().ok_or_else(dart_no_element)
     }
 
-    pub fn last(&self) -> T {
-        self.items
-            .last()
-            .cloned()
-            .unwrap_or_else(|| panic!("uncaught Dart exception: Bad state: No element"))
+    pub fn last(&self) -> Result<T, DartError> {
+        self.items.last().cloned().ok_or_else(dart_no_element)
     }
 }
 
@@ -3517,11 +3511,44 @@ impl<T: ?Sized + DartAny> RcHashCode for std::rc::Rc<T> {
 }
 
 /// `int.parse(s)`: Dart's, which throws a `FormatException` on anything else.
-pub fn parse_int(text: String) -> i64 {
+pub fn parse_int(text: String) -> Result<i64, DartError> {
     match try_parse_int(text.clone()) {
-        Some(v) => v,
-        None => panic!("uncaught Dart exception: FormatException: Invalid radix-10 number: {}", text),
+        Some(v) => Ok(v),
+        None => Err(dart_format_exception(format!(
+            "Invalid radix-10 number: {}",
+            text
+        ))),
     }
+}
+
+/// `int.parse(s)` and `double.parse(s)` as the *emitter* spells them.
+///
+/// By a `dart_`-prefixed name, which is this prelude's convention for a free
+/// function generated code calls: a Dart top-level `String parseInt(text)`
+/// snake-cases to `parse_int` and would shadow the one next door -- the
+/// preludethrows fixture caught exactly that, calling itself (ws1076).
+pub fn dart_parse_int(text: String) -> Result<i64, DartError> {
+    parse_int(text)
+}
+
+pub fn dart_parse_double(text: String) -> Result<f64, DartError> {
+    parse_double(text)
+}
+
+pub fn dart_try_parse_int(text: String) -> Option<i64> {
+    try_parse_int(text)
+}
+
+pub fn dart_try_parse_double(text: String) -> Option<f64> {
+    try_parse_double(text)
+}
+
+pub fn dart_parse_int_radix(text: String, radix: Option<i64>) -> Result<i64, DartError> {
+    parse_int_radix(text, radix)
+}
+
+pub fn dart_try_parse_int_radix(text: String, radix: Option<i64>) -> Option<i64> {
+    try_parse_int_radix(text, radix)
 }
 
 /// `int.tryParse(s)`: an optional sign and decimal digits, or `0x` hex.
@@ -3553,17 +3580,17 @@ pub fn try_parse_int_radix(text: String, radix: Option<i64>) -> Option<i64> {
     }
 }
 
-pub fn parse_int_radix(text: String, radix: Option<i64>) -> i64 {
+pub fn parse_int_radix(text: String, radix: Option<i64>) -> Result<i64, DartError> {
     match try_parse_int_radix(text.clone(), radix) {
-        Some(value) => value,
-        None => panic!("uncaught Dart exception: FormatException: {}", text),
+        Some(value) => Ok(value),
+        None => Err(dart_format_exception(text)),
     }
 }
 
-pub fn parse_double(text: String) -> f64 {
+pub fn parse_double(text: String) -> Result<f64, DartError> {
     match try_parse_double(text.clone()) {
-        Some(v) => v,
-        None => panic!("uncaught Dart exception: FormatException: Invalid double {}", text),
+        Some(v) => Ok(v),
+        None => Err(dart_format_exception(format!("Invalid double {}", text))),
     }
 }
 
@@ -3597,8 +3624,8 @@ impl<T: DartAny> RcHashCode for Option<T> {
 /// `Queue`'s own methods, by their Dart names.
 pub trait DartQueue<T> {
     fn length(&self) -> i64;
-    fn remove_first(&mut self) -> T;
-    fn remove_last(&mut self) -> T;
+    fn remove_first(&mut self) -> Result<T, DartError>;
+    fn remove_last(&mut self) -> Result<T, DartError>;
     fn add_first(&mut self, value: T);
     fn add_last(&mut self, value: T);
     /// `queue.add(x)`: at the end (`Navigator`'s `_observedRouteAdditions`, ws503).
@@ -3612,17 +3639,17 @@ pub trait DartQueue<T> {
 
 /// `first`, `last`, `toList()` on a `Queue`: copies, so `T: Clone`.
 pub trait DartQueueRead<T> {
-    fn first(&self) -> T;
-    fn last(&self) -> T;
+    fn first(&self) -> Result<T, DartError>;
+    fn last(&self) -> Result<T, DartError>;
     fn to_list(&self) -> Vec<T>;
 }
 
 impl<T: Clone> DartQueueRead<T> for std::collections::VecDeque<T> {
-    fn first(&self) -> T {
-        self.front().cloned().unwrap_or_else(|| panic!("uncaught Dart exception: Bad state: No element"))
+    fn first(&self) -> Result<T, DartError> {
+        self.front().cloned().ok_or_else(dart_no_element)
     }
-    fn last(&self) -> T {
-        self.back().cloned().unwrap_or_else(|| panic!("uncaught Dart exception: Bad state: No element"))
+    fn last(&self) -> Result<T, DartError> {
+        self.back().cloned().ok_or_else(dart_no_element)
     }
     fn to_list(&self) -> Vec<T> {
         self.iter().cloned().collect()
@@ -3645,11 +3672,11 @@ impl<T> DartQueue<T> for std::collections::VecDeque<T> {
     fn clear(&mut self) {
         std::collections::VecDeque::clear(self)
     }
-    fn remove_first(&mut self) -> T {
-        self.pop_front().expect("removeFirst on an empty Queue")
+    fn remove_first(&mut self) -> Result<T, DartError> {
+        self.pop_front().ok_or_else(dart_no_element)
     }
-    fn remove_last(&mut self) -> T {
-        self.pop_back().expect("removeLast on an empty Queue")
+    fn remove_last(&mut self) -> Result<T, DartError> {
+        self.pop_back().ok_or_else(dart_no_element)
     }
     fn add_first(&mut self, value: T) {
         self.push_front(value)
@@ -3859,11 +3886,11 @@ impl<'a, T: Clone + LinkedListEntryKey + 'static> IntoIterator for &'a LinkedLis
 }
 
 impl<T: Clone + LinkedListEntryKey + 'static> DartQueueRead<T> for LinkedList<T> {
-    fn first(&self) -> T {
-        self.state.borrow().front().cloned().unwrap_or_else(|| panic!("uncaught Dart exception: Bad state: No element"))
+    fn first(&self) -> Result<T, DartError> {
+        self.state.borrow().front().cloned().ok_or_else(dart_no_element)
     }
-    fn last(&self) -> T {
-        self.state.borrow().back().cloned().unwrap_or_else(|| panic!("uncaught Dart exception: Bad state: No element"))
+    fn last(&self) -> Result<T, DartError> {
+        self.state.borrow().back().cloned().ok_or_else(dart_no_element)
     }
     fn to_list(&self) -> Vec<T> {
         self.state.borrow().iter().cloned().collect()
@@ -3890,15 +3917,15 @@ impl<T: Clone + LinkedListEntryKey + 'static> DartQueue<T> for LinkedList<T> {
         }
         self.state.borrow_mut().clear()
     }
-    fn remove_first(&mut self) -> T {
-        let first = self.first();
+    fn remove_first(&mut self) -> Result<T, DartError> {
+        let first = self.first()?;
         self.remove(first.clone());
-        first
+        Ok(first)
     }
-    fn remove_last(&mut self) -> T {
-        let last = self.last();
+    fn remove_last(&mut self) -> Result<T, DartError> {
+        let last = self.last()?;
         self.remove(last.clone());
-        last
+        Ok(last)
     }
     fn add_first(&mut self, value: T) {
         self.insert_at(0, value)
@@ -3921,8 +3948,8 @@ pub trait LinkedListEntry: Sized {
     fn list(&self) -> Option<LinkedList<Self>>;
     fn next(&self) -> Option<Self>;
     fn previous(&self) -> Option<Self>;
-    fn insert_after(&self, entry: Self);
-    fn insert_before(&self, entry: Self);
+    fn insert_after(&self, entry: Self) -> Result<(), DartError>;
+    fn insert_before(&self, entry: Self) -> Result<(), DartError>;
     fn unlink(&self);
 }
 
@@ -3953,15 +3980,25 @@ impl<E: ?Sized + DartLinkedEntry + 'static> LinkedListEntry for std::rc::Rc<E> {
         let out = list.state.borrow().get(i - 1).cloned();
         out
     }
-    fn insert_after(&self, entry: Self) {
-        let list = self.list().unwrap_or_else(|| panic!("uncaught Dart exception: Bad state: insertAfter on an entry not in a list"));
-        let i = list.position(self).unwrap_or_else(|| panic!("uncaught Dart exception: Bad state: entry not in its list"));
+    fn insert_after(&self, entry: Self) -> Result<(), DartError> {
+        let list = self
+            .list()
+            .ok_or_else(|| dart_state_error("insertAfter on an entry not in a list"))?;
+        let i = list
+            .position(self)
+            .ok_or_else(|| dart_state_error("entry not in its list"))?;
         list.insert_at(i + 1, entry);
+        Ok(())
     }
-    fn insert_before(&self, entry: Self) {
-        let list = self.list().unwrap_or_else(|| panic!("uncaught Dart exception: Bad state: insertBefore on an entry not in a list"));
-        let i = list.position(self).unwrap_or_else(|| panic!("uncaught Dart exception: Bad state: entry not in its list"));
+    fn insert_before(&self, entry: Self) -> Result<(), DartError> {
+        let list = self
+            .list()
+            .ok_or_else(|| dart_state_error("insertBefore on an entry not in a list"))?;
+        let i = list
+            .position(self)
+            .ok_or_else(|| dart_state_error("entry not in its list"))?;
         list.insert_at(i, entry);
+        Ok(())
     }
     fn unlink(&self) {
         if let Some(list) = self.list() {
@@ -4399,7 +4436,8 @@ pub trait DartList<T> {
     /// value. Dart declares `fill` as `E?` and the front end fills the
     /// slot, so it arrives as an `Option`; Dart itself throws for a null
     /// fill into a `List<E>`, and so does this.
-    fn fill_range(&mut self, start: i64, end: i64, fill: Option<T>);
+    fn fill_range(&mut self, start: i64, end: i64, fill: Option<T>)
+    -> Result<(), DartError>;
     /// `indexWhere(test, [start])`: the first index at or after `start`
     /// whose element passes, -1 when none does.
     fn index_where<F: Fn(T) -> Result<bool, DartError>>(&self, test: F, start: i64) -> Result<i64, DartError>;
@@ -4422,7 +4460,7 @@ pub trait DartList<T> {
     /// `dart:collection`'s `IterableExtensions`: `firstOrNull`,
     /// `lastOrNull`, `singleOrNull`, `elementAtOrNull`.
     /// `single`: the one element; Dart's `StateError` for none or more.
-    fn single(&self) -> T;
+    fn single(&self) -> Result<T, DartError>;
     fn first_or_null(&self) -> Option<T>;
     fn last_or_null(&self) -> Option<T>;
     fn single_or_null(&self) -> Option<T>;
@@ -4454,7 +4492,7 @@ impl<T: Clone> DartList<T> for Vec<T> {
                 *slot = value;
                 Ok(())
             }
-            None => panic!("uncaught Dart exception: Bad state: No element"),
+            None => Err(dart_no_element()),
         }
     }
     fn length(&self) -> i64 {
@@ -4478,11 +4516,11 @@ impl<T: Clone> DartList<T> for Vec<T> {
         Ok(())
     }
 
-    fn single(&self) -> T {
+    fn single(&self) -> Result<T, DartError> {
         match self.len() {
-            1 => self[0].clone(),
-            0 => panic!("uncaught Dart exception: Bad state: No element"),
-            _ => panic!("uncaught Dart exception: Bad state: Too many elements"),
+            1 => Ok(self[0].clone()),
+            0 => Err(dart_no_element()),
+            _ => Err(dart_too_many_elements()),
         }
     }
 
@@ -4597,7 +4635,7 @@ impl<T: Clone> DartList<T> for Vec<T> {
         let mut items = self.iter();
         let mut out = match items.next() {
             Some(first) => first.clone(),
-            None => panic!("uncaught Dart exception: Bad state: No element"),
+            None => return Err(dart_no_element()),
         };
         for x in items {
             out = combine(out, x.clone())?;
@@ -4613,15 +4651,18 @@ impl<T: Clone> DartList<T> for Vec<T> {
         }
     }
 
-    fn fill_range(&mut self, start: i64, end: i64, fill: Option<T>) {
-        let fill = fill.unwrap_or_else(|| {
-            panic!("uncaught Dart exception: type 'Null' is not a subtype of the list's element type")
-        });
+    fn fill_range(&mut self, start: i64, end: i64, fill: Option<T>) -> Result<(), DartError> {
+        let fill = fill.ok_or_else(|| {
+            std::rc::Rc::new(TypeError::new(
+                "type 'Null' is not a subtype of the list's element type".to_string(),
+            )) as DartError
+        })?;
         let (start, end) = (start.max(0) as usize, end.max(0) as usize);
         let end = end.min(self.len());
         for i in start..end {
             self[i] = fill.clone();
         }
+        Ok(())
     }
 
     fn index_where<F: Fn(T) -> Result<bool, DartError>>(&self, test: F, start: i64) -> Result<i64, DartError> {
@@ -4639,7 +4680,7 @@ impl<T: Clone> DartList<T> for Vec<T> {
                 return Ok(x.clone());
             }
         }
-        panic!("uncaught Dart exception: Bad state: No element")
+        Err(dart_no_element())
     }
 
     fn last_where_or<F: Fn(T) -> Result<bool, DartError>, G: Fn() -> Result<T, DartError>>(&self, test: F, or_else: G) -> Result<T, DartError> {
@@ -6423,6 +6464,40 @@ pub fn dart_null_as<T: DartNullable>() -> T {
 /// The prelude's `RangeError` prints itself as `RangeError: <message>`, so
 /// the parenthesised `(length)` of Dart's own text is not reproduced; what a
 /// program can *do* with it -- `on RangeError catch` -- is.
+/// `first`/`last`/`single`/`reduce` on an empty iterable, and the other
+/// places Dart says `Bad state: No element`.
+pub fn dart_no_element() -> DartError {
+    std::rc::Rc::new(StateError::new("No element".to_string())) as DartError
+}
+
+/// `single` on an iterable with more than one element.
+pub fn dart_too_many_elements() -> DartError {
+    std::rc::Rc::new(StateError::new("Too many elements".to_string())) as DartError
+}
+
+/// Dart's `StateError`, by its message.
+pub fn dart_state_error(message: &str) -> DartError {
+    std::rc::Rc::new(StateError::new(message.to_string())) as DartError
+}
+
+/// Dart's `FormatException`, by its message -- what `int.parse` and
+/// `double.parse` throw for text that is not a number.
+pub fn dart_format_exception(message: String) -> DartError {
+    std::rc::Rc::new(FormatException::new(
+        message,
+        std::rc::Rc::new(Null) as std::rc::Rc<dyn DartAny>,
+        None,
+    )) as DartError
+}
+
+/// Dart's `ArgumentError`, by its message.
+pub fn dart_argument_error(message: String) -> DartError {
+    std::rc::Rc::new(ArgumentError::new(
+        std::rc::Rc::new(message) as std::rc::Rc<dyn DartAny>,
+        None,
+    )) as DartError
+}
+
 pub fn dart_remove_last_empty() -> DartError {
     std::rc::Rc::new(RangeError {
         message: "Invalid value: Valid value range is empty: -1".to_string(),
@@ -7193,25 +7268,30 @@ pub fn dart_identical(a: &std::rc::Rc<dyn DartAny>, b: &std::rc::Rc<dyn DartAny>
 /// panic in a debug build (`_TrieNode._trieIndex` at bit index 65, the
 /// sixth level of a `PersistentHashMap`, ws557). A negative count is an
 /// `ArgumentError` in Dart; it panics here.
-pub fn dart_shl(value: i64, count: i64) -> i64 {
+pub fn dart_shl(value: i64, count: i64) -> Result<i64, DartError> {
     if count < 0 {
-        panic!("uncaught Dart exception: ArgumentError: negative shift count {}", count);
+        return Err(negative_shift(count));
     }
-    if count >= 64 { 0 } else { value.wrapping_shl(count as u32) }
+    Ok(if count >= 64 { 0 } else { value.wrapping_shl(count as u32) })
 }
 
-pub fn dart_shr(value: i64, count: i64) -> i64 {
+pub fn dart_shr(value: i64, count: i64) -> Result<i64, DartError> {
     if count < 0 {
-        panic!("uncaught Dart exception: ArgumentError: negative shift count {}", count);
+        return Err(negative_shift(count));
     }
-    if count >= 64 { if value < 0 { -1 } else { 0 } } else { value >> count }
+    Ok(if count >= 64 { if value < 0 { -1 } else { 0 } } else { value >> count })
 }
 
-pub fn dart_ushr(value: i64, count: i64) -> i64 {
+pub fn dart_ushr(value: i64, count: i64) -> Result<i64, DartError> {
     if count < 0 {
-        panic!("uncaught Dart exception: ArgumentError: negative shift count {}", count);
+        return Err(negative_shift(count));
     }
-    if count >= 64 { 0 } else { ((value as u64) >> count) as i64 }
+    Ok(if count >= 64 { 0 } else { ((value as u64) >> count) as i64 })
+}
+
+/// `x << -1`: Dart's `ArgumentError`, which a program can catch.
+fn negative_shift(count: i64) -> DartError {
+    dart_argument_error(format!("negative shift count {}", count))
 }
 
 /// A type parameter's type literal (`T` where a value goes): the class the
@@ -7392,7 +7472,8 @@ impl Zone {
     /// says "the program threw and nothing caught it" the one way it says it
     /// everywhere else.
     pub fn handle_uncaught_error(&self, error: std::rc::Rc<dyn DartAny>, stack: StackTrace) -> Result<(), DartError> {
-        panic!("uncaught Dart exception: {}\n{}", error.dart_to_string(), stack)
+        let _ = stack;
+        Err(error)
     }
 }
 
