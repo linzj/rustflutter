@@ -16,9 +16,13 @@ augment class RustBackend {
     );
     _lazyExpanding.remove(f.name);
     return _isCopy(_heldDecl(f))
-        ? '{ if $receiver.$name.get().is_none() { let __v = $init; $receiver.$name.set(Some(__v)); } $receiver.$name.get().unwrap() }'
-        : '{ if $receiver.$name.borrow().is_none() { let __v = $init; *$receiver.$name.borrow_mut() = Some(__v); } let __r = $receiver.$name.borrow().clone().unwrap(); __r }';
+        ? '{ if $receiver.$name.get().is_none() { let __v = $init; $receiver.$name.set(Some(__v)); } $receiver.$name.get()${_hardUnwrap('lazy-tail-copy')} }'
+        : '{ if $receiver.$name.borrow().is_none() { let __v = $init; *$receiver.$name.borrow_mut() = Some(__v); } let __r = $receiver.$name.borrow().clone()${_hardUnwrap('lazy-tail-rc')}; __r }';
   }
+
+  /// `?` inside a body this file writes itself, which is always a
+  /// `Result` under the result model (`_wrapped`).
+  static String get _step => _resultModel ? '?' : '';
 
   /// A *generic* trait as the qualifier of a call on another object's
   /// handle: through the type the handle holds (`<dyn ModalRoute<T> as
@@ -218,7 +222,7 @@ augment class RustBackend {
     _line(
       'pub fn __to_list(&self) -> ${_wrapped('Vec<$element_>')} { '
       'let __it = $fetched; let mut __out: Vec<$element_> = Vec::new(); '
-      'while __it.move_next() { __out.push(__it.current()); } '
+      'while __it.move_next()$_step { __out.push(__it.current()$_step); } '
       '${_resultModel ? 'Ok(__out)' : '__out'} }',
     );
   }
@@ -242,7 +246,7 @@ augment class RustBackend {
     _line(
       'fn __to_list(&self) -> ${_wrapped('Vec<$element_>')} { '
       'let __it = $fetched; let mut __out: Vec<$element_> = Vec::new(); '
-      'while __it.move_next() { __out.push(__it.current()); } '
+      'while __it.move_next()$_step { __out.push(__it.current()$_step); } '
       '${_resultModel ? 'Ok(__out)' : '__out'} }',
     );
     _line('');

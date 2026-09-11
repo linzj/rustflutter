@@ -37,9 +37,9 @@ augment class RustBackend {
         IrType(resultType.name, arguments: resultType.arguments),
       );
       return '<$inner as DartNullable>::from_option('
-          'dart_cast_erased::<Option<$inner>, _>($call))';
+          'dart_cast_erased::<Option<$inner>, _>($call)$_propagate)';
     }
-    return 'dart_cast_erased::<${type(resultType)}, _>($call)';
+    return 'dart_cast_erased::<${type(resultType)}, _>($call)$_propagate';
   }
 
   /// `a ?? b`, in the one of four spellings Rust needs.
@@ -588,6 +588,43 @@ augment class RustBackend {
   /// the `?` had no `Result` to come out of -- "the `?` operator can only
   /// be used in a closure that returns `Result`" (3 in `Navigator` at
   /// ws871).
+  /// `xs.map(f)`, `m.map(f)`, `s.map(f)`.
+  ///
+  /// Under a failure channel it is a loop, as an iterator chain is
+  /// (`_chainLoop`): Rust's `map` takes a closure returning a plain value,
+  /// so a `throw` in the body had nowhere to go and `_mappedBody` turned
+  /// the whole body infallible to say so. The loop body is the same
+  /// expression with `?` in it, collected by hand.
+  ///
+  /// Not the `Future` and `Iterator` kinds: those two hand the closure to
+  /// the prelude, whose slot declares a plain value, and changing that is
+  /// a different question (`DartIterable::map`).
+  String _mapElements(IrExpr collection, String kind, IrExpr body) {
+    if (_failure != null && kind != 'Future' && kind != 'Iterator') {
+      final bound = kind == 'Map' ? '(k, v)' : 'v';
+      final collected =
+          '{ let mut __o = Vec::new(); '
+          'for $bound in ${expr(collection)}.into_iter() { __o.push(${expr(body)}); } '
+          '__o }';
+      return switch (kind) {
+        'Set' => 'Set::of($collected)',
+        'Map' => 'Map::from($collected)',
+        _ => collected,
+      };
+    }
+    return switch (kind) {
+      'Future' => '${expr(collection)}.map(|v| ${_mappedBody(body)})',
+      'Iterator' =>
+        'dart_iterator_map(${expr(collection)}, |v| ${_mappedBody(body)})',
+      'Set' =>
+        'Set::of(${expr(collection)}.into_iter().map(|v| ${_mappedBody(body)}).collect::<Vec<_>>())',
+      'Map' =>
+        'Map::from(${expr(collection)}.into_iter().map(|(k, v)| ${_mappedBody(body)}).collect::<Vec<_>>())',
+      _ =>
+        '${expr(collection)}.into_iter().map(|v| ${_mappedBody(body)}).collect::<Vec<_>>()',
+    };
+  }
+
   String _mappedBody(IrExpr body) {
     final saved = _failure;
     _failure = null;

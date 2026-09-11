@@ -299,7 +299,21 @@ augment class RustBackend {
     // constant of the variant and lives in a `match`. Only the front end knows
     // -- the backend sees `state.value` with no idea what `state` is -- so it
     // says so on the node.
-    if (onEnum) return '$receiver.${snake(name)}()';
+    if (onEnum) {
+      // A carried field's accessor is a `match` over the variants'
+      // initialisers, and those are Dart expressions that can throw, so it
+      // returns `Result` (`_emitEnum`). `index` and `name` are Dart's own
+      // members of every enum -- the position and the spelling -- and are
+      // written as the total functions they are, so a `?` on one is E0277.
+      final of = owner ?? target?.rustType?.name;
+      final declaring = of == null
+          ? null
+          : (library[of] ?? library.elsewhere[of]);
+      final carried = declaring == null
+          ? name != 'index' && name != 'name'
+          : declaring.valueFields.values.any((v) => v.containsKey(name));
+      return '$receiver.${snake(name)}()${carried ? _propagate : ''}';
+    }
 
     // Inside a trait every read on `this` is an accessor call: a trait has
     // no fields, and a mixin's `this_.source_url` names a getter of the
@@ -467,7 +481,8 @@ augment class RustBackend {
         : '$castTo<${List.filled(castArity, '_').join(', ')}>';
     final on = castTo == null
         ? expr(receiver)
-        : '${expr(receiver)}.dart_cast_to::<dyn $castSpelled>().unwrap()';
+        : '${expr(receiver)}.dart_cast_to::<dyn $castSpelled>()'
+              '.ok_or_else(|| dart_cast_failed("$castTo"))$_propagate';
     final generics = [
       for (var i = 0; i < classArity; i++) '_',
       ...typeArguments.map(type),

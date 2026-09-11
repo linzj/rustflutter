@@ -22,12 +22,16 @@ augment class RustBackend {
     final held = operand.rustType;
     if (held != null &&
         _optionRead(operand) != null &&
-        !target.nullable &&
         name != 'Object' &&
         name != 'dynamic') {
       final inner = IrLocal('__v')..rustType = stripNull(held);
       final test = _isTest(inner, target, negated);
-      return '(match ${expr(operand)}.clone() { Some(__v) => $test, None => $negated })';
+      // A null is the target type exactly when the target is nullable:
+      // `null is Foo` is false and `null is Foo?` is true. The nullable
+      // case used to fall through to the reads below, which take the
+      // value out of the `Option` -- a panic where Dart answers `true`.
+      final forNull = target.nullable ? !negated : negated;
+      return '(match ${expr(operand)}.clone() { Some(__v) => $test, None => $forNull })';
     }
     // `x is Future` where `x` is a `FutureOr<T>`: the prelude spells Dart's
     // sum as an enum of its two cases, so the question is which case the
@@ -279,7 +283,8 @@ augment class RustBackend {
         !t.projected &&
         e is! IrThis &&
         !t.isFunction) {
-      return '${expr(e)}.clone().unwrap()';
+      return '${expr(e)}.clone()'
+          '.ok_or_else(dart_null_check_failed)$_propagate';
     }
     return null;
   }
@@ -539,7 +544,7 @@ augment class RustBackend {
       final place = _mutPlace(target.left);
       if (place != null) {
         return '{ if ${expr(target.left)}.is_none() { ${expr(target.right)}; } '
-            '$place.as_mut().unwrap() }';
+            '$place.as_mut()${_hardUnwrap('as-mut')} }';
       }
     }
     if (target is IrNullCheck) {
@@ -965,6 +970,24 @@ augment class RustBackend {
     'last',
     'single',
     'fill_range',
+    // `compareTo`, `moveNext`, `current`: Dart code behind a prelude trait
+    // (`_preludeInterfaces`), fallible since work.md 七.5, and `sort()`
+    // with no comparator runs `compareTo` for every pair.
+    'compare_to',
+    'move_next',
+    'current',
+    'sort_natural',
+    // `xs.cast<T>()` / `m.cast<K, V>()`: Dart's `TypeError` for an element
+    // that is not of the new type -- it used to reach `erased_cast_failed`,
+    // whose whole signature was `-> !`.
+    'cast_to',
+    // `Completer.complete`/`completeError` on a future that has already
+    // settled: Dart's `StateError`, which `Completer.isCompleted` is there
+    // to let a program avoid and which real code catches.
+    'complete',
+    'completeError',
+    'complete_error',
+    'complete_or',
     // `LinkedListEntry.insertAfter`/`insertBefore` on an entry that is in
     // no list: Dart's `StateError`.
     'insert_after',
@@ -1062,13 +1085,101 @@ augment class RustBackend {
     'dart_parse_int_radix',
     'dart_parse_double',
     'generate',
+    // `Map.fromIterable`: the key and value callbacks are Dart code and
+    // throw; `Map.fromIterables`: Dart's `ArgumentError` when the two
+    // lengths differ. Written with the owner: `Stream.fromIterable` is a
+    // stream of what it is given and cannot fail (ws1077's lesson -- a
+    // bare `decode` reached `JsonCodec`'s and `Utf8Codec`'s alike).
+    'Map.fromIterable',
+    'LinkedHashMap.fromIterable',
+    'HashMap.fromIterable',
+    'SplayTreeMap.fromIterable',
+    'Map.fromIterables',
+    'LinkedHashMap.fromIterables',
+    'HashMap.fromIterables',
+    'SplayTreeMap.fromIterables',
+    // `ArgumentError.checkNotNull`, `RangeError.checkNotNegative`,
+    // `RangeError.checkValidRange`: each of them is a `throw` in Dart, and
+    // each was a `panic!` here whose doc comment said so.
+    // `null as T` where `T` has no null: Dart's `TypeError`, and the last
+    // abort in the prelude that said something about the program rather
+    // than about this translator (`bin/panic_ruler.py`, 2026-09-11).
+    'dart_null_as',
+    'ArgumentError.checkNotNull',
+    'RangeError.checkNotNegative',
+    'RangeError.checkValidRange',
     '_invoke1_with_return',
     'runZonedGuarded',
     'run_zoned_guarded',
   };
 
   /// `?` when a function surrounds the expression, `.unwrap()` otherwise.
-  String get _propagate => _failure != null ? '?' : '.unwrap()';
+  String get _propagate {
+    if (_failure == null && _traceUnwrap) _traceUnwrapSite();
+    return _failure != null ? '?' : '.unwrap()';
+  }
+
+  /// `DART2RUST_TRACE_UNWRAP=1`: one line per `.unwrap()` this hands out,
+  /// naming the emitter frames that asked for it.
+  ///
+  /// The question is section 十一 of work.md's largest hole -- 138 casts
+  /// come out with no `_failure` around them and only one assignment of
+  /// null is left in the backend, so the two do not add up and the answer
+  /// must not be guessed. The frames are deduped consecutively (`expr`
+  /// recurses) and the innermost twelve kept.
+  static final bool _traceUnwrap =
+      Platform.environment['DART2RUST_TRACE_UNWRAP'] == '1';
+
+  void _traceUnwrapSite() {
+    final names = <String>[];
+    for (final line in StackTrace.current.toString().split('\n')) {
+      // This compiler's own frames only: `expr` maps and joins, so the
+      // raw stack is half `List.elementAt` and `Iterable.join`, and those
+      // say nothing about which emitter asked.
+      if (!line.contains('backend_rust') && !line.contains('frontend_kernel'))
+        continue;
+      final m = RegExp(r'#\d+ +(?:new )?([A-Za-z0-9_.]+)').firstMatch(line);
+      if (m == null) continue;
+      final name = m.group(1)!.split('.').last;
+      if (names.isNotEmpty && names.last == name) continue;
+      names.add(name);
+    }
+    stderr.writeln('TRACE_UNWRAP ${names.join(' <- ')}');
+  }
+
+  /// The `.unwrap()`s this compiler writes *on purpose*, by site.
+  ///
+  /// Four are left, and each one has a reason it cannot fire:
+  /// `lazy-tail-copy` / `lazy-tail-rc` read the cell the line above them
+  /// just wrote `Some` into; `as-mut` stands behind an `if is_none { .. }`
+  /// (ws1071); `step-closure` is the last iterator adapter, whose closure
+  /// slot returns a plain value -- `any`/`every`/`where`/`map` are loops
+  /// now, and a *function value* passed to one of the rest is not.
+  ///
+  /// Everything else goes through `_propagate`. `DART2RUST_TRACE_UNWRAP=1`
+  /// prints both halves -- this one by tag, `_traceUnwrapSite` by the
+  /// emitter frames above it -- so that the total is accounted for rather
+  /// than grepped for. `bin/panic_ruler.py` counts the result.
+  ///
+  /// The reason is written into the *output*, as `.expect("dart2rust: ..")`
+  /// rather than a bare `.unwrap()`. A reader of the generated Rust can
+  /// then tell these apart from the ones that were a lost Dart path, and
+  /// so can the ruler: `dart2rust:` is its word for a fact about this
+  /// compiler. Two distinct strings for 495 sites, so the linker's string
+  /// pool pays for it once.
+  static const _hardUnwrapWhy = {
+    'lazy-tail-copy': 'a lazy late cell, read on the line after it is written',
+    'lazy-tail-rc': 'a lazy late cell, read on the line after it is written',
+    'as-mut': 'an Option this function just tested with is_none',
+    'step-closure': 'an iterator adapter whose slot returns a plain value',
+  };
+
+  String _hardUnwrap(String tag) {
+    if (_traceUnwrap)
+      stderr.writeln('TRACE_HARD $tag failure=${_failure != null}');
+    final why = _hardUnwrapWhy[tag];
+    return why == null ? '.unwrap()' : '.expect("dart2rust: $why")';
+  }
 
   /// A read of a `late` field or local that has no value yet.
   ///

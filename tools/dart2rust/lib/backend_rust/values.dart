@@ -323,6 +323,27 @@ augment class RustBackend {
         '${collects ? '__o ' : ''}}';
   }
 
+  /// `any(test)` / `every(test)` as a loop, or null with no failure
+  /// channel to propagate into.
+  ///
+  /// Rust's `any` takes a closure returning a plain `bool`, so a test that
+  /// throws had nowhere to send it and ended in `.unwrap()` -- a panic
+  /// where Dart carries the throw out to the caller. `where` was lowered
+  /// to a loop for exactly this at ws1078 (`_chainLoop`); these two are
+  /// the same rule at a terminal step.
+  String? _testLoop(String receiver, IrExpr test, {required bool all}) {
+    if (_failure == null) return null;
+    final f = test is IrClosure
+        ? '(${_stepClosure(test, cloned: true, fallible: true)})'
+        : '(${expr(test)})';
+    // The test is bound once, outside: written inline, a function *value*
+    // rebuilds its `Rc` for every element.
+    return '{ let __t = $f; let mut __a = $all; '
+        'for __e in $receiver.iter().cloned() { '
+        'if ${all ? '!' : ''}((__t)(__e)$_propagate) { __a = ${!all}; break; } } '
+        '__a }';
+  }
+
   /// A value read as a list: an `Iterable<T>` is a `Rc<dyn DartIterable<T>>`
   /// since ws908, and a Rust iterator starts at a list.
   String _asList(IrExpr e) =>
@@ -387,7 +408,7 @@ augment class RustBackend {
       // old unwrap where the adapters still stand.
       return fallible
           ? '|__x| (${bound ?? expr(e)})($item)'
-          : '|__x| (${bound ?? expr(e)})($item).unwrap()';
+          : '|__x| (${bound ?? expr(e)})($item)${_hardUnwrap('step-closure')}';
     }
     // `filter` hands `&&T`, and a body written for the item -- `asset.
     // endsWith(other)`, a tear-off's own parameter passed on bare --

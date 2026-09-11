@@ -256,6 +256,15 @@ augment class RustBackend {
       _line('impl ${cls.name} {');
       _indent++;
       for (final field in carried) {
+        // The accessor's signature is this compiler's own -- Dart has a
+        // *field* here, and the value is a constant of the variant, so a
+        // `match` stands in for storage. Written `-> $rust` it had no
+        // channel for a failing initialiser and ended `.unwrap()`
+        // (`KeyboardLockMode.logicalKey`, 3 in the gallery); written
+        // `-> Result<$rust, ..>` it carries one, and `_fieldRead`'s enum
+        // branch puts the `?` at the read.
+        final savedEnumFailure = _failure;
+        _failure = _resultModel ? _error : null;
         final declared = cls.fields.where((f) => f.name == field).firstOrNull;
         final first = cls.valueFields[cls.values.first]![field]!;
         final held = first.rustType;
@@ -264,9 +273,9 @@ augment class RustBackend {
             : held != null
             ? type(held)
             : _literalType(expr(first));
-        _line('${_vis(field)}fn ${snake(field)}(&self) -> $rust {');
+        _line('${_vis(field)}fn ${snake(field)}(&self) -> ${_wrapped(rust)} {');
         _indent++;
-        _line('match self {');
+        _line(_resultModel ? 'Ok(match self {' : 'match self {');
         _indent++;
         for (final value in cls.values) {
           _line(
@@ -275,10 +284,11 @@ augment class RustBackend {
           );
         }
         _indent--;
-        _line('}');
+        _line(_resultModel ? '})' : '}');
         _indent--;
         _line('}');
         _line('');
+        _failure = savedEnumFailure;
       }
       for (final method in members) {
         _member(

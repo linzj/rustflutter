@@ -194,6 +194,21 @@ augment class RustBackend {
         _line('');
       }
       if (taken.contains(snake(field.name))) continue;
+      // The accessor's own signature is `Result` -- it is written
+      // `Ok(..)` below, and the `late` read and the override path already
+      // spell `?` -- so the expressions in its body may propagate too.
+      // Without this a lazy `late` initialiser came out `.unwrap()` here
+      // exactly as it did in the slot forwarder next door: 255 of the
+      // gallery's remaining unwraps, `ImplicitlyAnimatedWidgetState
+      // .controller` the largest group (work.md step 1).
+      //
+      // The setter too: `coerceInto` may put a cast inside an `Option::map`
+      // there, and `_nullAware` already spells that as
+      // `.map(|it| -> Result<_, _> { Ok(..) }).transpose()?` once there is
+      // a `_failure` to transpose into -- 44 casts in the gallery's trait
+      // setters, `ImplicitlyAnimatedWidgetState.set_begin` among them.
+      final savedAccessorFailure = _failure;
+      _failure = _resultModel ? _error : null;
       // Cloned out: the accessor returns a value and the field is behind
       // `&self` -- `fn _buffer(&self) -> Vec<i64> { self._buffer }` moved it.
       // ..and through the cell when the field is in one (a counted class):
@@ -413,6 +428,7 @@ augment class RustBackend {
         _line('}');
         _line('');
       }
+      _failure = savedAccessorFailure;
     }
     for (final need in required) {
       _member(
@@ -562,6 +578,20 @@ augment class RustBackend {
       if (field != null &&
           !need.isStatic &&
           (need.isSetter ? need.params.length == 1 : need.params.isEmpty)) {
+        // This slot's own signature carries the error channel -- every
+        // line below ends in `Ok(..)` -- so the expressions written into
+        // it may propagate. Without that, a `late` field's initialiser
+        // (`_lazyRead`) came out `.unwrap()` even though `?` was legal
+        // where it stood: 235 across the gallery, the largest single
+        // group in work.md's count, and every one of them a Dart throw
+        // the program could have caught.
+        //
+        // Only the field branch. The method branch below hands its value
+        // on through `$call.map(|__v| ..)`, and that closure returns a
+        // plain value: a `?` inside it is E0277, which is what turning
+        // the whole of this function fallible cost at ws1073 (128 stubs).
+        final savedFieldFailure = _failure;
+        _failure = _resultModel ? _error : null;
         final cell = _sharedField(field.name);
         final late = field.isLate
             ? _lateRead(field.name, fallible: _resultModel)
@@ -587,11 +617,14 @@ augment class RustBackend {
                 IrType(held.name, arguments: held.arguments),
               );
               value =
-                  'value.dart_cast_to::<$target>()${held.nullable ? '' : '.unwrap()'}';
+                  'value.dart_cast_to::<$target>()'
+                  '${held.nullable ? '' : '.ok_or_else(|| dart_cast_failed("${held.name}"))$_propagate'}';
             } else if (held.nullable && !given.nullable) {
               value = 'Some(value)';
             } else if (!held.nullable && given.nullable) {
-              value = 'value.unwrap()';
+              // The trait declares `T?` where the field holds `T`: Dart
+              // narrows there and throws for a null, so this does too.
+              value = 'value.ok_or_else(dart_null_check_failed)$_propagate';
             }
             final stored = field.isLate ? 'Some($value)' : value;
             _line(
@@ -641,6 +674,7 @@ augment class RustBackend {
               : '{ let __v = $read; ${expr(shaped)} }';
           _line(_resultModel ? 'Ok($value)' : value);
         }
+        _failure = savedFieldFailure;
       } else if (have == null) {
         // Reported in the output rather than silently skipped: a trait impl
         // missing a method does not compile, and the reader should learn why
@@ -661,14 +695,13 @@ augment class RustBackend {
         // the forwarder's own value goes on through `.map(|__v| ..)` below,
         // whose closure returns a plain value and cannot carry a `?`.
         final savedFailure = _failure;
-        _failure = _resultModel && _returnType(need).startsWith('Result<')
-            ? _error
-            : null;
+        final slotCarries =
+            _resultModel && _returnType(need).startsWith('Result<');
+        _failure = slotCarries ? _error : null;
         final inherent = _inherentCall(have, need, via);
         _failure = savedFailure;
-        final call = have.isAsync && _resultModel && via == null
-            ? 'Ok($inherent)'
-            : inherent;
+        final wrapsAsync = have.isAsync && _resultModel && via == null;
+        final call = wrapsAsync ? 'Ok($inherent)' : inherent;
         // One `Option` short -- the override narrowed `T?` to `T`, which Dart
         // allows, or the trait's `T?` doubled up above -- is a `Some`.
         // The trait's future carries `+ '_` (see `_lifetimed`); the
@@ -695,6 +728,14 @@ augment class RustBackend {
         // Delegate.load` returning `Future<LocaleNames>` under
         // `LocalizationsDelegate<T>`, run598).
         final needReturns = _substituteType(need.returnType, _implBinding);
+        // The shaping runs under the slot's own error channel, because the
+        // line below writes it into a *block* rather than a closure: what
+        // a cast inside it finds is `?`, not `.unwrap()`. It was the other
+        // way round until now -- `$call.map(|__v| ..)` returns a plain
+        // value, so a `?` in there is E0277, which is what made ws1073
+        // withdraw -- and the price was 44 panics in the gallery, the last
+        // group `_propagate` still handed `.unwrap()` to.
+        _failure = slotCarries ? _error : null;
         final shaped = coerceInto(held, needReturns, _world, inClosure: true);
         // An override may return where the trait returns nothing
         // (`Disposer addListener(..)` over `void addListener(..)` in get's
@@ -708,12 +749,19 @@ augment class RustBackend {
         // bound the value instead of mapping a `Result`. Since ws1074 an
         // operator is an ordinary inherent method, so there is one shape
         // left and the `infallible` fork is gone.
+        // A block, not a `.map` closure: `let __v = call?;` puts the
+        // value in scope and leaves the body inside the slot's own
+        // function, where a `?` of its own is legal.
+        final shapedText = identical(shaped, held) ? null : expr(shaped);
+        _failure = savedFailure;
         _line(
           dropsValue
-              ? '$call.map(|_| ())'
-              : identical(shaped, held)
+              ? (slotCarries ? '{ $call?; Ok(()) }' : '$call.map(|_| ())')
+              : shapedText == null
               ? call
-              : '$call.map(|__v| ${expr(shaped)})',
+              : slotCarries
+              ? 'Ok({ let __v = ${wrapsAsync ? inherent : '$call?'}; $shapedText })'
+              : '$call.map(|__v| $shapedText)',
         );
       }
       _indent--;

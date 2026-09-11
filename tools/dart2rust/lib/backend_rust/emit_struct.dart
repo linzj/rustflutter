@@ -468,15 +468,21 @@ augment class RustBackend {
   /// and the trait method boxes that up for callers who only know the base.
   /// The prelude's traits for `dart:core` interfaces, with the methods each
   /// asks for: the impl forwards to the class's own.
+  /// The signatures carry the error channel, as every other member does:
+  /// `compareTo`, `moveNext` and `current` are Dart code and Dart code
+  /// throws. Written `-> i64` / `-> bool` / `-> __A0`, the forwarder below
+  /// had a `Result` in its hand and nowhere to put it, so it unwrapped --
+  /// 11 panics whose only fault was the signature this compiler wrote for
+  /// itself (work.md 七.5 / 八.1).
   static const _preludeInterfaces = {
     'Comparable': [
-      'compare_to(&self, other: __A0) -> i64',
+      'compare_to(&self, other: __A0) -> Result<i64, $dartHandle>',
       'compare_to(other)',
     ],
     'DartIterator': [
-      'move_next(&self) -> bool',
+      'move_next(&self) -> Result<bool, $dartHandle>',
       'move_next()',
-      'current(&self) -> __A0',
+      'current(&self) -> Result<__A0, $dartHandle>',
       'current()',
     ],
   };
@@ -587,14 +593,16 @@ augment class RustBackend {
           );
           _line('fn $signature {');
           _indent++;
-          // The class's own method returns `Result`; the prelude trait's
-          // signature is fixed. A field read is not a call and has no
-          // `Result` to unwrap.
+          // The class's own method returns `Result` and so does the slot,
+          // so the call is forwarded as it stands. A field read is not a
+          // call and carries no `Result`, so it is wrapped in one.
           final forward = calls[k + 1]!;
           _line(
             forward.startsWith(_plainMark)
-                ? 'self.${forward.substring(_plainMark.length)}'
-                : 'self.$forward${_resultModel ? '.unwrap()' : ''}',
+                ? _resultModel
+                      ? 'Ok(self.${forward.substring(_plainMark.length)})'
+                      : 'self.${forward.substring(_plainMark.length)}'
+                : 'self.$forward',
           );
           _indent--;
           _line('}');

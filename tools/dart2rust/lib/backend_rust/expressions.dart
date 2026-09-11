@@ -444,7 +444,8 @@ augment class RustBackend {
           when (type == 'Map' || type == 'List') &&
               arguments.isNotEmpty &&
               arguments.every(_dynamicRepresentable) =>
-        '${type == 'Map' ? 'dart_cast_map' : 'dart_cast_list'}::<${arguments.map(this.type).join(', ')}>(&${_optionRead(target) ?? expr(target)}).unwrap()',
+        '${type == 'Map' ? 'dart_cast_map' : 'dart_cast_list'}::<${arguments.map(this.type).join(', ')}>(&${_optionRead(target) ?? expr(target)})'
+            '.ok_or_else(|| dart_cast_failed("$type"))$_propagate',
       // A type parameter: its own conversion (`FromDynamic`, in every
       // bound), as `!as_opt` above -- `Any` knows one concrete type, and a
       // `T` bound to `Rc<dyn Object>` is none.
@@ -452,7 +453,8 @@ augment class RustBackend {
           when arguments.isEmpty && _isTypeParam(type) =>
         // The handle cloned first: the `as` consumes it, and a local read
         // twice (`m is T && m.supports(..)`) was moved (E0382).
-        '<$type as FromDynamic>::from_dynamic(&(${expr(target)}.clone() as ${dartHandle})).unwrap()',
+        '<$type as FromDynamic>::from_dynamic(&(${expr(target)}.clone() as ${dartHandle}))'
+            '.ok_or_else(|| dart_cast_failed("$type"))$_propagate',
       // A counted class out of a `dynamic`: the object's own handle
       // (`dart_cast_any` at `Rc<Self>`), not a copy of the struct.
       IrDowncast(:final target, :final type, :final arguments)
@@ -541,15 +543,7 @@ augment class RustBackend {
       ),
       // A counted class's constructor already hands out an `Rc`.
       IrMapElements(:final collection, :final kind, :final body) =>
-        kind == 'Future'
-            ? '${expr(collection)}.map(|v| ${_mappedBody(body)})'
-            : kind == 'Iterator'
-            ? 'dart_iterator_map(${expr(collection)}, |v| ${_mappedBody(body)})'
-            : kind == 'Set'
-            ? 'Set::of(${expr(collection)}.into_iter().map(|v| ${_mappedBody(body)}).collect::<Vec<_>>())'
-            : kind == 'Map'
-            ? 'Map::from(${expr(collection)}.into_iter().map(|(k, v)| ${_mappedBody(body)}).collect::<Vec<_>>())'
-            : '${expr(collection)}.into_iter().map(|v| ${_mappedBody(body)}).collect::<Vec<_>>()',
+        _mapElements(collection, kind, body),
       // `this` shared as an object is its own handle (`!as_object`).
       IrUpcast(:final value, :final type)
           when value is IrThis && type.name == 'Object' =>
@@ -624,7 +618,10 @@ augment class RustBackend {
         ? 'crate::$module::${_staticCall(owner, name, args, typeArguments)}'
         : _staticCall(owner, name, args, typeArguments);
     final failing =
-        fails || (_resultModel && _preludeFailingStatics.contains(name));
+        fails ||
+        (_resultModel &&
+            (_preludeFailingStatics.contains(name) ||
+                _preludeFailingStatics.contains('$owner.$name')));
     return _asyncValue(
       failing && !awaited && !asyncFn ? '$call$_propagate' : call,
       asyncFn && !awaited,

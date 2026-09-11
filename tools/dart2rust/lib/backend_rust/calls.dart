@@ -530,10 +530,12 @@ augment class RustBackend {
     // `expected &i64, found i64`. The chain steps get away with `iter()`
     // because what they produce is collected, not compared.
     if (name == '!any' && args.length == 1) {
-      return '$receiver.iter().cloned().any(${_stepClosure(args.single, cloned: true)})';
+      return _testLoop(receiver, args.single, all: false) ??
+          '$receiver.iter().cloned().any(${_stepClosure(args.single, cloned: true)})';
     }
     if (name == '!every' && args.length == 1) {
-      return '$receiver.iter().cloned().all(${_stepClosure(args.single, cloned: true)})';
+      return _testLoop(receiver, args.single, all: true) ??
+          '$receiver.iter().cloned().all(${_stepClosure(args.single, cloned: true)})';
     }
     if (name == '!to_set' && args.isEmpty) {
       return 'Set::from($receiver.clone())';

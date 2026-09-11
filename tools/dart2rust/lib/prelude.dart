@@ -30,18 +30,18 @@ use std::fmt;
 /// `Comparable<T>`: `compareTo`, on the scalars that have it. A value typed
 /// `Comparable<T>` is an `Rc<dyn Comparable<T>>`, as any abstract class's is.
 pub trait Comparable<T> {
-    fn compare_to(&self, other: T) -> i64;
+    fn compare_to(&self, other: T) -> Result<i64, DartError>;
 }
 
 impl Comparable<i64> for i64 {
-    fn compare_to(&self, other: i64) -> i64 {
-        (*self > other) as i64 - (*self < other) as i64
+    fn compare_to(&self, other: i64) -> Result<i64, DartError> {
+        Ok((*self > other) as i64 - (*self < other) as i64)
     }
 }
 
 impl Comparable<f64> for f64 {
-    fn compare_to(&self, other: f64) -> i64 {
-        (*self > other) as i64 - (*self < other) as i64
+    fn compare_to(&self, other: f64) -> Result<i64, DartError> {
+        Ok((*self > other) as i64 - (*self < other) as i64)
     }
 }
 
@@ -49,9 +49,9 @@ impl Comparable<f64> for f64 {
 /// so an `int` stands in a `Comparable<num>` slot as a `double` does
 /// (`_sort<num>((d) => d.iron, ..)` in the data table demo).
 impl Comparable<f64> for i64 {
-    fn compare_to(&self, other: f64) -> i64 {
+    fn compare_to(&self, other: f64) -> Result<i64, DartError> {
         let mine = *self as f64;
-        (mine > other) as i64 - (mine < other) as i64
+        Ok((mine > other) as i64 - (mine < other) as i64)
     }
 }
 
@@ -75,26 +75,26 @@ impl Comparable<f64> for i64 {
 /// `T` is sized here -- and a trait object that needs comparing carries its
 /// own impl.
 impl<T: Comparable<std::rc::Rc<T>>> Comparable<std::rc::Rc<T>> for std::rc::Rc<T> {
-    fn compare_to(&self, other: std::rc::Rc<T>) -> i64 {
+    fn compare_to(&self, other: std::rc::Rc<T>) -> Result<i64, DartError> {
         (**self).compare_to(other)
     }
 }
 
 impl Comparable<String> for String {
-    fn compare_to(&self, other: String) -> i64 {
-        match self.cmp(&other) {
+    fn compare_to(&self, other: String) -> Result<i64, DartError> {
+        Ok(match self.cmp(&other) {
             std::cmp::Ordering::Less => -1,
             std::cmp::Ordering::Equal => 0,
             std::cmp::Ordering::Greater => 1,
-        }
+        })
     }
 }
 
 /// Dart's `Iterator<E>` -- `moveNext()` and `current` -- under a name that
 /// does not shadow `std::iter::Iterator`. The front end renames the type.
 pub trait DartIterator<T> {
-    fn move_next(&self) -> bool;
-    fn current(&self) -> T;
+    fn move_next(&self) -> Result<bool, DartError>;
+    fn current(&self) -> Result<T, DartError>;
 }
 
 /// How often a whole collection is copied to satisfy `DartIterable`, and
@@ -221,14 +221,7 @@ pub trait DartIterable<T>: DartAny {
     /// the iterator; an implementation that already holds one overrides it.
     /// Named apart from `DartList::to_list`, which `Vec` also has: a `Vec`
     /// implements both and `xs.to_list()` was ambiguous (12 `E0034`).
-    fn dart_to_list(&self) -> Vec<T> {
-        let iterator = self.iterator();
-        let mut out = Vec::new();
-        while iterator.move_next() {
-            out.push(iterator.current());
-        }
-        out
-    }
+    fn dart_to_list(&self) -> Vec<T>;
 }
 
 pub struct VecIterator<T> {
@@ -237,13 +230,13 @@ pub struct VecIterator<T> {
 }
 
 impl<T: Clone + 'static> DartIterator<T> for VecIterator<T> {
-    fn move_next(&self) -> bool {
+    fn move_next(&self) -> Result<bool, DartError> {
         let next = self.at.get() + 1;
         self.at.set(next);
-        (next as usize) < self.items.len()
+        Ok((next as usize) < self.items.len())
     }
-    fn current(&self) -> T {
-        self.items[self.at.get() as usize].clone()
+    fn current(&self) -> Result<T, DartError> {
+        Ok(self.items[self.at.get() as usize].clone())
     }
 }
 
@@ -257,11 +250,11 @@ struct MappedIterator<A, B> {
 }
 
 impl<A: 'static, B: 'static> DartIterator<B> for MappedIterator<A, B> {
-    fn move_next(&self) -> bool {
+    fn move_next(&self) -> Result<bool, DartError> {
         self.inner.move_next()
     }
-    fn current(&self) -> B {
-        (self.map)(self.inner.current())
+    fn current(&self) -> Result<B, DartError> {
+        Ok((self.map)(self.inner.current()?))
     }
 }
 
@@ -1882,12 +1875,12 @@ impl Duration {
         Duration { microseconds: self.microseconds.abs() }
     }
 
-    pub fn compare_to(&self, other: Duration) -> i64 {
-        match self.microseconds.cmp(&other.microseconds) {
+    pub fn compare_to(&self, other: Duration) -> Result<i64, DartError> {
+        Ok(match self.microseconds.cmp(&other.microseconds) {
             std::cmp::Ordering::Less => -1,
             std::cmp::Ordering::Equal => 0,
             std::cmp::Ordering::Greater => 1,
-        }
+        })
     }
 }
 
@@ -2359,8 +2352,8 @@ impl DateTime {
         self.civil().1 % 1_000
     }
     /// `compareTo(other)`: by the instant.
-    pub fn compare_to(&self, other: DateTime) -> i64 {
-        self.microseconds_since_epoch.cmp(&other.microseconds_since_epoch) as i64
+    pub fn compare_to(&self, other: DateTime) -> Result<i64, DartError> {
+        Ok(self.microseconds_since_epoch.cmp(&other.microseconds_since_epoch) as i64)
     }
 
     /// `timeZoneOffset`: local time is UTC here, so zero.
@@ -2812,7 +2805,7 @@ impl<K: Clone, V: Clone> Map<K, V> {    /// `Map.of(other)`: a copy with the sam
         elements: Vec<E>,
         key: Option<std::rc::Rc<dyn Fn(std::rc::Rc<dyn DartAny>) -> Result<K, DartError>>>,
         value: Option<std::rc::Rc<dyn Fn(std::rc::Rc<dyn DartAny>) -> Result<V, DartError>>>,
-    ) -> Map<K, V>
+    ) -> Result<Map<K, V>, DartError>
     where
         K: DartEq + FromDynamic,
         V: FromDynamic,
@@ -2821,16 +2814,16 @@ impl<K: Clone, V: Clone> Map<K, V> {    /// `Map.of(other)`: a copy with the sam
         for e in elements {
             let boxed = dart_boxed(e);
             let k = match &key {
-                Some(f) => f(boxed.clone()).unwrap_or_else(|err| panic!("Map.fromIterable key: {}", err.dart_to_string())),
-                None => K::from_dynamic(&boxed).expect("Map.fromIterable: an element that is no key"),
+                Some(f) => f(boxed.clone())?,
+                None => K::from_dynamic(&boxed).ok_or_else(|| dart_cast_failed(std::any::type_name::<K>()))?,
             };
             let v = match &value {
-                Some(f) => f(boxed.clone()).unwrap_or_else(|err| panic!("Map.fromIterable value: {}", err.dart_to_string())),
-                None => V::from_dynamic(&boxed).expect("Map.fromIterable: an element that is no value"),
+                Some(f) => f(boxed.clone())?,
+                None => V::from_dynamic(&boxed).ok_or_else(|| dart_cast_failed(std::any::type_name::<V>()))?,
             };
             out.insert(k, v);
         }
-        out
+        Ok(out)
     }
 
     /// `Map.fromIterables(keys, values)`: the two zipped in order, a later
@@ -2838,18 +2831,20 @@ impl<K: Clone, V: Clone> Map<K, V> {    /// `Map.of(other)`: a copy with the sam
     /// lengths differ (`SlottedContainerRenderObjectMixin.
     /// debugDescribeChildren` builds one to name each child by its slot,
     /// 5 at ws790).
-    pub fn from_iterables(keys: Vec<K>, values: Vec<V>) -> Map<K, V>
+    pub fn from_iterables(keys: Vec<K>, values: Vec<V>) -> Result<Map<K, V>, DartError>
     where
         K: DartEq,
     {
         if keys.len() != values.len() {
-            panic!("Invalid argument(s): Iterables do not have same length.");
+            return Err(dart_argument_error(
+                "Iterables do not have same length.".to_string(),
+            ));
         }
         let mut out = Map::new();
         for (k, v) in keys.into_iter().zip(values) {
             out.insert(k, v);
         }
-        out
+        Ok(out)
     }
 
     /// `Map.fromEntries(entries)`: each entry in order, a later key
@@ -2991,7 +2986,7 @@ impl<K: DartEq + Clone, V: Clone> Map<K, V> {
             }
             *cell = Some((now, buckets));
         }
-        let bucket = match cell.as_ref().unwrap().1.get(&wanted) {
+        let bucket = match cell.as_ref().expect("dart2rust: the index was written just above").1.get(&wanted) {
             Some(bucket) => bucket.clone(),
             None => return None,
         };
@@ -4295,7 +4290,7 @@ pub fn dart_type_applied(base: &'static str, arguments: &[Type]) -> Type {
         arguments.iter().map(|t| t.name).collect::<Vec<_>>().join(", ")
     );
     let names = NAMES.get_or_init(|| Mutex::new(HashSet::new()));
-    let mut names = names.lock().unwrap();
+    let mut names = names.lock().expect("dart2rust: a Mutex cannot be poisoned under panic = abort");
     let kept: &'static str = match names.get(spelled.as_str()) {
         Some(known) => known,
         None => {
@@ -4476,12 +4471,27 @@ pub trait DartList<T> {
 /// `_SemanticsSortGroup`, ws729). `DartList` is generic over every `T`, so
 /// the order cannot live there.
 pub trait DartSortNatural {
-    fn sort_natural(&mut self);
+    fn sort_natural(&mut self) -> Result<(), DartError>;
 }
 
 impl<T: Comparable<T> + Clone> DartSortNatural for Vec<T> {
-    fn sort_natural(&mut self) {
-        self.sort_by(|a, b| a.compare_to(b.clone()).cmp(&0));
+    fn sort_natural(&mut self) -> Result<(), DartError> {
+        // `sort_by` cannot stop early: the first error is kept and the rest
+        // of the sort runs on `Equal`, exactly as `sort_by_dart` does.
+        let failed: std::cell::RefCell<Option<DartError>> = std::cell::RefCell::new(None);
+        self.sort_by(|a, b| match a.compare_to(b.clone()) {
+            Ok(x) => x.cmp(&0),
+            Err(e) => {
+                if failed.borrow().is_none() {
+                    *failed.borrow_mut() = Some(e);
+                }
+                std::cmp::Ordering::Equal
+            }
+        });
+        match failed.into_inner() {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
     }
 }
 
@@ -4585,7 +4595,15 @@ impl<T: Clone> DartList<T> for Vec<T> {
                     std::cmp::Ordering::Equal
                 }
             }),
-            None => panic!("List.sort() without a comparator on a type with no natural order here"),
+            // A refusal, not a Dart throw: Dart would order these by
+            // `Comparable.compare`, and this `impl` is for every `T`, so
+            // there is no `Comparable` bound in scope to do it with.
+            // `sort()` with no argument does not come here -- it is
+            // `DartSortNatural::sort_natural`, which has the bound -- so
+            // this is `sort(f)` with an `f` that turned out to be null.
+            // Unreached in the gallery's whole workspace, measured
+            // 2026-09-11: 0 of 17 `sort_by_dart` calls pass `None`.
+            None => panic!("dart2rust: not translated: List.sort() with a null comparator on a type with no natural order here"),
         }
         match failed.into_inner() {
             Some(e) => Err(e),
@@ -4599,7 +4617,7 @@ impl<T: Clone> DartList<T> for Vec<T> {
                 return Ok(x.clone());
             }
         }
-        panic!("Bad state: No element")
+        Err(dart_no_element())
     }
 
     fn first_where_or<F: Fn(T) -> Result<bool, DartError>, G: Fn() -> Result<T, DartError>>(&self, test: F, or_else: G) -> Result<T, DartError> {
@@ -5963,8 +5981,8 @@ pub fn _abi() -> i64 {
         ("windows", "x86") => 22,
         ("windows", "x86_64") => 23,
         (os, arch) => panic!(
-            "dart:ffi: no Abi.values index for {}_{}; a struct's layout \
-             cannot be read without one",
+            "dart2rust: dart:ffi has no Abi.values index for {}_{}; a struct's \
+             layout cannot be read without one",
             os, arch
         ),
     }
@@ -6216,8 +6234,12 @@ impl<T: Clone + 'static> Stream<T> {
 
     /// `first`.
     pub fn first(&self) -> DartFuture<T> {
-        let first = self.events.borrow().first().cloned().expect("Bad state: No element");
-        DartFuture::ready(Ok(first))
+        match self.events.borrow().first().cloned() {
+            Some(first) => DartFuture::ready(Ok(first)),
+            // Dart's own answer: the future fails, and `await` throws it
+            // where a `try` can catch it.
+            None => DartFuture::ready(Err(dart_no_element())),
+        }
     }
 
     /// `isBroadcast`: a ready stream can be listened to any number of times.
@@ -6274,7 +6296,7 @@ impl DartSink<Vec<i64>> for _ByteCallbackSink {
     fn close(&self) {
         let all = self.accumulated.borrow().clone();
         // A `Sink::close` cannot fail here; the callback's error is loud.
-        (self.callback)(all).unwrap();
+        (self.callback)(all).expect("dart2rust: Sink::close has no error channel to carry the callback's failure");
     }
 }
 
@@ -6412,8 +6434,8 @@ pub type ByteConversionSink = Sink<Vec<i64>>;
 /// `List<T?>.filled(n, null)`: `n` absences.
 /// `null as T`: `T`'s own null, or the `TypeError` Dart throws when `T` has
 /// none.
-pub fn dart_null_as<T: DartNullable>() -> T {
-    T::dart_null().expect("type 'Null' is not a subtype of the cast's type")
+pub fn dart_null_as<T: DartNullable>() -> Result<T, DartError> {
+    T::dart_null().ok_or_else(|| dart_cast_failed(std::any::type_name::<T>()))
 }
 
 /// `null!`: Dart's null check operator on a value that is Dart's `null`.
@@ -6481,6 +6503,12 @@ pub fn dart_remove_last_empty() -> DartError {
         start: None,
         end: None,
     }) as DartError
+}
+
+/// Dart's `RangeError`, by its message -- what `RangeError.checkNotNegative`
+/// and `RangeError.checkValidRange` throw.
+pub fn dart_range_error(message: String) -> DartError {
+    std::rc::Rc::new(RangeError { message, start: None, end: None }) as DartError
 }
 
 pub fn dart_late_init_failed(kind: &str, name: &str) -> DartError {
@@ -6565,15 +6593,15 @@ impl<T: Clone> DartIter<T> {
         DartIter { state: std::rc::Rc::new(std::cell::RefCell::new((items, -1))) }
     }
 
-    pub fn move_next(&self) -> bool {
+    pub fn move_next(&self) -> Result<bool, DartError> {
         let mut state = self.state.borrow_mut();
         state.1 += 1;
-        (state.1 as usize) < state.0.len()
+        Ok((state.1 as usize) < state.0.len())
     }
 
-    pub fn current(&self) -> T {
+    pub fn current(&self) -> Result<T, DartError> {
         let state = self.state.borrow();
-        state.0[state.1 as usize].clone()
+        Ok(state.0[state.1 as usize].clone())
     }
 }
 
@@ -7661,7 +7689,7 @@ impl<T: 'static> DartFuture<T> {
         let wakers = {
             let mut state = self.shared.borrow_mut();
             if state.result.is_some() {
-                panic!("a Future resolved twice");
+                panic!("dart2rust: a Future resolved twice");
             }
             state.result = Some(result);
             std::mem::take(&mut state.wakers)
@@ -7907,7 +7935,7 @@ pub fn future_new<T: Clone + 'static>(
 pub fn future_value<T: DartNullable + 'static>(value: <T as DartNullable>::Or) -> DartFuture<T> {
     DartFuture::ready(Ok(T::option(value)
         .or_else(T::dart_null)
-        .expect("Future.value() without a value on a non-nullable type")))
+        .expect("dart2rust: Future.value() with no value where T is not nullable")))
 }
 
 /// `Future<T>.value()` with no value: the `null` of `T` (`()` for a
@@ -7929,7 +7957,7 @@ pub fn future_sync<T: Clone + 'static>(
     computation: std::rc::Rc<dyn Fn() -> Result<FutureOr<T>, DartError>>,
 ) -> DartFuture<T> {
     match computation() {
-        Ok(FutureOr::Value(value)) => DartFuture::ready(Ok(value.expect("FutureOr value"))),
+        Ok(FutureOr::Value(value)) => DartFuture::ready(Ok(value.expect("dart2rust: a FutureOr::Value holding nothing"))),
         Ok(FutureOr::Future(future)) => future,
         Err(error) => DartFuture::ready(Err(error)),
     }
@@ -7945,7 +7973,7 @@ pub fn future_delayed<T: DartNullable + Clone + 'static>(
         timer_future(duration).await?;
         match computation {
             Some(computation) => computation()?.await,
-            None => Ok(T::dart_null().expect("Future.delayed without a computation on a non-nullable type")),
+            None => Ok(T::dart_null().expect("dart2rust: Future.delayed with no computation where T is not nullable")),
         }
     }))
 }
@@ -8049,7 +8077,7 @@ impl<T: Clone> std::future::Future for FutureOr<T> {
     type Output = Result<T, DartError>;
     fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {
         match self.get_mut() {
-            FutureOr::Value(value) => std::task::Poll::Ready(Ok(value.take().expect("FutureOr polled twice"))),
+            FutureOr::Value(value) => std::task::Poll::Ready(Ok(value.take().expect("dart2rust: a FutureOr polled after it was taken"))),
             FutureOr::Future(future) => std::pin::Pin::new(future).poll(cx),
         }
     }
@@ -8546,11 +8574,12 @@ impl<T: DartNullable + 'static> Completer<T> {
     }
 
     /// `completeError(error, [stackTrace])`: the future fails with it.
-    pub fn complete_error(&self, error: std::rc::Rc<dyn DartAny>, _stack: Option<StackTrace>) {
+    pub fn complete_error(&self, error: std::rc::Rc<dyn DartAny>, _stack: Option<StackTrace>) -> Result<(), DartError> {
         if self.future.is_done() {
-            panic!("Completer completed twice");
+            return Err(dart_state_error("Future already completed"));
         }
         self.future.resolve(Err(error));
+        Ok(())
     }
 
     /// Dart's `Completer.sync`, which completes its future synchronously
@@ -8563,14 +8592,15 @@ impl<T: DartNullable + 'static> Completer<T> {
     /// spells it, `<T as DartNullable>::Or`: for a `Completer<ByteData?>`
     /// that is one `Option`, not two, and its `null` completes the future
     /// with `None`; a `Completer<void>` is completed with `Some(())`.
-    pub fn complete(&self, value: <T as DartNullable>::Or) {
+    pub fn complete(&self, value: <T as DartNullable>::Or) -> Result<(), DartError> {
         if self.future.is_done() {
-            panic!("Completer completed twice");
+            return Err(dart_state_error("Future already completed"));
         }
         let value = T::option(value)
             .or_else(T::dart_null)
-            .expect("Completer completed with null for a non-nullable type");
+            .expect("dart2rust: a Completer<T> completed with null where T is not nullable");
         self.future.resolve(Ok(value));
+        Ok(())
     }
 
     /// Dart's `complete` takes a `FutureOr<T>`, not just a `T`: handed a
@@ -8584,26 +8614,26 @@ impl<T: DartNullable + 'static> Completer<T> {
     /// parameter is the *projected* `T?`, which is what every other call
     /// site passes, and making that generic would move inference under all
     /// of them for the sake of one shape.
-    pub fn complete_or(&self, value: Option<FutureOr<T>>)
+    pub fn complete_or(&self, value: Option<FutureOr<T>>) -> Result<(), DartError>
     where
         T: Clone,
     {
         if self.future.is_done() {
-            panic!("Completer completed twice");
+            return Err(dart_state_error("Future already completed"));
         }
         // `complete([FutureOr<T>? value])`: the argument is optional there
         // too, and an omitted one completes with this type's null.
         let Some(value) = value else {
             let null = T::dart_null()
-                .expect("Completer completed with null for a non-nullable type");
+                .expect("dart2rust: a Completer<T> completed with null where T is not nullable");
             self.future.resolve(Ok(null));
-            return;
+            return Ok(());
         };
         match value {
             FutureOr::Value(value) => {
                 let value = value
                     .or_else(T::dart_null)
-                    .expect("Completer completed with null for a non-nullable type");
+                    .expect("dart2rust: a Completer<T> completed with null where T is not nullable");
                 self.future.resolve(Ok(value));
             }
             // Chained through the scheduler, the way `when_complete` does:
@@ -8619,6 +8649,7 @@ impl<T: DartNullable + 'static> Completer<T> {
                 }));
             }
         }
+        Ok(())
     }
 
     pub fn is_completed(&self) -> bool {
@@ -10465,38 +10496,43 @@ impl<T: FromDynamic> FromDynamic for Option<T> {
 /// through this conversion (`MethodChannel.invokeMethod<String>` on a
 /// `MethodChannel` field, 19 stubs at ws479).
 pub trait CastErased<To> {
-    fn cast_erased(self) -> To;
+    fn cast_erased(self) -> Result<To, DartError>;
 }
 
-fn erased_cast_failed(value: &std::rc::Rc<dyn DartAny>) -> ! {
-    panic!(
-        "uncaught Dart exception: TypeError: a value of type '{}' came back through an erased method where another type was declared",
+/// Dart's `TypeError` for a value that came back through an erased method
+/// as something else. It used to be a `panic!` behind a `-> !`, which is
+/// the shape that hid it: the count that said the prelude had none of
+/// these was `grep -c 'panic!("uncaught'`, and the message was on the line
+/// after the `panic!(` (work.md section 六).
+fn erased_cast_failed(value: &std::rc::Rc<dyn DartAny>) -> DartError {
+    std::rc::Rc::new(TypeError::new(format!(
+        "a value of type '{}' came back through an erased method where another type was declared",
         value.runtime_type().name
-    )
+    ))) as DartError
 }
 
 impl<T: FromDynamic> CastErased<T> for std::rc::Rc<dyn DartAny> {
-    fn cast_erased(self) -> T {
+    fn cast_erased(self) -> Result<T, DartError> {
         match T::from_dynamic(&self) {
-            Some(v) => v,
-            None => erased_cast_failed(&self),
+            Some(v) => Ok(v),
+            None => Err(erased_cast_failed(&self)),
         }
     }
 }
 
 impl<T: FromDynamic> CastErased<Option<T>> for Option<std::rc::Rc<dyn DartAny>> {
-    fn cast_erased(self) -> Option<T> {
+    fn cast_erased(self) -> Result<Option<T>, DartError> {
         match self {
-            None => None,
+            None => Ok(None),
             // The `Null` object inside a `Some` is null too: an erased
             // `dart_cast_any::<Rc<dyn Object>>()` of an absent value answers
             // with it (the gentrait fixture's `get<Blue>()` on a map without
             // one).
             Some(v) => match dart_nullable(v) {
-                None => None,
+                None => Ok(None),
                 Some(v) => match T::from_dynamic(&v) {
-                    Some(t) => Some(t),
-                    None => erased_cast_failed(&v),
+                    Some(t) => Ok(Some(t)),
+                    None => Err(erased_cast_failed(&v)),
                 },
             },
         }
@@ -10505,15 +10541,17 @@ impl<T: FromDynamic> CastErased<Option<T>> for Option<std::rc::Rc<dyn DartAny>> 
 
 /// `invokeMethod<void>`: whatever came back is dropped.
 impl CastErased<()> for Option<std::rc::Rc<dyn DartAny>> {
-    fn cast_erased(self) {}
+    fn cast_erased(self) -> Result<(), DartError> {
+        Ok(())
+    }
 }
 
 impl<A: Clone + 'static, B: Clone + 'static + FromDynamic> CastErased<DartFuture<B>> for DartFuture<A>
 where
     A: CastErased<B>,
 {
-    fn cast_erased(self) -> DartFuture<B> {
-        self.then(std::rc::Rc::new(|v: A| Ok(v.cast_erased())), None)
+    fn cast_erased(self) -> Result<DartFuture<B>, DartError> {
+        Ok(self.then(std::rc::Rc::new(|v: A| v.cast_erased()), None))
     }
 }
 
@@ -10682,7 +10720,7 @@ pub fn dart_call_error_handler<R: FromDynamic + Clone + 'static>(
     dart_future_or_from_dynamic::<R>(dart_call_function(handler, args)?)
 }
 
-pub fn dart_cast_erased<To, From: CastErased<To>>(value: From) -> To {
+pub fn dart_cast_erased<To, From: CastErased<To>>(value: From) -> Result<To, DartError> {
     value.cast_erased()
 }
 
@@ -10709,46 +10747,46 @@ impl<K: FromDynamic + DartEq, V: FromDynamic> FromDynamic for Map<K, V> {
 /// converted (`FromDynamic`), which is the representation change Dart's
 /// `cast` does not need and this one does.
 impl<K: DartAny + Clone + 'static, V: DartAny + Clone + 'static> Map<K, V> {
-    pub fn cast_to<K2: FromDynamic + DartEq, V2: FromDynamic>(&self) -> Map<K2, V2> {
+    pub fn cast_to<K2: FromDynamic + DartEq, V2: FromDynamic>(&self) -> Result<Map<K2, V2>, DartError> {
         let mut out: Vec<(K2, V2)> = Vec::new();
         for (k, v) in self.entries.iter() {
             let key: std::rc::Rc<dyn DartAny> = dart_boxed(k.clone());
             let value: std::rc::Rc<dyn DartAny> = dart_boxed(v.clone());
             match (K2::from_dynamic(&key), V2::from_dynamic(&value)) {
                 (Some(k2), Some(v2)) => out.push((k2, v2)),
-                _ => erased_cast_failed(&value),
+                _ => return Err(erased_cast_failed(&value)),
             }
         }
-        Map::from_converted(out)
+        Ok(Map::from_converted(out))
     }
 }
 
 impl<T: DartAny + Clone + 'static> Set<T> {
-    pub fn cast_to<T2: FromDynamic + DartEq>(&self) -> Set<T2> {
+    pub fn cast_to<T2: FromDynamic + DartEq>(&self) -> Result<Set<T2>, DartError> {
         let mut out: Vec<T2> = Vec::new();
         for v in self.iter() {
             let value: std::rc::Rc<dyn DartAny> = dart_boxed(v.clone());
             match T2::from_dynamic(&value) {
                 Some(t) => out.push(t),
-                None => erased_cast_failed(&value),
+                None => return Err(erased_cast_failed(&value)),
             }
         }
-        Set::from_converted(out)
+        Ok(Set::from_converted(out))
     }
 }
 
 pub trait DartListCast {
-    fn cast_to<T2: FromDynamic>(&self) -> Vec<T2>;
+    fn cast_to<T2: FromDynamic>(&self) -> Result<Vec<T2>, DartError>;
 }
 
 impl<T: DartAny + Clone + 'static> DartListCast for Vec<T> {
-    fn cast_to<T2: FromDynamic>(&self) -> Vec<T2> {
+    fn cast_to<T2: FromDynamic>(&self) -> Result<Vec<T2>, DartError> {
         self.iter()
             .map(|v| {
                 let value: std::rc::Rc<dyn DartAny> = dart_boxed(v.clone());
                 match T2::from_dynamic(&value) {
-                    Some(t) => t,
-                    None => erased_cast_failed(&value),
+                    Some(t) => Ok(t),
+                    None => Err(erased_cast_failed(&value)),
                 }
             })
             .collect()
@@ -11173,8 +11211,13 @@ pub struct ArgumentError {
 impl ArgumentError {
     /// `ArgumentError.checkNotNull(value, [name])`: the value, or a panic
     /// where Dart throws.
-    pub fn check_not_null<T>(value: Option<T>, name: Option<String>) -> T {
-        value.unwrap_or_else(|| panic!("ArgumentError: {} must not be null", name.unwrap_or_default()))
+    pub fn check_not_null<T>(value: Option<T>, name: Option<String>) -> Result<T, DartError> {
+        value.ok_or_else(|| {
+            dart_argument_error(format!(
+                "Must not be null: {}",
+                name.clone().unwrap_or_default()
+            ))
+        })
     }
 
     /// `ArgumentError([dynamic message, String? name])`.
@@ -11419,32 +11462,29 @@ impl RangeError {
 
     /// `RangeError.checkValidRange(start, end, length, [startName, endName,
     /// message])`: the end, or a panic where Dart throws.
-    pub fn check_valid_range(start: i64, end: Option<i64>, length: i64, start_name: Option<String>, end_name: Option<String>, message: Option<String>) -> i64 {
+    pub fn check_valid_range(start: i64, end: Option<i64>, length: i64, start_name: Option<String>, end_name: Option<String>, message: Option<String>) -> Result<i64, DartError> {
         let end = end.unwrap_or(length);
         if start < 0 || start > length || end < start || end > length {
-            panic!("RangeError: {}", message.unwrap_or_else(|| format!(
+            return Err(dart_range_error(message.unwrap_or_else(|| format!(
                 "Invalid range {}..{} ({}, {}) for length {}",
                 start, end, start_name.unwrap_or_default(), end_name.unwrap_or_default(), length
-            )));
+            ))));
         }
-        end
+        Ok(end)
     }
 
     /// `RangeError.checkNotNegative(value, [name, message])`: the value, or
     /// a panic where Dart throws -- a static of the prelude's has no
     /// `Result` signature to carry it.
-    pub fn check_not_negative(value: i64, name: Option<String>, message: Option<String>) -> i64 {
+    pub fn check_not_negative(value: i64, name: Option<String>, message: Option<String>) -> Result<i64, DartError> {
         if value < 0 {
-            panic!(
-                "RangeError: {}",
-                message.unwrap_or_else(|| format!(
-                    "{}: must not be negative: {}",
-                    name.unwrap_or_else(|| "index".to_string()),
-                    value
-                ))
-            );
+            return Err(dart_range_error(message.unwrap_or_else(|| format!(
+                "{}: must not be negative: {}",
+                name.unwrap_or_else(|| "index".to_string()),
+                value
+            ))));
         }
-        value
+        Ok(value)
     }
 
     /// `RangeError.range(value, min, max, [name, message])`.
@@ -11586,7 +11626,7 @@ impl ByteData {
     }
 
     pub fn get_uint16(&self, at: i64, _endian: Endian) -> i64 {
-        u16::from_le_bytes(self.four(at, 2)[..2].try_into().unwrap()) as i64
+        u16::from_le_bytes(self.four(at, 2)[..2].try_into().expect("dart2rust: a fixed-length slice is its own array")) as i64
     }
     pub fn set_uint16(&mut self, at: i64, value: i64, _endian: Endian) {
         let bytes = (value as u16).to_le_bytes();
@@ -11604,7 +11644,7 @@ impl ByteData {
     }
 
     pub fn get_int32(&self, at: i64, _endian: Endian) -> i64 {
-        i32::from_le_bytes(self.four(at, 4)[..4].try_into().unwrap()) as i64
+        i32::from_le_bytes(self.four(at, 4)[..4].try_into().expect("dart2rust: a fixed-length slice is its own array")) as i64
     }
 
     pub fn set_int32(&mut self, at: i64, value: i64, _endian: Endian) {
@@ -11613,7 +11653,7 @@ impl ByteData {
     }
 
     pub fn get_uint32(&self, at: i64, _endian: Endian) -> i64 {
-        u32::from_le_bytes(self.four(at, 4)[..4].try_into().unwrap()) as i64
+        u32::from_le_bytes(self.four(at, 4)[..4].try_into().expect("dart2rust: a fixed-length slice is its own array")) as i64
     }
 
     pub fn set_uint32(&mut self, at: i64, value: i64, _endian: Endian) {
@@ -11622,7 +11662,7 @@ impl ByteData {
     }
 
     pub fn get_float32(&self, at: i64, _endian: Endian) -> f64 {
-        f32::from_le_bytes(self.four(at, 4)[..4].try_into().unwrap()) as f64
+        f32::from_le_bytes(self.four(at, 4)[..4].try_into().expect("dart2rust: a fixed-length slice is its own array")) as f64
     }
 
     pub fn set_float32(&mut self, at: i64, value: f64, _endian: Endian) {
@@ -11631,7 +11671,7 @@ impl ByteData {
     }
 
     pub fn get_float64(&self, at: i64, _endian: Endian) -> f64 {
-        f64::from_le_bytes(self.eight(at)[..8].try_into().unwrap())
+        f64::from_le_bytes(self.eight(at)[..8].try_into().expect("dart2rust: a fixed-length slice is its own array"))
     }
 
     pub fn set_float64(&mut self, at: i64, value: f64, _endian: Endian) {
