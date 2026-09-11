@@ -367,16 +367,28 @@ augment class KernelFrontend {
       // and 3 stubs at ws836).
       final escapes = _ValueRead(node.variable);
       final owner = _member;
-      final ownerBody = owner is Procedure
-          ? owner.function.body
-          : owner is Constructor
-          ? owner.function.body
-          : null;
-      ownerBody?.accept(escapes);
+      // The *whole* member, and a constructor's whole member is its
+      // initializer list as much as its body: `TextFormField` writes
+      // `onChangedHandler` inside the `builder:` closure of a
+      // super-initializer and hands it to `TextField.onChanged`. Reading
+      // `function.body` alone found no read of the name anywhere, lent the
+      // binding, and the tear-off did not compile (1 stub at ws1098; the
+      // `ctorlocalfn` fixture writes the same declaration in both places).
+      final ownerBodies = <TreeNode?>[
+        if (owner is Procedure) owner.function.body,
+        if (owner is Constructor) ...[
+          owner.function.body,
+          ...owner.initializers,
+        ],
+        if (owner is Field) owner.initializer,
+      ];
       // ..and a call from inside a closure written beside it is a use that
       // outlives the `let` a borrowing binding is (ws879).
       final nested = _CalledInNestedFunction(node.variable);
-      ownerBody?.accept(nested);
+      for (final body in ownerBodies) {
+        body?.accept(escapes);
+        body?.accept(nested);
+      }
       final lends = !escapes.found && !nested.found;
       final wasLending = _lendingLocal;
       if (lends) _lendingLocal = true;
