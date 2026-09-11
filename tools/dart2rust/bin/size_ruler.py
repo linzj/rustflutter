@@ -203,12 +203,18 @@ def main():
         '--unwind-tables', action='store_true',
         help='keep `.eh_frame` (the default is to build without it)')
     ap.add_argument(
-        '--icf', choices=['safe', 'all', 'none'], default='safe',
-        help='fold identical functions at link time (ld.gold); `safe` is '
-             'the default, `all` was measured at -4.9 MB of `.text` but no '
-             'ruler here can exercise a release-only link (see ws1083)')
+        '--icf', choices=['safe', 'all', 'none'], default='all',
+        help='fold identical functions at link time (ld.gold). `all` is the '
+             'default since ws1086, when `--run` gave a release-only flag a '
+             'ruler at last: 707 nodes, 0 panics, 0 type differences')
     ap.add_argument('--report')
     ap.add_argument('--crates', type=int, default=10)
+    ap.add_argument(
+        '--run', action='store_true',
+        help='run the release binary under the render-tree environment and '
+             'diff its walk against the reference, the way render_ruler.py '
+             'does for debug -- the only way a release-only flag (`--icf`) '
+             'can be checked at all')
     args = ap.parse_args()
 
     if not args.no_build:
@@ -250,6 +256,33 @@ def main():
     count, waste, seen = monomorphic(syms)
     say('monomorphic %d extra   %d bytes   %.1f%%'
         % (count, waste, waste * 100.0 / max(seen, 1)))
+
+    if args.run:
+        # The same environment `run_main.sh` gives the debug binary, and the
+        # same comparison `render_ruler.py` makes: `size=`/`offset=` are the
+        # layout numbers the headless runtime cannot produce, so the ruler
+        # is the rest of the line.
+        sys.path.insert(0, HERE)
+        import render_ruler
+        want = render_ruler.types(render_ruler.read(render_ruler.REF))
+        env = dict(os.environ, DART2RUST_OS='android',
+                   DART2RUST_DUMP_RENDER_TREE='1', RUST_BACKTRACE='1')
+        env.setdefault(
+            'DART2RUST_ASSETS',
+            os.path.expanduser('~/gallery_upstream/build/flutter_assets'))
+        env.setdefault('DART2RUST_RUN_SECONDS', '60')
+        r = subprocess.run(['timeout', '180', binary], cwd=WS, env=env,
+                           capture_output=True, text=True)
+        text = r.stdout + r.stderr
+        panics = text.count('panicked at')
+        got = (render_ruler.types(
+            text.split(render_ruler.BEGIN, 1)[1]
+                .split(render_ruler.END, 1)[0].splitlines())
+            if render_ruler.BEGIN in text and render_ruler.END in text else [])
+        diff = sum(1 for a, b in zip(got, want) if a != b) \
+            + abs(len(got) - len(want))
+        say('release run: nodes=%d panics=%d typediff=%d'
+            % (len(got), panics, diff))
 
     if args.report:
         io.open(args.report, 'w', encoding='utf-8').write('\n'.join(lines) + '\n')
