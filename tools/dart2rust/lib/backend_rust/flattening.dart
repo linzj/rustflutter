@@ -323,6 +323,15 @@ augment class RustBackend {
   /// some is a different object, and the shapes have to agree.
   static const _preludeConstInstances = {'Stream': 'Stream::empty()'};
 
+  /// A prelude class that is a *handle* to a trait, and the struct whose
+  /// constructor makes one.
+  ///
+  /// `ByteConversionSink` is `Rc<dyn DartSink<Vec<i64>>>` -- an alias for an
+  /// `Rc`, and Rust will not take an inherent `impl` on that, so
+  /// `ByteConversionSink::new` can never resolve however the call is spelled.
+  /// The constructor lives on the struct that implements the trait.
+  static const _preludeCtorOwners = {'ByteConversionSink': '_ByteCallbackSink'};
+
   static const _preludeClasses = {
     // The prelude's plain value classes: `x is DateTime` in a date
     // picker's `_buildDayItem`, `x is ByteData` in the message codecs.

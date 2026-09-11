@@ -6102,23 +6102,33 @@ impl<T: Clone + 'static> Stream<T> {
 
     /// `listen(onData, {onError, onDone, cancelOnError})`: every event, then
     /// done. `onError` never fires -- a ready stream holds no errors.
+    ///
+    /// The slots are the ones Dart declares, not ones invented here.
+    /// `onError` is a bare `Function`: it takes the error alone or the error
+    /// and a stack trace, and the runtime picks by arity --
+    /// `dart_call_error_handler` is that rule, and `handleError`,
+    /// `catchError` and the future paths have used it all along. And the
+    /// callbacks return `Result`, because every closure this compiler emits
+    /// does: 9,068 `dyn Fn` slots on the generated side, without exception.
+    /// A slot here saying `-> ()` was the outlier, and a caller handing it
+    /// what the compiler actually emits did not fit.
     pub fn listen(
         &self,
-        on_data: Option<std::rc::Rc<dyn Fn(T) -> ()>>,
-        _on_error: Option<std::rc::Rc<dyn Fn(std::rc::Rc<dyn DartAny>, Option<StackTrace>) -> ()>>,
-        on_done: Option<std::rc::Rc<dyn Fn() -> ()>>,
+        on_data: Option<std::rc::Rc<dyn Fn(T) -> Result<(), DartError>>>,
+        _on_error: Option<std::rc::Rc<dyn DartAny>>,
+        on_done: Option<std::rc::Rc<dyn Fn() -> Result<(), DartError>>>,
         _cancel_on_error: Option<bool>,
-    ) -> StreamSubscription<T> {
+    ) -> Result<StreamSubscription<T>, DartError> {
         let events: Vec<T> = self.events.borrow().clone();
         if let Some(f) = &on_data {
             for e in events {
-                f(e);
+                f(e)?;
             }
         }
         if let Some(d) = &on_done {
-            d();
+            d()?;
         }
-        StreamSubscription { _phantom: std::marker::PhantomData }
+        Ok(StreamSubscription { _phantom: std::marker::PhantomData })
     }
 
     /// `toList()`.

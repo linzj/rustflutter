@@ -883,6 +883,16 @@ augment class RustBackend {
     // The *name*, not the type: a counted class's type is `Rc<Foo>` and its
     // constructor is `Foo::new`, which hands one out. Spelling the type here
     // wrote `Rc<Foo>::new()`, which does not parse.
+    // A prelude class that is a handle to a trait has no constructor of its
+    // own to call (`_preludeCtorOwners`); the implementing struct has it.
+    // This is where the text is built -- the two static-call paths in
+    // `nullaware.dart` are not, which two rounds of patching them and
+    // reading back a byte-identical error established (ws1067).
+    final ctorOwner = _preludeCtorOwners[t.name];
+    if (ctorOwner != null) {
+      return '$ctorOwner::${_ctorName(constructor)}'
+          '(${args.map(expr).join(', ')})';
+    }
     final counted = library.resolve(t)?.counted ?? false;
     final name = t.arguments.isEmpty
         // The bare name: `type(t)` of an argument-less `Map` fills in its

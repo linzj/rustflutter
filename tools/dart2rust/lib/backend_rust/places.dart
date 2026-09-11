@@ -916,6 +916,10 @@ augment class RustBackend {
   /// The prelude's methods that take a callback and so return `Result`
   /// themselves (see `DartError` there).
   static const _preludeFailing = {
+    // `Stream.listen` calls the Dart closures it is handed, and a Dart
+    // closure can throw; their slots say `-> Result` because every
+    // closure this compiler emits does.
+    'listen',
     // `convert` on every prelude converter: a `Converter` runs a Dart
     // closure, and the two fixed ones (`JsonUtf8Encoder`, `Utf8Decoder`)
     // return `Result` to match (`JSONMessageCodec.decodeMessage`, ws506).
