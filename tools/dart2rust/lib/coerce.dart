@@ -975,6 +975,7 @@ IrExpr coerceInto(
       null,
       'dart_from_dynamic',
       [boxed],
+      fails: true,
       typeArguments: [slot],
     )..rustType = slot;
   }
@@ -1006,6 +1007,7 @@ IrExpr coerceInto(
       null,
       'dart_from_dynamic',
       [boxed],
+      fails: true,
       typeArguments: [slot],
     )..rustType = slot;
   }
@@ -1034,6 +1036,7 @@ IrExpr coerceInto(
       null,
       'dart_from_dynamic',
       [value],
+      fails: true,
       typeArguments: [slot],
     )..rustType = slot;
   }
@@ -1236,7 +1239,7 @@ IrExpr _typedFunction(IrExpr value, IrType slot, TypeWorld world) {
       // A clone: the adapter after it moves the binding in.
       IrStaticCall(null, 'dart_function_same', [
         IrCall(IrLocal('__f'), 'clone', const []),
-      ])..rustType = IrType(slot.name, nullable: true),
+      ], fails: true)..rustType = IrType(slot.name, nullable: true),
       adapter,
       nullableResult: false,
       eager: false,

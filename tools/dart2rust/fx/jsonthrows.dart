@@ -28,6 +28,11 @@ String encode(Object value) {
   }
 }
 
+/// An object `jsonEncode` has no way to write and no `toEncodable` for.
+class Unencodable {
+  const Unencodable();
+}
+
 String use() {
   final out = <String>[];
   out.add(decode('{"a": 1}'));
@@ -36,6 +41,9 @@ String use() {
   out.add(decode('not json at all'));
   out.add(encode(<String, Object>{'a': 1, 'b': 'two'}));
   out.add(encode(<Object, Object>{1: 'one'}));
+  // Nothing the encoder has a shape for: the fall-through at the end of
+  // `json_write`, which was the last `panic!` in that pair.
+  out.add(encode(Unencodable()));
   // ..and the program is still running to say so.
   out.add('alive');
   return out.join('|');

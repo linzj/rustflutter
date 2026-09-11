@@ -6335,7 +6335,7 @@ impl Iterable {
         (0..count.max(0))
             .map(|i| match &generator {
                 Some(f) => f(i),
-                None => Ok(dart_from_dynamic::<T>(std::rc::Rc::new(i) as std::rc::Rc<dyn DartAny>)),
+                None => dart_from_dynamic::<T>(std::rc::Rc::new(i) as std::rc::Rc<dyn DartAny>),
             })
             .collect()
     }
@@ -7735,12 +7735,20 @@ impl<T: 'static> DartFuture<T> {
 
     /// The future of `f(value)`: a `Future<bool>` where a `Future<dynamic>`
     /// is expected, mapped by the coercion rule (`IrMapElements`).
-    pub fn map<U: 'static>(&self, f: impl Fn(T) -> U + 'static) -> DartFuture<U>
+    ///
+    /// The callback is fallible, and its error becomes the future's --
+    /// which is what Dart does with a `then` callback that throws. It
+    /// took a plain `U` until 2026-09-11, and that plain slot was the
+    /// last thing writing `.unwrap()` into the generated code: a coercion
+    /// inside the body (`dart_from_dynamic`) had no `Result` to come out
+    /// of, so it aborted. Four sites, all of them `Navigator.popped` and
+    /// `AssetBundle`'s caches.
+    pub fn map<U: 'static>(&self, f: impl Fn(T) -> Result<U, DartError> + 'static) -> DartFuture<U>
     where
         T: Clone + 'static,
     {
         let me = self.clone();
-        DartFuture::spawn_named("map", Box::pin(async move { Ok(f(me.await?)) }))
+        DartFuture::spawn_named("map", Box::pin(async move { f(me.await?) }))
     }
 
     /// `future.whenComplete(action)`: the action runs when the future
@@ -8598,7 +8606,7 @@ impl<T: DartNullable + 'static> Completer<T> {
         }
         let value = T::option(value)
             .or_else(T::dart_null)
-            .expect("dart2rust: a Completer<T> completed with null where T is not nullable");
+            .ok_or_else(dart_null_check_failed)?;
         self.future.resolve(Ok(value));
         Ok(())
     }
@@ -8625,7 +8633,7 @@ impl<T: DartNullable + 'static> Completer<T> {
         // too, and an omitted one completes with this type's null.
         let Some(value) = value else {
             let null = T::dart_null()
-                .expect("dart2rust: a Completer<T> completed with null where T is not nullable");
+                .ok_or_else(dart_null_check_failed)?;
             self.future.resolve(Ok(null));
             return Ok(());
         };
@@ -8633,7 +8641,7 @@ impl<T: DartNullable + 'static> Completer<T> {
             FutureOr::Value(value) => {
                 let value = value
                     .or_else(T::dart_null)
-                    .expect("dart2rust: a Completer<T> completed with null where T is not nullable");
+                    .ok_or_else(dart_null_check_failed)?;
                 self.future.resolve(Ok(value));
             }
             // Chained through the scheduler, the way `when_complete` does:
@@ -10612,15 +10620,19 @@ pub fn dart_function_object<F: ?Sized + 'static>(
     dart_object(DartFunction { arity, call, original, identity }) as std::rc::Rc<dyn DartAny>
 }
 
-fn dart_function_of(object: &std::rc::Rc<dyn DartAny>) -> &DartFunction {
+/// The `DartFunction` behind a handle, for the three entry points that
+/// want one -- and nothing more: *which* error a non-function is depends
+/// on who asked, so each caller says its own.
+///
+/// This read `panic!("dart2rust: a {} called as a function")` until the
+/// `dart2rust:` prefix stopped counting as a licence
+/// (`bin/panic_ruler.py`). It is not a fact about this translator: a
+/// `dynamic` arrives here every time a callback slot is filled from a map
+/// or a channel message, and what the other end put there is the
+/// program's business, caught by the program.
+fn dart_function_of(object: &std::rc::Rc<dyn DartAny>) -> Option<&DartFunction> {
     let any: &dyn Object = object.as_ref();
-    match any.as_any().downcast_ref::<DartFunction>() {
-        Some(function) => function,
-        None => panic!(
-            "dart2rust: a {} called as a function",
-            object.runtime_type().name
-        ),
-    }
+    any.as_any().downcast_ref::<DartFunction>()
 }
 
 /// The typed function a `Function` was made from, when it is of type `F`.
@@ -10644,26 +10656,41 @@ pub fn dart_is_function(value: &std::rc::Rc<dyn DartAny>) -> bool {
     any.as_any().downcast_ref::<DartFunction>().is_some()
 }
 
-pub fn dart_function_same<F: ?Sized + 'static>(object: std::rc::Rc<dyn DartAny>) -> Option<std::rc::Rc<F>> {
-    dart_function_of(&object).original.downcast_ref::<std::rc::Rc<F>>().cloned()
+pub fn dart_function_same<F: ?Sized + 'static>(object: std::rc::Rc<dyn DartAny>) -> Result<Option<std::rc::Rc<F>>, DartError> {
+    // `Ok(None)` and `Err` are different answers: None is "a function, but
+    // not this signature", which `_typedFunction` answers with an adapter;
+    // an object that is no function at all is the coercion failing, and
+    // Dart fails a coercion with a `TypeError`.
+    let function = dart_function_of(&object)
+        .ok_or_else(|| dart_cast_failed(std::any::type_name::<F>()))?;
+    Ok(function.original.downcast_ref::<std::rc::Rc<F>>().cloned())
 }
 
 /// Out of a `dynamic` into a type with a conversion of its own: Dart's
-/// cast, failing as one does.
-pub fn dart_from_dynamic<T: FromDynamic>(value: std::rc::Rc<dyn DartAny>) -> T {
+/// implicit downcast, failing as one does -- with a `TypeError`, which is
+/// the value Dart throws and programs catch, not an abort. This is where
+/// every coercion out of `Object`/`dynamic` lands (`coerce.dart`), so the
+/// object that does not convert is the *program's* fact; the twin below
+/// (`dart_future_or_from_dynamic`) already answered it this way.
+pub fn dart_from_dynamic<T: FromDynamic>(value: std::rc::Rc<dyn DartAny>) -> Result<T, DartError> {
     match T::from_dynamic(&value) {
-        Some(converted) => converted,
-        None => panic!(
-            "dart2rust: a {} where a `{}` was wanted",
+        Some(converted) => Ok(converted),
+        None => Err(std::rc::Rc::new(TypeError::new(format!(
+            "a {} where a `{}` was wanted",
             value.runtime_type().name,
             std::any::type_name::<T>()
-        ),
+        ))) as DartError),
     }
 }
 
+/// A non-function *called*: Dart looks for `call` on it and finds none.
+fn dart_not_callable(object: &std::rc::Rc<dyn DartAny>) -> DartError {
+    dart_no_such_method_of(object.runtime_type().name, "call")
+}
+
 /// How many positional arguments the function takes.
-pub fn dart_function_arity(object: &std::rc::Rc<dyn DartAny>) -> usize {
-    dart_function_of(object).arity
+pub fn dart_function_arity(object: &std::rc::Rc<dyn DartAny>) -> Result<usize, DartError> {
+    Ok(dart_function_of(object).ok_or_else(|| dart_not_callable(object))?.arity)
 }
 
 /// Dart's dynamic call on a `Function`: an error on the wrong number of
@@ -10672,7 +10699,7 @@ pub fn dart_call_function(
     object: std::rc::Rc<dyn DartAny>,
     args: Vec<std::rc::Rc<dyn DartAny>>,
 ) -> Result<std::rc::Rc<dyn DartAny>, DartError> {
-    let function = dart_function_of(&object);
+    let function = dart_function_of(&object).ok_or_else(|| dart_not_callable(&object))?;
     if function.arity != args.len() {
         return Err(std::rc::Rc::new(StateError::new(format!(
             "a function of {} argument(s) called with {}",
@@ -10712,7 +10739,7 @@ pub fn dart_call_error_handler<R: FromDynamic + Clone + 'static>(
     handler: std::rc::Rc<dyn DartAny>,
     error: DartError,
 ) -> Result<FutureOr<R>, DartError> {
-    let args: Vec<std::rc::Rc<dyn DartAny>> = if dart_function_arity(&handler) >= 2 {
+    let args: Vec<std::rc::Rc<dyn DartAny>> = if dart_function_arity(&handler)? >= 2 {
         vec![error, std::rc::Rc::new(StackTrace::current()) as std::rc::Rc<dyn DartAny>]
     } else {
         vec![error]
@@ -11099,7 +11126,10 @@ fn json_write(out: &mut String, value: &std::rc::Rc<dyn DartAny>) -> Result<(), 
         Map<String, std::rc::Rc<dyn DartAny>>, Map<String, Option<std::rc::Rc<dyn DartAny>>>, Map<String, String>, Map<String, i64>, Map<String, f64>, Map<String, bool>,
         Map<std::rc::Rc<dyn DartAny>, std::rc::Rc<dyn DartAny>>, Map<std::rc::Rc<dyn DartAny>, Option<std::rc::Rc<dyn DartAny>>>,
         Map<Option<std::rc::Rc<dyn DartAny>>, Option<std::rc::Rc<dyn DartAny>>>);
-    panic!("dart2rust: JsonCodec.encode of a {}", value.runtime_type().name);
+    // Not one of the shapes above: Dart's own encoder throws
+    // `JsonUnsupportedObjectError` here, and `JsonCodec.encode` is called
+    // on values a program builds, so the answer is a value too.
+    Err(json_unsupported(format!("a {}", value.runtime_type().name)))
 }
 
 /// `dart:convert`'s `utf8`, a `const Utf8Codec()`: a name for now.

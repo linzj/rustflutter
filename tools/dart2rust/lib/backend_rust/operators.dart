@@ -596,9 +596,12 @@ augment class RustBackend {
   /// the whole body infallible to say so. The loop body is the same
   /// expression with `?` in it, collected by hand.
   ///
-  /// Not the `Future` and `Iterator` kinds: those two hand the closure to
-  /// the prelude, whose slot declares a plain value, and changing that is
-  /// a different question (`DartIterable::map`).
+  /// Not the `Iterator` kind: it hands the closure to the prelude, whose
+  /// slot declares a plain value, and changing that is a different
+  /// question (`DartIterable::map`). `Future` *was* in that sentence
+  /// until `DartFuture::map` was made fallible: its four call sites were
+  /// where the last `.unwrap()` in the generated code came out, a
+  /// coercion inside the body with no `Result` to leave by.
   String _mapElements(IrExpr collection, String kind, IrExpr body) {
     if (_failure != null && kind != 'Future' && kind != 'Iterator') {
       final bound = kind == 'Map' ? '(k, v)' : 'v';
@@ -613,7 +616,11 @@ augment class RustBackend {
       };
     }
     return switch (kind) {
-      'Future' => '${expr(collection)}.map(|v| ${_mappedBody(body)})',
+      // `f(v)` fails the future, as a throwing `then` callback does in
+      // Dart. Wrapped in `Ok` either way: the slot is a `Result`.
+      'Future' =>
+        '${expr(collection)}.map(|v| -> Result<_, $_error> { Ok('
+            '${_failure != null ? expr(body) : _mappedBody(body)}) })',
       'Iterator' =>
         'dart_iterator_map(${expr(collection)}, |v| ${_mappedBody(body)})',
       'Set' =>

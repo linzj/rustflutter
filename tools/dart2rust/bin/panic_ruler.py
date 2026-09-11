@@ -29,10 +29,19 @@ rather than about the program being translated:
 
   * `dart2rust: stubbed ..`        a member this compiler did not translate
   * `dart2rust: not translated ..` a refusal, by name
-  * `dart2rust: ..`                any other refusal written by this compiler
+  * `dart2rust: a dynamic slot ..` the census did not predict the type
   * `unreachable!(..)`             TFA said the code is dead
   * `todo!(..)`                    an untranslated class
   * `native ..`                    the host answered nothing
+
+That list is the whole of it, and each entry is matched in full. A
+`dart2rust:` prefix is not itself a licence: `panic!("dart2rust: a {}
+where a `{}` was wanted")` is a Dart `TypeError` with this compiler's name
+written on it, and Dart programs catch those. Folding every other
+`dart2rust:` message into one legitimate bucket is how 516 aborts read as
+zero on the day the rule was declared finished (2026-09-11); each message
+now stands under its own name, and a new one is illegitimate until someone
+argues it onto the list.
 
 Everything else in this report is a Dart-visible throw that the translated
 program cannot take: it belongs in a `Result`.
@@ -101,8 +110,6 @@ def _bucket(message):
                    'dart2rust: a dynamic slot'):
         if message.startswith(prefix):
             return prefix + ' ..'
-    if message.startswith('dart2rust: '):
-        return 'dart2rust: .. (other)'
     if message.startswith('native '):
         return 'native ..'
     if message.startswith('uncaught Dart exception'):
@@ -140,7 +147,6 @@ LEGITIMATE = (
     'dart2rust: stubbed ..',
     'dart2rust: not translated ..',
     'dart2rust: a dynamic slot ..',
-    'dart2rust: .. (other)',
     'native ..',
 )
 
