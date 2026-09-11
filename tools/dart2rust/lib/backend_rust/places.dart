@@ -544,7 +544,9 @@ augment class RustBackend {
     }
     if (target is IrNullCheck) {
       final inner = _mutPlace(target.operand);
-      if (inner != null) return '$inner.as_mut().unwrap()';
+      if (inner != null) {
+        return '$inner.as_mut().ok_or_else(dart_null_check_failed)$_propagate';
+      }
       // ..a plain local `Option<..>` promoted: the local itself.
       var operand = target.operand;
       if (operand is IrCall &&
@@ -554,7 +556,8 @@ augment class RustBackend {
         operand = operand.target!;
       }
       if (operand is IrLocal && !_cellLocals.containsKey(operand.name)) {
-        return '${snake(operand.name)}.as_mut().unwrap()';
+        return '${snake(operand.name)}.as_mut()'
+            '.ok_or_else(dart_null_check_failed)$_propagate';
       }
       return null;
     }
@@ -606,7 +609,8 @@ augment class RustBackend {
         final place = _collectionPlace(inner.target!);
         return place == null
             ? null
-            : '$place.get_mut(&${_borrowed(inner.args.single)}).unwrap()';
+            : '$place.get_mut(&${_borrowed(inner.args.single)})'
+                  '.ok_or_else(dart_null_check_failed)$_propagate';
       }
       return null;
     }

@@ -20,7 +20,7 @@ void main() {
   expect(mutatingByteDataNames.length, 10, 'ByteData setters');
   expect(mutatingListNames.length, 22, 'what _listReceiver looks for');
   expect(mutatingThisFieldNames.length, 22, 'what _ThisWriteFinder looks for');
-  expect(mutatingRustOnlyNames.length, 20, 'Rust names with no Dart member');
+  expect(mutatingRustOnlyNames.length, 21, 'Rust names with no Dart member');
 
   expect(mutatingNames, {
     ...mutatingSequenceNames,
@@ -66,7 +66,7 @@ void main() {
       if (!noRustMutatorNames.contains(n)) _snake(n),
     ...mutatingRustOnlyNames,
   };
-  expect(inPlace.length, 52, 'Rust names that change the receiver');
+  expect(inPlace.length, 53, 'Rust names that change the receiver');
   expectTrue(inPlace.contains('add_all'), 'addAll snakes into it');
   expectTrue(inPlace.contains('set_uint16'), 'the byte-view setters are in it');
   expectTrue(
@@ -81,7 +81,7 @@ void main() {
   // and which method takes `&mut self`, and it is far smaller than `_inPlace`.
   // Both directions are written out, so folding the table into one place
   // cannot turn into closing the gap without this test saying so.
-  expect(mutatingWalkSelfRustNames.length, 12, 'what _WalkSelf looks for');
+  expect(mutatingWalkSelfRustNames.length, 13, 'what _WalkSelf looks for');
   expect(mutatingWalkSelfRustNames.difference(inPlace), {
     '!insert',
     '!remove_at',

@@ -546,8 +546,8 @@ augment class RustBackend {
     // `removeLast()`: `pop()` answers an `Option`, Dart's throws on an
     // empty list -- the unwrap is that (`ModalRoute.didPop`'s
     // `_localHistory.removeLast()`, ws551).
-    if (name == 'pop' && args.isEmpty && target != null) {
-      return '$receiver.pop().unwrap()';
+    if (name == '!pop' && args.isEmpty && target != null) {
+      return '$receiver.pop().ok_or_else(dart_remove_last_empty)$_propagate';
     }
     // `Object.toString()`: the `DartAny` protocol's (a struct's own
     // override, an enum's `X.value`, `Instance of` otherwise).

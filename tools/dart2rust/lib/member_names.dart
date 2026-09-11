@@ -163,6 +163,8 @@ const noRustMutatorNames = {'[]=', 'updateAll'};
 const mutatingRustOnlyNames = {
   'push',
   'pop',
+  // Dart's `removeLast`, which is `pop` with a throw on the empty list.
+  '!pop',
   'push_back',
   'push_front',
   'pop_back',
@@ -207,6 +209,7 @@ const mutatingWalkSelfRustNames = {
   'extend',
   'clear',
   'pop',
+  '!pop',
   'insert',
   'remove',
   '!map_remove',

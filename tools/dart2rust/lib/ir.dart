@@ -1165,7 +1165,11 @@ const listMethodNames = <String, String>{
   'clear': 'clear',
   'isEmpty': 'is_empty',
   'length': 'len',
-  'removeLast': 'pop',
+  // `!pop` and not `pop`: the backend's rule for it has to fire on Dart's
+  // `removeLast` and on nothing else, and `SceneBuilder.pop()` is a Dart
+  // method called exactly `pop` -- which the rule was raising
+  // `RangeError` on, eleven stubs in `rendering_layer.rs` (ws1071).
+  'removeLast': '!pop',
   'contains': 'contains',
   // Not renames: the backend spells these out, because Rust says them with
   // something other than a method of the same shape.

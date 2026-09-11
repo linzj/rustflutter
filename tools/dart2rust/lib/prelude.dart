@@ -6366,6 +6366,23 @@ pub fn dart_null_as<T: DartNullable>() -> T {
 /// is the one place that can tell. It used to be `.unwrap()`, which is a
 /// panic -- and `try { .. } catch` around a `late` read is ordinary Dart, so
 /// that was a path the program still had and could no longer take.
+/// `removeLast()` on an empty list.
+///
+/// Not the `StateError` "Bad state: No element" that the empty-iterable
+/// getters throw -- measured against the VM, which implements `removeLast`
+/// as `_list[_length - 1]` and so raises about *that index*:
+/// `RangeError (length): Invalid value: Valid value range is empty: -1`.
+/// The prelude's `RangeError` prints itself as `RangeError: <message>`, so
+/// the parenthesised `(length)` of Dart's own text is not reproduced; what a
+/// program can *do* with it -- `on RangeError catch` -- is.
+pub fn dart_remove_last_empty() -> DartError {
+    std::rc::Rc::new(RangeError {
+        message: "Invalid value: Valid value range is empty: -1".to_string(),
+        start: None,
+        end: None,
+    }) as DartError
+}
+
 pub fn dart_late_init_failed(kind: &str, name: &str) -> DartError {
     std::rc::Rc::new(LateInitializationError::new(format!(
         "{} '{}' has not been initialized.",
