@@ -64,9 +64,10 @@ jobs=${DART2RUST_FX_JOBS:-3}
 # its stamp against these *before* it translates anything; see
 # `bin/fx/fingerprint.sh`.
 eval "$(bin/fx/fingerprint.sh)" || exit 2
-[ -n "${fp_code:-}" ] && [ -n "${fp_prelude:-}" ] ||
+[ -n "${fp_code:-}" ] && [ -n "${fp_prelude:-}" ] && [ -n "${fp_sdk:-}" ] ||
     { echo "no fingerprint (is dart on PATH?)" >&2; exit 2; }
 export DART2RUST_FX_FP_CODE=$fp_code DART2RUST_FX_FP_PRELUDE=$fp_prelude
+export DART2RUST_FX_FP_SDK=$fp_sdk
 work=${DART2RUST_FX:-$here/.build/fx}
 mkdir -p "$work"
 if [ ! -s "$work/prelude.$fp_prelude.rs" ]; then

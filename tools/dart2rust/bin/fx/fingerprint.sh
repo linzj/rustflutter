@@ -36,6 +36,19 @@ cd "$here" || exit 1
 # silently pin the fingerprint to the wrong thing.
 dart=$(command -v dart || echo "$HOME/flutter_sdk/bin/dart")
 [ -x "$dart" ] || { echo "fingerprint: no dart at $dart" >&2; exit 2; }
+# ..and a third: what the *Dart* side alone depends on. A fixture's dill is
+# a whole-program `gen_kernel --aot --tfa` over the Flutter platform (5.85s
+# of the 10.6s a fixture costs, measured 2026-09-11), and its inputs are the
+# fixture's source and the SDK -- no part of `lib/` reaches it. Neither does
+# the Dart half of the comparison, which is the VM running that same source.
+# So a backend change, which must re-derive every fixture's Rust, need not
+# re-derive either of those.
+echo "fp_sdk=$( { "$dart" --version 2>&1
+    python3 -c "import os, sys; sys.path.insert(0, 'bin'); import dill; \
+p = os.path.join(dill.paths()['platform'], 'platform_strong.dill'); \
+st = os.stat(p); print(p, st.st_size, int(st.st_mtime))" 2>&1
+    md5sum "$HOME/gallery_upstream/.dart_tool/package_config.json" 2>&1
+  } | md5sum | cut -d' ' -f1)"
 echo "fp_prelude=$(md5sum lib/prelude.dart | cut -d' ' -f1)"
 echo "fp_code=$( { find lib bin -type f \( -name '*.dart' -o -name '*.py' \
         -o -name '*.tmpl' \) ! -path 'lib/prelude.dart' -print0 \

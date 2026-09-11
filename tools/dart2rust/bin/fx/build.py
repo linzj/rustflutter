@@ -65,13 +65,34 @@ def main():
         "import '%s' as fx;\nvoid main() { %s }\n"
         % (fixtures.as_uri(fixture), os.environ.get('FX_MAIN', '')))
 
+    # The dill is a whole-program `gen_kernel --aot --tfa` over the Flutter
+    # platform: 5.85 of the 10.6 seconds a fixture costs, measured
+    # 2026-09-11. Its inputs are the wrapper above, the fixture it imports
+    # and the SDK -- `lib/` is not among them, so a backend change cannot
+    # move it. `FX_DILL_KEY` (from `bin/fx/fingerprint.sh`, by way of
+    # `bin/fx.sh`) is those inputs hashed; without it the dill is rebuilt,
+    # which is what a bare `python3 bin/fx/build.py` gets.
     dill = os.path.join(work, name + '.dill')
-    code = dill_tool.build(fixtures.as_uri(wrapper), fixtures.APP_PACKAGES,
-                           dill, aot=aot)
-    if code != 0 or not os.path.exists(dill):
-        print('dill None aot', aot)
-        return 1
-    print('dill', dill, 'aot', aot)
+    key = os.environ.get('FX_DILL_KEY')
+    if key:
+        key = '%s %s %s' % (key, os.environ.get('FX_MAIN', ''), aot)
+    stamp = os.path.join(work, name + '.dill.key')
+    had = None
+    if os.path.exists(stamp):
+        had = io.open(stamp, encoding='utf-8').read().strip()
+    if key and had == key and os.path.exists(dill):
+        print('dill', dill, 'aot', aot, '(kept)')
+    else:
+        if os.path.exists(stamp):
+            os.remove(stamp)
+        code = dill_tool.build(fixtures.as_uri(wrapper), fixtures.APP_PACKAGES,
+                               dill, aot=aot)
+        if code != 0 or not os.path.exists(dill):
+            print('dill None aot', aot)
+            return 1
+        print('dill', dill, 'aot', aot)
+        if key:
+            io.open(stamp, 'w', encoding='utf-8', newline='\n').write(key + '\n')
 
     config = os.path.join(TOOL, '.agree', 'kernel_package_config.json')
     ok, err = fixtures.from_kernel(dill, fixture, os.path.join(

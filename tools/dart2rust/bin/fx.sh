@@ -79,16 +79,22 @@ cd "$here" || exit 1
 # `bin/fx/fingerprint.sh` for why the split is sound). `bin/allfx.sh`
 # computes them once and passes them down; a lone `bin/fx.sh` computes its
 # own.
-if [ -n "${DART2RUST_FX_FP_CODE:-}" ] && [ -n "${DART2RUST_FX_FP_PRELUDE:-}" ]; then
+if [ -n "${DART2RUST_FX_FP_CODE:-}" ] && [ -n "${DART2RUST_FX_FP_PRELUDE:-}" ] &&
+        [ -n "${DART2RUST_FX_FP_SDK:-}" ]; then
     fp_code=$DART2RUST_FX_FP_CODE
     fp_prelude=$DART2RUST_FX_FP_PRELUDE
+    fp_sdk=$DART2RUST_FX_FP_SDK
 else
     eval "$(bin/fx/fingerprint.sh)" || exit 2
-    [ -n "${fp_code:-}" ] && [ -n "${fp_prelude:-}" ] ||
+    [ -n "${fp_code:-}" ] && [ -n "${fp_prelude:-}" ] && [ -n "${fp_sdk:-}" ] ||
         { echo "no fingerprint (is dart on PATH?)" >&2; exit 2; }
 fi
-key_code=$(printf '%s %s\n' "$fp_code" \
-    "$(md5sum "$src/$name.dart" | cut -d' ' -f1)" | md5sum | cut -d' ' -f1)
+fixture_md5=$(md5sum "$src/$name.dart" | cut -d' ' -f1)
+key_code=$(printf '%s %s\n' "$fp_code" "$fixture_md5" | md5sum | cut -d' ' -f1)
+# The dill and the Dart half of the comparison share one key, because they
+# share their inputs: this fixture's source and the SDK. A backend change
+# moves `key_code` and not this one.
+key_dart=$(printf '%s %s\n' "$fp_sdk" "$fixture_md5" | md5sum | cut -d' ' -f1)
 
 # The stamp is read *before* anything runs. It used to be read after the
 # translation, so the cache saved the cargo step and paid the dill, the
@@ -134,7 +140,7 @@ else
     # copied into the build directory rather than built in place.
     cp "$src/$name.dart" "$work/$name.dart"
     log=$work/$name.build.log
-    if ! FX_MAIN="print(fx.use());" FX_AOT=${FX_AOT:-1} \
+    if ! FX_MAIN="print(fx.use());" FX_AOT=${FX_AOT:-1} FX_DILL_KEY="$key_dart" \
             python3 bin/fx/build.py "$work" "$name" > "$log" 2>&1; then
         echo "BUILD FAILED"; tail -25 "$log"; exit 1
     fi
@@ -147,10 +153,18 @@ fi
     2> "$work/$name.cargo.log" | tail -1 > "$work/$name.rust.out"
 rc=${PIPESTATUS[0]}
 
+# The other end is the Dart VM running the fixture's own source: the
+# translator is not in its inputs, so a backend change does not move it
+# either. Keyed like the dill, and skipped on the same terms.
+if [ "$reused_dart" != 1 ] && [ -s "$work/$name.dart.out" ] &&
+        [ "$key_dart" = "$(cat "$work/$name.dart.key" 2>/dev/null)" ]; then
+    reused_dart=1
+fi
 if [ "$reused_dart" != 1 ]; then
     dart run --packages="$HOME/gallery_upstream/.dart_tool/package_config.json" \
         "$work/entry_$name.dart" 2> "$work/$name.dart.err" \
         | tail -1 > "$work/$name.dart.out"
+    printf '%s\n' "$key_dart" > "$work/$name.dart.key"
 fi
 
 echo "--- rust: $(cat "$work/$name.rust.out")"
