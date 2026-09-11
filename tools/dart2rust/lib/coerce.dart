@@ -336,6 +336,24 @@ IrExpr coerceInto(
       IrExprStmt(value),
     ], IrLiteral('()', const IrType('raw')))..rustType = slot;
   }
+  // A *call through a function value* whose Dart return type is `Never`.
+  // The call does not return -- but its Rust type is
+  // `std::convert::Infallible`, which is not `!` and so coerces to
+  // nothing. The adapters around a function value call it and put what
+  // comes back into a slot, and that read "expected `Null`, found
+  // `Infallible`": http's `IOClient.send` hands `handleError` a callback
+  // whose body only throws (1 stub at ws1099). `never` is the `match x
+  // {}` that does coerce (the prelude).
+  //
+  // Only `IrCallValue`, because only there is `Never` a fact about the
+  // *Rust* expression. Elsewhere a recorded `Never` says the value never
+  // arrives, and the expression is whatever the branch that was removed
+  // left behind: `Checkbox.build`'s `..mouseCursor` reads `Option<Rc<dyn
+  // MouseCursor>>` around an `unreachable!` the AOT compiler put there,
+  // and wrapping that gave 61 new stubs at ws1100.
+  if (value is IrCallValue && have.name == 'Never' && slot.name != 'Never') {
+    return IrStaticCall(null, 'never', [value])..rustType = slot;
+  }
   // Dart's `null` where a `dynamic` goes: the `Null` object behind a
   // handle (an omitted `Object? aspect`, a `Object? value = null`; 91
   // `None` where an `Rc<dyn Object>` went once `Object?` was `dynamic`,
@@ -821,6 +839,40 @@ IrExpr coerceInto(
       ..rustType = IrType('List', arguments: have.arguments);
     if (slot.name == 'List' && sameRust(listed.rustType!, slot)) return listed;
     return coerceInto(listed, slot, world, inClosure: inClosure);
+  }
+  // A list *literal* whose elements are narrower than the slot's: each
+  // element through this rule, inside the literal. `List` into `List`
+  // below is the value as it stands -- right for a list that is a
+  // reference someone else holds, and wrong for a fresh one, whose Rust
+  // element type is fixed by what was written. Only a literal, because
+  // only a literal has no other holder to keep in step with (ws1099).
+  // Keyed on the value being a literal, not on what the list is called:
+  // an AOT dill types one `_GrowableList` (see `_placedElsewhere`), and a
+  // rule that asked for the name `List` never saw it.
+  if (value is IrListLiteral &&
+      (normalName(slot.name) == 'List' || slot.name == 'Iterable') &&
+      have.arguments.length == 1 &&
+      slot.arguments.length == 1 &&
+      !sameRust(have.arguments.single, slot.arguments.single)) {
+    final element = slot.arguments.single;
+    final mapped = [
+      for (final e in value.elements)
+        coerceInto(e, element, world, inClosure: inClosure),
+    ];
+    // Only when an element actually changes, as the iterator rule below
+    // asks. A slot element this declaration cannot spell -- a callee's
+    // own `E`, unsubstituted -- adapts nothing, and rebuilding the
+    // literal at that name put an `E` in the turbofish that is not in
+    // scope here (the `iterablebound` fixture).
+    var changed = false;
+    for (var i = 0; i < mapped.length; i++) {
+      if (!identical(mapped[i], value.elements[i])) changed = true;
+    }
+    if (changed) {
+      final relisted = IrListLiteral(mapped, element)
+        ..rustType = IrType('List', arguments: [element]);
+      return coerceInto(relisted, slot, world, inClosure: inClosure);
+    }
   }
   // `List` and `Set` are the prelude's own structs; a `List` where a `List`
   // goes is the value itself.
