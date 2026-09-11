@@ -377,6 +377,31 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 
 ## 撤回与作废(不要再试)
 
+- **把 `Stream.listen` 的槽改成 Dart 声明的那些类型,再去接 `ByteConversionSink`**——
+  **错误挪了两次然后不动了,尺子一格没动,撤回**(ws1067,2026-09-11)。
+  四步都做了,链条 1m52–1m56,拒绝 12、stub 37(集合逐条相同)、可达 69,**一格没动**。
+  **但前两步立住的事实是真的,下次从这里开始,别重新推**:
+  ① **`listen` 的 `onError` 是这份 prelude 自己发明的类型**。Dart 声明的是裸 `Function?`
+  (一个实参或两个,运行时按 arity 挑),而 prelude 写成
+  `Rc<dyn Fn(Rc<dyn DartAny>, Option<StackTrace>) -> ()>`;
+  **arity 那条规则 prelude 里本来就有**(`dart_call_error_handler`),
+  `handle_error`、`catchError`、future 那几条路早就用的是 `Rc<dyn DartAny>`,**只有 `listen` 是例外**。
+  改成 Dart 的类型之后,错误从 `onError` 挪到了 `onData`。
+  ② **`onData`/`onDone` 写的是 `-> ()`,而本编译器发出的每一个闭包都返回 `Result`**
+  (量过:生成侧 9,068 个 `dyn Fn` 槽,**无一例外**带 `-> Result`)。
+  给它们 `Result`、让 `listen` 往外送(并进 `_preludeFailing`),错误又挪了一次,
+  挪到 `ByteConversionSink::new`。
+  ③ **`ByteConversionSink` 是 `Rc<dyn DartSink<Vec<i64>>>` 的别名**,
+  Rust 不允许给 `Rc` 写 inherent `impl`,所以 `ByteConversionSink::new` **永远解析不到**;
+  构造函数在 `_ByteCallbackSink` 上。
+  **我两次想把它重定向过去,两次都没生效**——`nullaware.dart` 的无名工厂分支和具名构造分支都加了表,
+  发出来的还是一模一样的 `ByteConversionSink::new`。
+  **说明发射点不在我找的那两处**。按〈stubdiff 比的是集合〉那条:
+  **报错一字不差就是规则没生效,要插桩,不是再猜一次**——我猜了两次,所以停手。
+  下一次从 trace 开始:先问清楚 `ByteConversionSink.withCallback` 是从哪儿发出来的。
+  顺带:`to_bytes` 和 crypto 那三个桩(`hash_super_convert`、`start_chunked_conversion`、
+  `hash_sink_super__iterate`)同属 `DartSink` 一家,值得一起收。
+
 - **给 prelude 的 `Comparable<T>` 加上 `DartAny` 上界、并补一个 `comparable_compare`**——
   **它会让 `_sort` 从「桩」变成「能编译但一定 panic」,所以撤回**(ws1058,2026-09-11)。
   链条读数是「拒绝 17、stub 38、集合逐条相同」,看起来什么都没发生;
