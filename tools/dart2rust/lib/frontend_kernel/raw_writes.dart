@@ -113,17 +113,36 @@ augment class KernelFrontend {
       if (target == null || owner == null) {
         throw Unsupported('super property set with no owner', _sample(node));
       }
-      final slot = target is Field
+      final declaredSlot = target is Field
           ? target.setterType
           : target is Procedure
           ? target.function.positionalParameters.single.type
           : null;
+      // ..with what *this* class puts in for the base's own parameters.
+      // `RestorableEnumN<T extends Enum> extends RestorableValue<T?>`: the
+      // base's setter takes its `V`, and left unsubstituted the slot read
+      // as a non-nullable `V`, so a value that is already the nullable form
+      // got a null-assert in front of it and the `?` could not convert
+      // `T` to `<T as DartNullable>::Or` (1 stub at ws1104; the
+      // `nullableenumparam` fixture).
+      final here = typeEnvironment;
+      final thisType = here == null
+          ? null
+          : _lowering?.getThisType(here.coreTypes, Nullability.nonNullable);
+      final slot = declaredSlot == null
+          ? null
+          : _substituteKept(declaredSlot, ownerClass, thisType);
       final held = '__t${_nextTemporary++}';
       final init = expression(node.value);
-      final stored = _widened(
-        node.value,
-        slot,
-        IrCall(IrLocal(held), 'clone', const [])..rustType = init.rustType,
+      // At an argument edge: the base's `V?` over a kept parameter is the
+      // projection its signature spells (`<T as DartNullable>::Or`), not
+      // the plain `Option<T>` a body works with (`_argumentEdge`).
+      final stored = _asArgument(
+        () => _widened(
+          node.value,
+          slot,
+          IrCall(IrLocal(held), 'clone', const [])..rustType = init.rustType,
+        ),
       );
       return IrBlockValue([
         IrLocalDecl(held, null, init),
