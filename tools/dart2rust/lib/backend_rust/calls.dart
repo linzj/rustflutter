@@ -1081,6 +1081,27 @@ augment class RustBackend {
           method: _methodOf(qualifier, name),
         );
       }
+      // ..and on a receiver that *is* a trait object, for the same reason:
+      // a generic method is `where Self: Sized` in the trait, so it cannot
+      // be called on a `dyn` at all. The branches above ask this of `this`;
+      // here the receiver is an ordinary value whose type is the trait
+      // (`getElementForInheritedWidgetOfExactType` on the `parent` a
+      // `visitAncestorElements` callback is handed, 1 stub at ws1106).
+      if (typeArguments.isNotEmpty &&
+          resultType != null &&
+          asTrait == null &&
+          target != null &&
+          target is! IrThis &&
+          library.isAbstract(qualifier) &&
+          target.rustType != null &&
+          library.isAbstract(target.rustType!.name)) {
+        return _erasedCast(
+          resultType,
+          '$path::${_identifier(name)}__erased'
+          '($through${args.isEmpty ? '' : ', '}${args.map(expr).join(', ')})$_propagate',
+          method: _methodOf(qualifier, name),
+        );
+      }
       return _asyncValue(
         '$path::${_identifier(name)}$turbofish'
         '($through${args.isEmpty ? '' : ', '}${args.map(expr).join(', ')})'
