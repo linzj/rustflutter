@@ -47,6 +47,22 @@ abstract class TypeWorld {
 const scalarNames = {'int', 'double', 'num', 'bool', 'String'};
 const collectionNames = {'List', 'Iterable', 'Set'};
 
+/// The `dart:typed_data` lists whose Rust element is *narrower* than the
+/// `i64`/`f64` a `List<int>`/`List<double>` holds (the backend's typed-data
+/// table: a `Uint8List` is a `Vec<u8>`). Rust converts neither the elements
+/// nor the `Vec` around them, so a value of one reaching the other is the
+/// element-by-element widening `!widen` writes.
+const narrowIntLists = {
+  'Int8List',
+  'Int16List',
+  'Int32List',
+  'Uint8List',
+  'Uint8ClampedList',
+  'Uint16List',
+  'Uint32List',
+  'Uint64List',
+};
+
 /// The `dart:` map classes, all the prelude's one `Map`.
 const mapNames = {'Map', 'LinkedHashMap', 'HashMap', 'SplayTreeMap'};
 
@@ -873,6 +889,22 @@ IrExpr coerceInto(
         ..rustType = IrType('List', arguments: [element]);
       return coerceInto(relisted, slot, world, inClosure: inClosure);
     }
+  }
+  // A narrow `dart:typed_data` list where a `List<int>` goes: its elements
+  // widened. `Uint8Buffer._createBuffer` returns a `Uint8List` where
+  // `TypedDataBuffer<E>` declares `List<E>`, and the forwarder that hands
+  // the override's answer back read "expected `Vec<i64>`, found `Vec<u8>`"
+  // (1 stub at ws1102; the `narrowlistreturn` fixture). `_widensNarrowElements`
+  // already does this for an `Iterable<int>` *parameter*; a return reaches
+  // the same question through this rule instead.
+  if (narrowIntLists.contains(have.name) &&
+      normalName(slot.name) == 'List' &&
+      slot.arguments.length == 1 &&
+      slot.arguments.single.name == 'int' &&
+      !isNullable(have) &&
+      !isNullable(slot)) {
+    return IrCall(value, '!widen', const [])
+      ..rustType = IrType('List', arguments: [const IrType('int')]);
   }
   // `List` and `Set` are the prelude's own structs; a `List` where a `List`
   // goes is the value itself.
