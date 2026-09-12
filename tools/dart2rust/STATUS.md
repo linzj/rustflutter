@@ -14,7 +14,7 @@
 - 渲染尺子：与 Flutter 参考遍历对账，参考 `ref_render_walk_settled.txt` **707 行**（707 行全部非空；`render_ruler.py` 的 `nodes=` 数的就是它，`typediff` 含长度差，所以 0 差异同时保证行数相同）。**曾写作 708，那是旧数**：重量于 2026-09-11 ws1094，参考文件与五次运行都是 707。
 - **panic 尺子 `bin/panic_ruler.py`（ws1094 新增）**：把工作区里**每一种会中止的写法**数全——`panic!`/`unreachable!`/`todo!`/`assert*`/`.expect`/`.unwrap()`——**先出总数再分类**，对不上就报 MISCOUNTED。它取代的是 `grep -c 'panic!("uncaught'`：那是一行的模式，而 `erased_cast_failed` 的字符串写在 `panic!(` 的下一行，所以尺子报 0、东西还在、六处在调它。**量一个字符串只会静默地错，量总数不会。**
   - **`a8055b16` 发现它自己在发牌照**：它把任何认不出的 `dart2rust:` 消息折进一个桶 `dart2rust: .. (other)`，并把那个桶算作合法，于是宣布规则收尾的那天它的最后一行写着 0，真数是 **516**。前缀是这个编译器写的，前缀后面说的话却未必是这个编译器的事实——`panic!("dart2rust: a {} where a `{}` was wanted")` 就是一个挂着本编译器名字的 Dart `TypeError`。桶已删，每条消息各按原文单列；**新出现的一条在有人替它辩护之前一律算不合法**。
-- **当前读数（ws1098）**：拒绝 **12**，桩 **36**（桩集合与 ws1096 逐字节相同），unstubbable **0**，可达 **69**，0 error；渲染树连采五次 **707 节点 / 0 panic / 0 类型差异**；夹具 **104 个，103 AGREE + `ffistruct` 故意红**；panic 尺子 **“程序还能走、这边走不了”的中止点 = 0**（生成侧 9,453 处、prelude 9 处）。
+- **当前读数（ws1101）**：拒绝 **12**，桩 **34**（ws1098 的 36 起算，gone 2 / new 0，`stubdiff.sh` 逐字节），unstubbable **0**，可达 **69**，0 error；渲染树连采五次 **707 节点 / 0 panic / 0 类型差异**；夹具 **107 个，106 AGREE + `ffistruct` 故意红**；panic 尺子 **「程序还能走、这边走不了」的中止点 = 0**。
   - 510 → 0 的去向，按处置分：**真删掉 504 处**——494 处懒 `late` 尾读（`protocols.dart` 改成 `match`，返回刚算出的值就不必读回来）、5 处 `four()`/`eight()` 把数组 `try_into` 成它自己、1 处 Mutex 换成全函数的 `into_inner`、2 处 `Future.value()`/`Future.delayed` 对非空 T 取 null 改 `Err`、1 处 `FutureOr::Value` 空着（和十行下的 `then` 给同一答案）、1 处 `Sink::close` 补上错误通道；**1 处改成本来的措辞**（`dart:ffi` 没有该平台的 Abi 行是一条拒绝）；**5 处逐条辩上名单**，每条 1 个站点，理由写在尺子里。
   - 名单的规矩写进了 `bin/panic_ruler.py`：**一条消息覆盖很多站点就不该上名单**。494 处懒格子是一个发射点，答案是别再发射中止点，不是给它取个名字。
 - 体积：ws1086 收下 `--icf=all` 后，release `.text` **56,617,250**，stripped **112,917,488**；从 work_size 起点 `.text` 75,158,528 → 56,617,250（−24.7%），stripped 135,833,000 → 112,917,488（−16.9%）；对官方 `libapp.so` 的 `.text` 从 6.11× 降到 **4.61×**。ws1094 把 670 处 `.unwrap()` 换成 `?`/`Err` 之后量：`.text` +61,632（**+0.11%**），stripped **−86,008**——work.md 第十一节那条“没量”的账，现在量了：**`?` 的传播代码没有想象中贵，`Err` 构造还替掉了一批 panic 的格式化字符串。**
@@ -33,7 +33,12 @@
 - ws1089 B：`DartStr = Cow<'static, str>` 改造走了一大半，夹具 60 → 64 → 70 → 71，但 gallery 尾巴未开始，整轮退回。
 - ws1087 量清：D 的真实上限 **3.07 MB（5.4%）**；B 的 l10n **19,437,406 字节，占函数符号 28.8%**。
 - 最大挡路工程：**值语义 / 别名 / counted**。11 条拒绝同一决定；做它曾量到 **+901 桩**。
-- 拒绝 12 中约 8 条今天拒绝得**正确**，所以“拒绝归零”不能字面达成。
+- **12 条拒绝,逐条查过(ws1101)**。它们是 5 个机制,不是 12 件事;只有 4 条有一句关于「那个程序」的理由,其余 8 条是本编译器的欠账。
+  - **dart:ffi / win32 windowing,4 条**(`_Win32PlatformInterface.initializeWindowing`、`_WindowingInitRequest.onMessage`、`_CallocAllocator.new`、`_CallocAllocator._fillMemory`)。四条都落在 dart:ffi 的 `external` 上:`_ffiCall` 是 AOT 编译器生成的本地跳板,`_createNativeCallableIsolateLocal` 带 `vm:external-name "Ffi_createNativeCallableIsolateLocal"`,`Uint8Pointer.operator[]=` 走到 `_storeUint8`——**kernel 里没有 Dart 体可译**,写一个体不是翻译这个程序,是在 prelude 里重做一遍 dart:ffi 运行时。外面那层也不是这个平台的:`_CallocAllocator()` 第一句 `DynamicLibrary.open('ole32.dll')`,`WindowingOwnerWin32()` 第二句 `if (!Platform.isWindows) throw UnsupportedError('Only available on the Win32 platform')`。`DART2RUST_OS=android` 下 Dart 自己也走不过去。这 4 条**留下**。
+  - 跨文件 `const` 实例,**3 条**(`GZipCodec` ×2、`JsonEncoder`)。本编译器的欠账:一个 `const X(..)` 的类不在本文件时没被降下来。
+  - `identical` 作用在非引用上,**2 条**(`VerticalCaretMovementRun.isValid`、`PageTransitionsTheme operator ==`)。欠账,并且和「值语义 / 别名 / counted」是同一件事:`Map`/`List` 在这边是值,没有引用同一性可比。
+  - `super.==` / `super.hashCode` 落到 `Object`,**2 条**(`widgets_framework`)。欠账:prelude 有 `Object` 的这两个成员,是路由没接上。
+  - 动态槽上的 `completeError`,**1 条**(`get_below/queue_get_queue`)。欠账:`DynamicInvocation` 这一族本身没翻译。
 - 桩尾已是长尾：最大簇也只有几个。剩下多要子系统：`StreamController`、HTTP 客户端、gzip/JSON、ffi 写路径、`ListBase`、擦除类型参数界、tear-off coercion。
 
 ## 6. 下一步优先级
@@ -48,4 +53,4 @@
 ## 7. 九条要记住的
 零拒绝 ≠ 翻译好；`dart:core`/`dart:ui` 手写 prelude；仪器各有盲区；短路语义易静默错；夹具值要能分辨错配；变异要查断言对象；探针先查排序再查条件；拒绝升高可能是尺子变准；正则先看一条匹配；变异必须还编得过；数字必须带条件。
 
-**一句话**：翻译与渲染结构已接近收尾，数字停在 **12 拒绝 / 36 桩 / 69 可达 / 707 行 0 差异 / 0 个“程序还能走”的中止点**；再往下主要是运行时子系统与值语义/别名工程。
+**一句话**：翻译与渲染结构已接近收尾，数字停在 **12 拒绝 / 34 桩 / 69 可达 / 707 行 0 差异 / 0 个"程序还能走"的中止点**；12 条拒绝已逐条查过，4 条留下并写明理由，8 条是欠账；再往下主要是运行时子系统与值语义/别名工程。
