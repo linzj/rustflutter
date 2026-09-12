@@ -40,6 +40,10 @@
   - `super.==` / `super.hashCode` 落到 `Object`,**2 条**(`widgets_framework`)。**ws1106 试过一次,走死了,原因现在是量出来的**:`Object` 的这两个成员就是身份,prelude 的 `dart_identical_any` / `dart_identity_hash_code` 也都在,把 `_superCall` 里 `base == 'Object'` 的这两支路由过去、用 `_thisHandle()` 取自身句柄,`Widget.==` 确实能译出来。但 super 函数是抽象类**共享**的一份,而 `dart_self_X()` 对非 counted 的实现者是 `std::rc::Rc::new(self.clone())`——**现造的分配**。实测(一个 `abstract Node` + 值结构实现者):同一个对象的 `super == other` 答 `false`,Dart 答 `true`;两个字段相同的不同对象答 `true`,Dart 答 `false`。那是把一个看得见的拒绝换成静默的错答案,已撤回。
     - 要真做:要么让 `dart_self_X()` 对没有 `DartSelf` 的实现者拒绝而不是伪造,要么把身份比较发射在**每个实现者自己的**转发里(那里知道 `counted`),而不是共享的 super 函数里。
   - 动态槽上的 `completeError`,**1 条**(`get_below/queue_get_queue`)。欠账:`DynamicInvocation` 这一族本身没翻译。
+- **`scheduler_binding.scheduleTask` 那两条(擦除类持有 `Completer<T>`)——诊断是错的,两次链都量过**。`_TaskEntry<T>` 被擦除,`entry.completer` 的类型已经是对的(`_erasedRead`,`expressions.dart`);我以为差的是**第二次读**(`.future`)按调用点的 `T` 定型。按这个改了两次:
+  - 改全局 `_staticType`(对 `InstanceGet` 返回擦除后的类型):**29 → 1297 桩**。那里是促进、cast 和每一个分派问题的共同入口。
+  - 只改 `_memberRustType` 里接收者那一处:**29 → 38,gone 0 / new 9**,一条都没修好。
+  所以问题不在接收者定型。下次动这一族之前,先把 `entry.completer.future` 实际的 IrType 打出来看,而不是推。
 - 桩尾已是长尾：最大簇也只有几个。剩下多要子系统：`StreamController`、HTTP 客户端、gzip/JSON、ffi 写路径、`ListBase`、擦除类型参数界、tear-off coercion。
 
 ## 6. 下一步优先级
