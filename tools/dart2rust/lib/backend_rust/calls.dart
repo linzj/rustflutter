@@ -513,7 +513,17 @@ augment class RustBackend {
       // `Table.update`'s `oldKeyedRows`). A `let` binding a borrow extends
       // the temporary to the end of the block, so a receiver that is itself
       // a call still lives long enough.
-      return '{ let __m = &$receiver; ${expr(args.single)}.as_ref().and_then(|__k| __m.get(__k).cloned()${_flattenedValue(target)}) }';
+      // The key as the plain `Option` this reads: a projected `T?`
+      // (`<T as DartNullable>::Or`, a generic declaration's field or edge)
+      // has no `as_ref` at all -- `_segmentKeys[highlighted]` in
+      // `CupertinoSlidingSegmentedControl`'s `onEnd` said so (1 stub at
+      // ws1105).
+      final key = args.single;
+      final held = key.rustType;
+      final asOption = held != null && held.projected
+          ? '<${_nullableOf(held.name)} as DartNullable>::option(${expr(key)})'
+          : expr(key);
+      return '{ let __m = &$receiver; $asOption.as_ref().and_then(|__k| __m.get(__k).cloned()${_flattenedValue(target)}) }';
     }
     if (name == '!map_remove' && args.length == 1) {
       return '$receiver.remove(&${_borrowed(args.single)})';
