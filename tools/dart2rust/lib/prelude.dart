@@ -11200,6 +11200,29 @@ pub struct Encoding {
     pub name: String,
 }
 
+/// `dart:developer`'s `CreationLocation`.
+///
+/// `CreationLocation.of(x)` hands back `x`'s location when `x` implements
+/// the private `_HasCreationLocation` -- the interface the
+/// `--track-widget-creation` kernel transform makes a tracked class
+/// implement. This program's dill is built without that transform
+/// (`bin/gallery_dill.py` runs `gen_kernel --aot --tfa` and nothing else),
+/// so no class implements it and `of` is `None` for every object here.
+/// TFA agrees: it removed everything `debugIsWidgetLocalCreation` does
+/// with the answer and left the body `false`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CreationLocation {
+    pub file: String,
+    pub line: i64,
+    pub column: i64,
+}
+
+impl CreationLocation {
+    pub fn of<T>(_object: T) -> Option<CreationLocation> {
+        None
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TypedData;
 
