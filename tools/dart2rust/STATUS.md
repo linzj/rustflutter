@@ -44,6 +44,10 @@
   - 改全局 `_staticType`(对 `InstanceGet` 返回擦除后的类型):**29 → 1297 桩**。那里是促进、cast 和每一个分派问题的共同入口。
   - 只改 `_memberRustType` 里接收者那一处:**29 → 38,gone 0 / new 9**,一条都没修好。
   所以问题不在接收者定型。下次动这一族之前,先把 `entry.completer.future` 实际的 IrType 打出来看,而不是推。
+- **`SlottedContainerRenderObjectMixin.debugDescribeChildren`——三次量过,别再按「把应用参数映射回去」这条路走**。局部声明成了具体的 `_ChipSlot`,而 super 函数是泛型的 `SlotType`;`_appliedBackMap` 只收**被擦除**的参数(`slots.dart:581`),保留参数的应用实参就留在体里了。
+  - 去掉那个过滤:**gone 1 / new 1**——`debugDescribeChildren` 清了,`debugNameForSlot` 破了,因为 `slot is Enum ? slot.name : slot.toString()` 里 `enum_name_get_name` 要 `E: DartEnum`,而 `mixin SlottedContainerRenderObjectMixin<SlotType, ChildType extends RenderObject>` 的 `SlotType` 没有界。
+  - 再给 mixin 参数按「每个应用都放枚举」加 `DartEnum` 界(`enumParameters` 已有这套,只是只看 Dart 声明的界):**28 → 31,gone 1 / new 4**。`insert/move/removeRenderObjectChild` 三个也跟着破,而且 `slot is Enum` 的**类型提升**在裸类型参数上仍然发射 `slot as Rc<dyn DartAny>`(E0605,`as` 不能用在类型参数上)。
+  - 结论:这一条至少要三处一起改(应用参数映射回、参数的枚举界、类型参数的提升不走 `as`),而且第三处是通用的。不要再单独动前两处。
 - 桩尾已是长尾：最大簇也只有几个。剩下多要子系统：`StreamController`、HTTP 客户端、gzip/JSON、ffi 写路径、`ListBase`、擦除类型参数界、tear-off coercion。
 
 ## 6. 下一步优先级
