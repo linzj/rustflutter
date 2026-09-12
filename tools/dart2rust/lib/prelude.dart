@@ -6425,9 +6425,16 @@ pub struct HttpHeaders {
 }
 
 impl HttpHeaders {
+    /// Borrowed, not held: this calls the action and drops it, so it takes
+    /// the `impl Fn` its two namesakes here take (`Map::for_each`,
+    /// `Set::for_each`). Spelled `Rc<dyn Fn>` it was the one prelude
+    /// callback slot a closure literal could not reach -- nothing puts the
+    /// handle on for a prelude callee -- and `IOClient.send` read
+    /// "expected `Rc<dyn Fn(String, Vec<String>)`, found closure"
+    /// (ws1101). An `Rc<dyn Fn>` still goes in: it is an `Fn` too.
     pub fn for_each(
         &self,
-        action: std::rc::Rc<dyn Fn(String, Vec<String>) -> Result<(), DartError>>,
+        action: impl Fn(String, Vec<String>) -> Result<(), DartError>,
     ) -> Result<(), DartError> {
         for (name, values) in self.entries.iter() {
             action(name.clone(), values.clone())?;

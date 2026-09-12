@@ -44,6 +44,9 @@
 ## 6. 下一步优先级
 1. **别名/counted + `List<T>` 表示**：`Rc<RefCell<Vec<T>>>` 是表示，`Rc<dyn DartList<T>>` 是槽拼法；先做普查。
 2. prelude 接口成员经对象调用：`Comparable`、`DartIterator` 等经 `dart_cast_to`。
+   - **ws1102 量过一次,是个陷阱**。把 `Comparable<T>` 声明成 `DartAny` 的子 trait,`dart_cast_to` 就有了(`DartCastExt` 是对 `DartAny` 的 blanket impl),`DataTableDemo._sort` 也编译得过——但**运行时抛** `TypeError: type is not a subtype of type 'Comparable' in type cast`。原因:`class Score implements Comparable<Score>` 的 cast 表只登记了 `Comparable<Score>`,而代码要的是 `Comparable<Object?>`;Dart 靠协变直接过。
+   - 试过的形状(Dart 答案 `-3|3|-1|1|s1,s2,s3`):`int compareCells(Object? a, Object? b) => (a! as Comparable<Object?>).compareTo(b);`,分别喂自家类、`int`、`String`,再用它做一次 `rows.sort`。
+   - 所以这一条**不是**加个 supertrait 能了的:要让对象为**更宽的实例化**答话——为每个实现 prelude 泛型接口的类再发一个擦除实例化的 impl 并登记进 `dart_cast`。单加 supertrait 是把一个看得见的桩换成一个 Dart 不会抛的运行时错,按「任何 panic 都不算过」更糟,已撤回。
 3. `Sink<T>` 进 `_preludeInterfaces`，补 `DartSink` 转发 impl。
 4. 增强枚举每变体状态。
 5. 运行期补：Paragraph native、Stream、HTTP、codec、ffi 回调。
