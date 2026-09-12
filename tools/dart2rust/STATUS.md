@@ -37,7 +37,8 @@
   - **dart:ffi / win32 windowing,4 条**(`_Win32PlatformInterface.initializeWindowing`、`_WindowingInitRequest.onMessage`、`_CallocAllocator.new`、`_CallocAllocator._fillMemory`)。四条都落在 dart:ffi 的 `external` 上:`_ffiCall` 是 AOT 编译器生成的本地跳板,`_createNativeCallableIsolateLocal` 带 `vm:external-name "Ffi_createNativeCallableIsolateLocal"`,`Uint8Pointer.operator[]=` 走到 `_storeUint8`——**kernel 里没有 Dart 体可译**,写一个体不是翻译这个程序,是在 prelude 里重做一遍 dart:ffi 运行时。外面那层也不是这个平台的:`_CallocAllocator()` 第一句 `DynamicLibrary.open('ole32.dll')`,`WindowingOwnerWin32()` 第二句 `if (!Platform.isWindows) throw UnsupportedError('Only available on the Win32 platform')`。`DART2RUST_OS=android` 下 Dart 自己也走不过去。这 4 条**留下**。
   - 跨文件 `const` 实例,**3 条**(`GZipCodec` ×2、`JsonEncoder`)。本编译器的欠账:一个 `const X(..)` 的类不在本文件时没被降下来。
   - `identical` 作用在非引用上,**2 条**(`VerticalCaretMovementRun.isValid`、`PageTransitionsTheme operator ==`)。欠账,并且和「值语义 / 别名 / counted」是同一件事:`Map`/`List` 在这边是值,没有引用同一性可比。
-  - `super.==` / `super.hashCode` 落到 `Object`,**2 条**(`widgets_framework`)。欠账:prelude 有 `Object` 的这两个成员,是路由没接上。
+  - `super.==` / `super.hashCode` 落到 `Object`,**2 条**(`widgets_framework`)。**ws1106 试过一次,走死了,原因现在是量出来的**:`Object` 的这两个成员就是身份,prelude 的 `dart_identical_any` / `dart_identity_hash_code` 也都在,把 `_superCall` 里 `base == 'Object'` 的这两支路由过去、用 `_thisHandle()` 取自身句柄,`Widget.==` 确实能译出来。但 super 函数是抽象类**共享**的一份,而 `dart_self_X()` 对非 counted 的实现者是 `std::rc::Rc::new(self.clone())`——**现造的分配**。实测(一个 `abstract Node` + 值结构实现者):同一个对象的 `super == other` 答 `false`,Dart 答 `true`;两个字段相同的不同对象答 `true`,Dart 答 `false`。那是把一个看得见的拒绝换成静默的错答案,已撤回。
+    - 要真做:要么让 `dart_self_X()` 对没有 `DartSelf` 的实现者拒绝而不是伪造,要么把身份比较发射在**每个实现者自己的**转发里(那里知道 `counted`),而不是共享的 super 函数里。
   - 动态槽上的 `completeError`,**1 条**(`get_below/queue_get_queue`)。欠账:`DynamicInvocation` 这一族本身没翻译。
 - 桩尾已是长尾：最大簇也只有几个。剩下多要子系统：`StreamController`、HTTP 客户端、gzip/JSON、ffi 写路径、`ListBase`、擦除类型参数界、tear-off coercion。
 
