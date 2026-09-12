@@ -250,6 +250,26 @@ augment class KernelFrontend {
         ),
       );
     }
+    // An erased parameter spells as its bound -- and a bound that mentions
+    // another parameter of the *same* declaration has to have that one put
+    // in as well, or the name leaks into an impl that does not bind it.
+    // `_DelegateState<T, D extends _Delegate<T>>` erases `D`, so
+    // `willUpdateDelegate(D)` came out `_Delegate<T>` inside
+    // `impl _InheritedProviderScopeElement`, which has no `T`:
+    // "cannot find type `T` in this scope" (1 stub at ws1103).
+    if (t is TypeParameterType &&
+        !kept.containsKey(t.parameter) &&
+        _erasedParameter(t.parameter)) {
+      final asBound = _typeKept(t.parameter.bound, kept);
+      return t.nullability == Nullability.nullable && !asBound.nullable
+          ? IrType(
+              asBound.name,
+              nullable: true,
+              arguments: asBound.arguments,
+              projected: asBound.projected,
+            )
+          : asBound;
+    }
     if (t is InterfaceType && kept.isNotEmpty) {
       final base = _type(t);
       final cls = t.classNode;
