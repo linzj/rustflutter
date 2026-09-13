@@ -426,6 +426,16 @@ augment class RustBackend {
         'if __t == std::any::TypeId::of::<dyn ${above.name}$arguments>() || __t == std::any::TypeId::of::<std::rc::Rc<dyn ${above.name}$arguments>>() { return Some(std::boxed::Box::new($handle)); }',
       );
     }
+    // `Comparable<Object?>`, what Dart's covariance makes of a class's
+    // `Comparable<T>` (`Comparable.compare(a, b)` in the data table
+    // demo's `_sort`, ws1129): through the wider impl beside the
+    // forwarding one (`_emitPreludeInterfaces`), where that one is written.
+    if (own != null && _comparableForwards(cls)) {
+      final wide = 'dyn Comparable<$dartHandle>';
+      _line(
+        'if __t == std::any::TypeId::of::<$wide>() || __t == std::any::TypeId::of::<std::rc::Rc<$wide>>() { return Some(std::boxed::Box::new($own as std::rc::Rc<$wide>)); }',
+      );
+    }
     for (var i = 0; i < cls.extraImpls.length; i++) {
       final wider = cls.extraImpls[i];
       final arguments = '<${wider.arguments.map((a) => type(a)).join(', ')}>';
@@ -650,7 +660,47 @@ augment class RustBackend {
         _line('}');
         _line('');
       });
+      // ..and `Comparable<Object?>` beside a class's `Comparable<T>`: the
+      // other side brought down to `T` (`FromDynamic`), anything else the
+      // `TypeError` Dart's `compareTo` throws. What `Comparable.compare`
+      // and `x as Comparable<Object?>` reach; the cast table answers it
+      // (ws1129).
+      if (i.name == 'Comparable' && args.length == 1 && args[0] != dartHandle) {
+        _member('impl Comparable<Object?> for ${cls.name}', () {
+          _line(
+            'impl${_implGenerics(cls)} Comparable<$dartHandle> for '
+            '${cls.name}${_generics(cls)} {',
+          );
+          _indent++;
+          _line(
+            'fn compare_to(&self, other: $dartHandle) -> Result<i64, $dartHandle> {',
+          );
+          _indent++;
+          _line('match <${args[0]} as FromDynamic>::from_dynamic(&other) {');
+          _indent++;
+          _line(
+            'Some(o) => <Self as Comparable<${args[0]}>>::compare_to(self, o),',
+          );
+          _line('None => Err(dart_cast_failed("${i.arguments[0].name}")),');
+          _indent--;
+          _line('}');
+          _indent--;
+          _line('}');
+          _indent--;
+          _line('}');
+          _line('');
+        });
+      }
     }
+  }
+
+  /// Whether the class's `Comparable<T>` forwarding impl is written (see
+  /// `_emitPreludeInterfaces`): the wider impl and its cast-table entry
+  /// go with it.
+  bool _comparableForwards(IrClass of) {
+    final methods = _preludeInterfaces['Comparable']!;
+    return _preludeInterfacesOf(of).any((i) => i.name == 'Comparable') &&
+        _forwardingCall(methods[1]) != null;
   }
 
   /// The `Future<T>` a class says it *is*, from its own `implements` or an

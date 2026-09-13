@@ -1027,6 +1027,10 @@ augment class RustBackend {
     'flush_sync',
     // `Error.throwWithStackTrace(e, st)`, which is a `throw`.
     'throw_with_stack_trace',
+    // `Comparable.compare(a, b)`: `a.compareTo(b)` through the wider
+    // `Comparable<Object?>`, a `TypeError` when `b` is not what `a`
+    // compares with (ws1129).
+    'comparable_compare',
   };
 
   /// The prelude methods whose callback parameter is `impl Fn`: it is
@@ -1083,6 +1087,10 @@ augment class RustBackend {
   /// Dart name at a top-level call and with the snake one elsewhere, and
   /// `_invoke1_with_return` beside it is already the snake spelling.
   static const _preludeFailingStatics = {
+    // `Comparable.compare(a, b)`: `a.compareTo(b)` through the wider
+    // `Comparable<Object?>`, a `TypeError` when `b` is not what `a`
+    // compares with (ws1129).
+    'Comparable.compare',
     // `jsonDecode`/`jsonEncode`: malformed input is a `FormatException`
     // and an unencodable value a `JsonUnsupportedObjectError` (ws1079).
     'json_decode',

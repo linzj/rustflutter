@@ -29,7 +29,7 @@ use std::fmt;
 
 /// `Comparable<T>`: `compareTo`, on the scalars that have it. A value typed
 /// `Comparable<T>` is an `Rc<dyn Comparable<T>>`, as any abstract class's is.
-pub trait Comparable<T> {
+pub trait Comparable<T>: DartAny {
     fn compare_to(&self, other: T) -> Result<i64, DartError>;
 }
 
@@ -88,6 +88,62 @@ impl Comparable<String> for String {
             std::cmp::Ordering::Greater => 1,
         })
     }
+}
+
+/// `Comparable<Object?>`: what Dart's covariance makes of every
+/// `Comparable<T>`, and what `Comparable.compare(a, b)`, `x as
+/// Comparable<Object?>` and `binarySearch<T extends Comparable<Object>>`
+/// ask through. The other side is brought down to what this one compares
+/// with; anything else is the `TypeError` Dart's `compareTo` throws. A
+/// translated class gets the same beside its own impl
+/// (`_emitPreludeInterfaces`), and every one answers the cast (ws1129).
+impl Comparable<std::rc::Rc<dyn DartAny>> for i64 {
+    fn compare_to(&self, other: std::rc::Rc<dyn DartAny>) -> Result<i64, DartError> {
+        if let Some(o) = other.dart_cast_any::<i64>() {
+            return self.compare_to(o);
+        }
+        if let Some(o) = other.dart_cast_any::<f64>() {
+            return self.compare_to(o);
+        }
+        Err(dart_cast_failed("num"))
+    }
+}
+
+impl Comparable<std::rc::Rc<dyn DartAny>> for f64 {
+    fn compare_to(&self, other: std::rc::Rc<dyn DartAny>) -> Result<i64, DartError> {
+        if let Some(o) = other.dart_cast_any::<f64>() {
+            return self.compare_to(o);
+        }
+        if let Some(o) = other.dart_cast_any::<i64>() {
+            return self.compare_to(o as f64);
+        }
+        Err(dart_cast_failed("num"))
+    }
+}
+
+impl Comparable<std::rc::Rc<dyn DartAny>> for String {
+    fn compare_to(&self, other: std::rc::Rc<dyn DartAny>) -> Result<i64, DartError> {
+        match other.dart_cast_any::<String>() {
+            Some(o) => self.compare_to(o),
+            None => Err(dart_cast_failed("String")),
+        }
+    }
+}
+
+/// `Comparable.compare(a, b)`: `a.compareTo(b)` through `Comparable<Object?>`.
+/// Either side arrives as whatever the call site had -- a cast trait
+/// object, a boxed scalar, a translated object behind its handle -- and
+/// the cast table brings `a` to the wider `Comparable` every implementor
+/// answers (ws1129).
+pub fn comparable_compare<A: DartAny + ?Sized, B: DartAny + ?Sized>(
+    a: std::rc::Rc<A>,
+    b: std::rc::Rc<B>,
+) -> Result<i64, DartError> {
+    let a = a
+        .dart_cast_to::<dyn Comparable<std::rc::Rc<dyn DartAny>>>()
+        .ok_or_else(|| dart_cast_failed("Comparable"))?;
+    let b = b.dart_cast_to::<dyn DartAny>().ok_or_else(|| dart_cast_failed("Object"))?;
+    a.compare_to(b)
 }
 
 /// Dart's `Iterator<E>` -- `moveNext()` and `current` -- under a name that
@@ -1558,6 +1614,7 @@ impl DartAny for i64 {
     /// `Option` of one boxes to the value and not to the `Option`
     /// (`Map<String, Object?>.cast<String, int>()`, the listcast fixture).
     fn dart_cast(&self, __t: std::any::TypeId) -> Option<Box<dyn std::any::Any>> {
+        if __t == std::any::TypeId::of::<dyn Comparable<std::rc::Rc<dyn DartAny>>>() || __t == std::any::TypeId::of::<std::rc::Rc<dyn Comparable<std::rc::Rc<dyn DartAny>>>>() { return Some(Box::new(std::rc::Rc::new(self.clone()) as std::rc::Rc<dyn Comparable<std::rc::Rc<dyn DartAny>>>)); }
         if __t == std::any::TypeId::of::<dyn DartAny>() || __t == std::any::TypeId::of::<std::rc::Rc<dyn DartAny>>() {
             Some(Box::new(std::rc::Rc::new(self.clone()) as std::rc::Rc<dyn DartAny>))
         } else if __t == std::any::TypeId::of::<dyn Object>() || __t == std::any::TypeId::of::<std::rc::Rc<dyn Object>>() {
@@ -1590,6 +1647,7 @@ impl DartAny for f64 {
     /// `Option` of one boxes to the value and not to the `Option`
     /// (`Map<String, Object?>.cast<String, int>()`, the listcast fixture).
     fn dart_cast(&self, __t: std::any::TypeId) -> Option<Box<dyn std::any::Any>> {
+        if __t == std::any::TypeId::of::<dyn Comparable<std::rc::Rc<dyn DartAny>>>() || __t == std::any::TypeId::of::<std::rc::Rc<dyn Comparable<std::rc::Rc<dyn DartAny>>>>() { return Some(Box::new(std::rc::Rc::new(self.clone()) as std::rc::Rc<dyn Comparable<std::rc::Rc<dyn DartAny>>>)); }
         if __t == std::any::TypeId::of::<dyn DartAny>() || __t == std::any::TypeId::of::<std::rc::Rc<dyn DartAny>>() {
             Some(Box::new(std::rc::Rc::new(self.clone()) as std::rc::Rc<dyn DartAny>))
         } else if __t == std::any::TypeId::of::<dyn Object>() || __t == std::any::TypeId::of::<std::rc::Rc<dyn Object>>() {
@@ -1654,6 +1712,7 @@ impl DartAny for String {
     /// `Option` of one boxes to the value and not to the `Option`
     /// (`Map<String, Object?>.cast<String, int>()`, the listcast fixture).
     fn dart_cast(&self, __t: std::any::TypeId) -> Option<Box<dyn std::any::Any>> {
+        if __t == std::any::TypeId::of::<dyn Comparable<std::rc::Rc<dyn DartAny>>>() || __t == std::any::TypeId::of::<std::rc::Rc<dyn Comparable<std::rc::Rc<dyn DartAny>>>>() { return Some(Box::new(std::rc::Rc::new(self.clone()) as std::rc::Rc<dyn Comparable<std::rc::Rc<dyn DartAny>>>)); }
         if __t == std::any::TypeId::of::<dyn DartAny>() || __t == std::any::TypeId::of::<std::rc::Rc<dyn DartAny>>() {
             Some(Box::new(std::rc::Rc::new(self.clone()) as std::rc::Rc<dyn DartAny>))
         } else if __t == std::any::TypeId::of::<dyn Object>() || __t == std::any::TypeId::of::<std::rc::Rc<dyn Object>>() {
