@@ -6150,10 +6150,127 @@ impl<T: DartEq> PartialEq for WeakReference<T> {
 /// registry's collectors return them); anything that listens will not
 /// compile, and says so.
 pub struct Stream<T> {
-    /// The events, all of them already known: without an event loop a
-    /// stream here is a *ready* stream, and `listen` delivers everything it
-    /// holds and then `onDone`, synchronously.
+    /// The events so far. A stream made of known events (`Stream.value`,
+    /// `fromIterable`) is done at birth and `listen` delivers everything it
+    /// holds and then `onDone`, synchronously. One fed by a
+    /// `StreamController` is *live*: what is added after `listen` reaches
+    /// the listeners as it is added, and `close` is their `onDone`
+    /// (`LicenseRegistry.licenses`, whose `onListen` adds every collector's
+    /// entries and closes; ws1120).
     events: std::rc::Rc<std::cell::RefCell<Vec<T>>>,
+    listeners: std::rc::Rc<std::cell::RefCell<Vec<StreamListener<T>>>>,
+    done: std::rc::Rc<std::cell::Cell<bool>>,
+    /// The controller's `onListen`, run once at the first `listen`.
+    on_listen: std::rc::Rc<std::cell::RefCell<Option<std::rc::Rc<dyn Fn() -> Result<(), DartError>>>>>,
+}
+
+struct StreamListener<T> {
+    on_data: Option<std::rc::Rc<dyn Fn(T) -> Result<(), DartError>>>,
+    on_done: Option<std::rc::Rc<dyn Fn() -> Result<(), DartError>>>,
+}
+
+impl<T> Stream<T> {
+    fn with_events(events: Vec<T>, done: bool) -> Stream<T> {
+        Stream {
+            events: std::rc::Rc::new(std::cell::RefCell::new(events)),
+            listeners: std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
+            done: std::rc::Rc::new(std::cell::Cell::new(done)),
+            on_listen: std::rc::Rc::new(std::cell::RefCell::new(None)),
+        }
+    }
+}
+
+/// `StreamController<T>`: the stream it feeds, with `add`, `addStream`
+/// and `close` on this side. `onPause`, `onResume`, `onCancel` and `sync`
+/// are taken and not acted on: nothing here pauses a stream, and delivery
+/// is on the caller's stack either way, as a ready stream's always was.
+pub struct StreamController<T> {
+    stream: Stream<T>,
+}
+
+impl<T: Clone + 'static> StreamController<T> {
+    pub fn new(
+        on_listen: Option<std::rc::Rc<dyn Fn() -> Result<(), DartError>>>,
+        _on_pause: Option<std::rc::Rc<dyn Fn() -> Result<(), DartError>>>,
+        _on_resume: Option<std::rc::Rc<dyn Fn() -> Result<(), DartError>>>,
+        _on_cancel: Option<std::rc::Rc<dyn Fn() -> Result<(), DartError>>>,
+        _sync: bool,
+    ) -> Self {
+        let stream = Stream::with_events(Vec::new(), false);
+        *stream.on_listen.borrow_mut() = on_listen;
+        StreamController { stream }
+    }
+
+    pub fn stream(&self) -> Stream<T> {
+        self.stream.clone()
+    }
+
+    pub fn is_closed(&self) -> bool {
+        self.stream.done.get()
+    }
+
+    /// `add(event)`: kept, and delivered to every listener.
+    pub fn add(&self, event: T) -> Result<(), DartError> {
+        self.stream.events.borrow_mut().push(event.clone());
+        let listeners: Vec<_> = self.stream.listeners.borrow().iter().filter_map(|l| l.on_data.clone()).collect();
+        for f in listeners {
+            f(event.clone())?;
+        }
+        Ok(())
+    }
+
+    /// `addStream(source)`: every event of `source` added here; the future
+    /// completes when `source` is done.
+    pub fn add_stream(&self, source: Stream<T>, _cancel_on_error: Option<bool>) -> DartFuture<()> {
+        let future = DartFuture::pending_labeled("StreamController.addStream");
+        let target = self.stream.clone();
+        let done = future.clone();
+        let listened = source.listen(
+            Some(std::rc::Rc::new(move |event: T| StreamController { stream: target.clone() }.add(event))),
+            None,
+            Some(std::rc::Rc::new(move || { done.resolve(Ok(())); Ok(()) })),
+            None,
+        );
+        if let Err(e) = listened {
+            future.resolve(Err(e));
+        }
+        future
+    }
+
+    /// `close()`: done, delivered to every listener; the future completes
+    /// once it is.
+    pub fn close(&self) -> DartFuture<()> {
+        if !self.stream.done.get() {
+            self.stream.done.set(true);
+            let listeners: Vec<_> = self.stream.listeners.borrow_mut().drain(..).collect();
+            for l in listeners {
+                if let Some(d) = l.on_done {
+                    if let Err(e) = d() {
+                        return DartFuture::ready(Err(e));
+                    }
+                }
+            }
+        }
+        DartFuture::ready(Ok(()))
+    }
+}
+
+impl<T> Clone for StreamController<T> {
+    fn clone(&self) -> Self {
+        StreamController { stream: self.stream.clone() }
+    }
+}
+
+impl<T: std::fmt::Debug> std::fmt::Debug for StreamController<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "StreamController({:?})", self.stream)
+    }
+}
+
+impl<T> PartialEq for StreamController<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.stream == other.stream
+    }
 }
 
 
@@ -6181,17 +6298,17 @@ impl<T> StreamSubscription<T> {
 impl<T: Clone + 'static> Stream<T> {
     /// `Stream.value(v)`: a single-element stream.
     pub fn value(value: T) -> Stream<T> {
-        Stream { events: std::rc::Rc::new(std::cell::RefCell::new(vec![value])) }
+        Stream::with_events(vec![value], true)
     }
 
     /// `Stream.empty()`.
     pub fn empty() -> Stream<T> {
-        Stream { events: std::rc::Rc::new(std::cell::RefCell::new(Vec::new())) }
+        Stream::with_events(Vec::new(), true)
     }
 
     /// `Stream.fromIterable(xs)`.
     pub fn from_iterable(elements: Vec<T>) -> Stream<T> {
-        Stream { events: std::rc::Rc::new(std::cell::RefCell::new(elements)) }
+        Stream::with_events(elements, true)
     }
 
     /// `listen(onData, {onError, onDone, cancelOnError})`: every event, then
@@ -6219,10 +6336,69 @@ impl<T: Clone + 'static> Stream<T> {
                 f(e)?;
             }
         }
-        if let Some(d) = &on_done {
-            d()?;
+        if self.done.get() {
+            if let Some(d) = &on_done {
+                d()?;
+            }
+        } else {
+            self.listeners.borrow_mut().push(StreamListener { on_data, on_done });
+        }
+        // The controller's `onListen`, once the listener is in place, so
+        // that what it adds is delivered.
+        let on_listen = self.on_listen.borrow_mut().take();
+        if let Some(on_listen) = on_listen {
+            on_listen()?;
         }
         Ok(StreamSubscription { _phantom: std::marker::PhantomData })
+    }
+
+    /// `fold(initial, combine)`: the accumulator threaded through every
+    /// event, handed back once the stream is done.
+    pub fn fold<S: Clone + 'static>(
+        &self,
+        initial: S,
+        combine: std::rc::Rc<dyn Fn(S, T) -> Result<S, DartError>>,
+    ) -> DartFuture<S> {
+        // The accumulator is taken for each step and put back after; a
+        // step that throws fails the future, as Dart's does, and the
+        // accumulator stays out so nothing after it is folded.
+        let future = DartFuture::pending_labeled("Stream.fold");
+        let acc = std::rc::Rc::new(std::cell::RefCell::new(Some(initial)));
+        let stepped = acc.clone();
+        let failed = future.clone();
+        let finished = acc.clone();
+        let done = future.clone();
+        let listened = self.listen(
+            Some(std::rc::Rc::new(move |event: T| {
+                let current = stepped.borrow_mut().take();
+                if let Some(current) = current {
+                    match combine(current, event) {
+                        Ok(next) => *stepped.borrow_mut() = Some(next),
+                        Err(e) => {
+                            if !failed.is_done() {
+                                failed.resolve(Err(e));
+                            }
+                        }
+                    }
+                }
+                Ok(())
+            })),
+            None,
+            Some(std::rc::Rc::new(move || {
+                let result = finished.borrow_mut().take();
+                if let Some(result) = result {
+                    if !done.is_done() {
+                        done.resolve(Ok(result));
+                    }
+                }
+                Ok(())
+            })),
+            None,
+        );
+        if let Err(e) = listened {
+            future.resolve(Err(e));
+        }
+        future
     }
 
     /// `toList()`.
@@ -6244,17 +6420,26 @@ impl<T: Clone + 'static> Stream<T> {
     }
 
     pub fn to_list(&self) -> DartFuture<Vec<T>> {
-        DartFuture::ready(Ok(self.events.borrow().clone()))
+        self.fold(Vec::new(), std::rc::Rc::new(|mut all: Vec<T>, event: T| { all.push(event); Ok(all) }))
     }
 
-    /// `first`.
+    /// `first`: the first event, once there is one; a stream done without
+    /// any fails the future, which is Dart's own answer -- `await` throws
+    /// it where a `try` can catch it.
     pub fn first(&self) -> DartFuture<T> {
-        match self.events.borrow().first().cloned() {
-            Some(first) => DartFuture::ready(Ok(first)),
-            // Dart's own answer: the future fails, and `await` throws it
-            // where a `try` can catch it.
-            None => DartFuture::ready(Err(dart_no_element())),
+        let future = DartFuture::pending_labeled("Stream.first");
+        let got = future.clone();
+        let ended = future.clone();
+        let listened = self.listen(
+            Some(std::rc::Rc::new(move |event: T| { if !got.is_done() { got.resolve(Ok(event)); } Ok(()) })),
+            None,
+            Some(std::rc::Rc::new(move || { if !ended.is_done() { ended.resolve(Err(dart_no_element())); } Ok(()) })),
+            None,
+        );
+        if let Err(e) = listened {
+            future.resolve(Err(e));
         }
+        future
     }
 
     /// `isBroadcast`: a ready stream can be listened to any number of times.
@@ -6265,7 +6450,12 @@ impl<T: Clone + 'static> Stream<T> {
 
 impl<T> Clone for Stream<T> {
     fn clone(&self) -> Self {
-        Stream { events: self.events.clone() }
+        Stream {
+            events: self.events.clone(),
+            listeners: self.listeners.clone(),
+            done: self.done.clone(),
+            on_listen: self.on_listen.clone(),
+        }
     }
 }
 
@@ -6274,7 +6464,7 @@ impl<T> Clone for Stream<T> {
 /// `T: Default`, and a stream of no events needs nothing of `T`.
 impl<T> Default for Stream<T> {
     fn default() -> Self {
-        Stream { events: std::rc::Rc::new(std::cell::RefCell::new(Vec::new())) }
+        Stream::with_events(Vec::new(), true)
     }
 }
 
