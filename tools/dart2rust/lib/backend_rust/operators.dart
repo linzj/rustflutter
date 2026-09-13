@@ -202,7 +202,21 @@ augment class RustBackend {
     final leftInt =
         left.rustType?.name == 'int' ||
         (left is IrLiteral && left.type.name == 'int');
-    if (op == '>>>' || ((op == '<<' || op == '>>') && leftInt)) {
+    // ..by a *literal* count under 64, the operator: Dart's and Rust's
+    // agree there, nothing can fail, and a `const` constructor keeps its
+    // `const fn` -- `Color(int value) : this._fromARGBC(value >> 24, ..)`
+    // stopped compiling the moment the redirect's arguments carried their
+    // type ("destructor of `ControlFlow<..>` cannot be evaluated at
+    // compile-time", E0493, ws1117).
+    final literalCount = right is IrLiteral && right.type.name == 'int'
+        ? int.tryParse(right.value)
+        : null;
+    final smallShift =
+        (op == '<<' || op == '>>') &&
+        literalCount != null &&
+        literalCount >= 0 &&
+        literalCount < 64;
+    if (op == '>>>' || ((op == '<<' || op == '>>') && leftInt && !smallShift)) {
       final helper = switch (op) {
         '<<' => 'dart_shl',
         '>>' => 'dart_shr',
@@ -578,6 +592,14 @@ augment class RustBackend {
     final t = value.rustType;
     if (t != null && t.isFunction && _closureLike(value)) {
       return 'Some({ let __f: ${type(t)} = $held; __f })';
+    }
+    // `DART2RUST_TRACE_SOME=1`: a closure-like value going into `Some(..)`
+    // with no function type to unsize against -- the shape rustc rejects
+    // once anything follows the `Some` (`.clone()`), since an `Option<Rc<
+    // {closure}>>` is not an `Option<Rc<dyn Fn>>`.
+    if (Platform.environment['DART2RUST_TRACE_SOME'] == '1' &&
+        _closureLike(value)) {
+      stderr.writeln('TRACE_SOME t=$t value=${value.runtimeType}');
     }
     return 'Some($held)';
   }

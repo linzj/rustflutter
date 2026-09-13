@@ -592,6 +592,26 @@ augment class RustBackend {
     Map<String, IrType> types = const {},
   ]) {
     IrExpr go(IrExpr node) => _substitute(node, by, types);
+    final out = _substituted(e, by, types);
+    // A rebuilt node is what it was, typed as it was -- with the base's
+    // parameters put in. Rebuilt untyped, the adapter a base's initialiser
+    // made for `startListening: _startListening` reached `Some(..)` with
+    // nothing to unsize against, and `Some({ .. Rc::new(closure) })
+    // .clone()` was an `Option<Rc<{closure}>>` ("expected `Option<Rc<dyn
+    // Fn(..)>>`", `ChangeNotifierProvider.value`, ws1116) -- the one
+    // untyped `Some` of a closure in the whole gallery, traced.
+    if (!identical(out, e) && out.rustType == null && e.rustType != null) {
+      out.rustType = _substituteType(e.rustType!, types);
+    }
+    return out;
+  }
+
+  IrExpr _substituted(
+    IrExpr e,
+    Map<String, IrExpr> by,
+    Map<String, IrType> types,
+  ) {
+    IrExpr go(IrExpr node) => _substitute(node, by, types);
     return switch (e) {
       IrLocal(:final name) => by[name] ?? e,
       IrField(:final target, :final name, :final onEnum, :final owner) =>
@@ -717,14 +737,26 @@ augment class RustBackend {
           fails: fails,
           diverges: diverges,
           asyncFn: asyncFn,
-          typeArguments: typeArguments,
+          // The base's `T` put in here too: `_install<T>(value, start)`
+          // in a generic base's initialiser named a `T` the subclass's
+          // constructor has no parameter for (E0425).
+          typeArguments: [
+            for (final t in typeArguments) _substituteType(t, types),
+          ],
           module: module,
         ),
-      IrNew(:final type, :final args, :final constructor) => IrNew(
-        type,
-        args.map(go).toList(),
-        constructor: constructor,
-      ),
+      IrNew(
+        :final type,
+        :final args,
+        :final constructor,
+        :final implementation,
+      ) =>
+        IrNew(
+          _substituteType(type, types),
+          args.map(go).toList(),
+          constructor: constructor,
+          implementation: implementation,
+        ),
       IrConditional(:final condition, :final then, :final otherwise) =>
         IrConditional(go(condition), go(then), go(otherwise)),
       IrSuperCall(

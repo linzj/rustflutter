@@ -11,7 +11,26 @@ augment class RustBackend {
     _ => false,
   };
 
+  /// `void?` is `void` (`_normal`): a null-aware call on a `void` callee is
+  /// the unit, however it was mapped. The `map(..).transpose()?` below
+  /// leaves an `Option<()>`, which the IR called `()`; the two met in the
+  /// temporary a `switch` expression's arms share -- `return switch (event)
+  /// { PointerDownEvent() => onPointerDown?.call(event), .. _ => null }` in
+  /// `RenderPointerListener.handleEvent`, where an arm the AOT compiler
+  /// folded was already `()` ("expected enum `Option<()>`, found unit
+  /// type `()`", ws1116).
   String _nullAware(IrExpr receiver, IrExpr body, bool flatten) {
+    final shaped = _nullAwareShape(receiver, body, flatten);
+    final bodyType = body.rustType;
+    final unit =
+        bodyType != null &&
+        (bodyType.name == 'void' || bodyType.name == '()') &&
+        !bodyType.nullable &&
+        !flatten;
+    return unit ? '{ $shaped; }' : shaped;
+  }
+
+  String _nullAwareShape(IrExpr receiver, IrExpr body, bool flatten) {
     // `null?.anything` is `null`: Dart evaluates nothing to the right of
     // `?.` when the left is null, so there is nothing here to map. Mapped
     // anyway, the closure binds a value that does not exist and types
