@@ -1438,6 +1438,11 @@ augment class KernelFrontend {
   /// back its own `T` instead, under a conversion written for the erased
   /// spelling -- `item.tween.transform(t)` in `TweenSequence._evaluateAt`,
   /// which is the one site the erased-instantiation cast broke (ws934).
+  /// The prelude's interfaces a type parameter's bound may name and be
+  /// reached through the object (see `_receiver`): the ones every
+  /// implementor answers a cast to at their `Object?` instantiation.
+  static const _preludeTraitBounds = {'Comparable'};
+
   IrExpr _receiver(Expression e, {bool keepErased = false}) {
     final lowered = expression(e);
     var static = _staticType(e);
@@ -1454,6 +1459,23 @@ augment class KernelFrontend {
     var hops = 0;
     while (static is TypeParameterType && hops++ < 8) {
       final bound = static.parameter.bound;
+      // A bound naming one of the prelude's interfaces (`T extends
+      // Comparable<Object>`): a Rust type parameter has no methods and
+      // the bound names no trait here, so the member is reached through
+      // the object -- the cast to `Comparable<Object?>` every implementor
+      // answers (ws1130) -- as `x as Comparable<Object?>` is. `element.
+      // compareTo(value)` in `binarySearch` had nothing to land on ("no
+      // method named `compare_to` found for type parameter `T`", ws1130).
+      if (bound is InterfaceType &&
+          bound.classNode.enclosingLibrary.importUri.scheme == 'dart' &&
+          _preludeTraitBounds.contains(bound.classNode.name)) {
+        try {
+          final spelled = _type(bound);
+          return IrCastTo(lowered, spelled)..rustType = spelled;
+        } on Unsupported {
+          return lowered;
+        }
+      }
       // ..and to a *prelude value type*, which Rust cannot spell as a
       // bound either: `CalendarDelegate<T extends DateTime>` reads
       // `dateA.year` off a `T` that names no trait and carries no member.

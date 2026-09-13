@@ -887,6 +887,27 @@ augment class KernelFrontend {
         ),
       ),
     );
+    // A prelude interface's method whose parameter is the interface's
+    // own type parameter, reached at the `Object?` instantiation every
+    // implementor answers (`_preludeTraitBounds`): the argument is the
+    // object, whatever the caller has in hand. A prelude callee's
+    // arguments are otherwise not adapted here, and `element.compareTo(
+    // value)` on a `T extends Comparable<Object>` handed the bare `T`
+    // where `compare_to` takes an `Rc<dyn DartAny>` (`binarySearch`,
+    // ws1130).
+    final preludeOwner = calleeMember is Member
+        ? calleeMember.enclosingClass
+        : null;
+    if (preludeOwner != null &&
+        preludeOwner.enclosingLibrary.importUri.scheme == 'dart' &&
+        _preludeTraitBounds.contains(preludeOwner.name) &&
+        declaredType is TypeParameterType &&
+        preludeOwner.typeParameters.contains(declaredType.parameter) &&
+        argument.rustType != null &&
+        argument.rustType!.name != 'dynamic' &&
+        argument.rustType!.name != 'Object') {
+      return coerce(argument, const IrType('Object'));
+    }
     if (calleeMember is Member &&
         (tracedArg == '*' ||
             tracedArg ==
