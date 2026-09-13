@@ -559,6 +559,14 @@ augment class RustBackend {
                     false)
             ? (explicit
                   ? '(${_castOperand(value)} as ${this.type(type)})'
+                  // `this` of a *value* class has no handle to hand out
+                  // (`_thisHandle` is null): behind a fresh one, as any
+                  // other value goes into a trait slot. The bare struct
+                  // was `_LargeTitleNavigationBarSliverDelegate` where
+                  // `DiagnosticableTreeNode(value: this)` wanted an
+                  // `Rc<dyn DiagnosticableTree>` (1 stub at ws1115).
+                  : value is IrThis && _thisHandle() == null
+                  ? 'dart_object(${expr(value)})'
                   : _handleOf(value))
             // ..an enum too, since `_emitEnumDartAny` (ws510): registered
             // as it is boxed, so `dart_object_str` finds its `X.value`.

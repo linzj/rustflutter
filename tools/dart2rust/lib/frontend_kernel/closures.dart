@@ -860,9 +860,16 @@ augment class KernelFrontend {
     return null;
   }
 
+  /// Whether an expression is `this`, or a chain of field reads from it.
+  ///
+  /// A null check on the way (`this.child!.hitTest`) reads the same object:
+  /// the tear-off of it was rooted nowhere -- not held, not bound -- and
+  /// borrowed `this_` into a `'static` slot ("lifetime may not live long
+  /// enough", `RenderSliverEdgeInsetsPadding.hitTestChildren`, ws1115).
   bool _rootedAtThis(Expression e) => switch (e) {
     ThisExpression() => true,
     InstanceGet(:final receiver) => _rootedAtThis(receiver),
+    NullCheck(:final operand) => _rootedAtThis(operand),
     _ => false,
   };
 

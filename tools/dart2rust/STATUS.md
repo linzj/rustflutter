@@ -14,12 +14,14 @@
 - 渲染尺子：与 Flutter 参考遍历对账，参考 `ref_render_walk_settled.txt` **707 行**（707 行全部非空；`render_ruler.py` 的 `nodes=` 数的就是它，`typediff` 含长度差，所以 0 差异同时保证行数相同）。**曾写作 708，那是旧数**：重量于 2026-09-11 ws1094，参考文件与五次运行都是 707。
 - **panic 尺子 `bin/panic_ruler.py`（ws1094 新增）**：把工作区里**每一种会中止的写法**数全——`panic!`/`unreachable!`/`todo!`/`assert*`/`.expect`/`.unwrap()`——**先出总数再分类**，对不上就报 MISCOUNTED。它取代的是 `grep -c 'panic!("uncaught'`：那是一行的模式，而 `erased_cast_failed` 的字符串写在 `panic!(` 的下一行，所以尺子报 0、东西还在、六处在调它。**量一个字符串只会静默地错，量总数不会。**
   - **`a8055b16` 发现它自己在发牌照**：它把任何认不出的 `dart2rust:` 消息折进一个桶 `dart2rust: .. (other)`，并把那个桶算作合法，于是宣布规则收尾的那天它的最后一行写着 0，真数是 **516**。前缀是这个编译器写的，前缀后面说的话却未必是这个编译器的事实——`panic!("dart2rust: a {} where a `{}` was wanted")` 就是一个挂着本编译器名字的 Dart `TypeError`。桶已删，每条消息各按原文单列；**新出现的一条在有人替它辩护之前一律算不合法**。
-- **当前读数（ws1101）**：拒绝 **12**，桩 **34**（ws1098 的 36 起算，gone 2 / new 0，`stubdiff.sh` 逐字节），unstubbable **0**，可达 **69**，0 error；渲染树连采五次 **707 节点 / 0 panic / 0 类型差异**；夹具 **107 个，106 AGREE + `ffistruct` 故意红**；panic 尺子 **「程序还能走、这边走不了」的中止点 = 0**。
+- **当前读数（ws1116）**：拒绝 **12**，桩 **24**（ws1098 的 36 起算，每轮 gone N / new 0，`stubdiff.sh` 逐字节；ws1115 → ws1116 gone 2：`RenderSliverEdgeInsetsPadding.hitTestChildren`、`_LargeTitleNavigationBarSliverDelegate.toDiagnosticsNode`），unstubbable **0**，可达 **69**，0 error；渲染树连采五次 **707 节点 / 0 panic / 0 类型差异**；夹具 **117 个，116 AGREE + `ffistruct` 故意红**；panic 尺子 **「程序还能走、这边走不了」的中止点 = 0**。
   - 510 → 0 的去向，按处置分：**真删掉 504 处**——494 处懒 `late` 尾读（`protocols.dart` 改成 `match`，返回刚算出的值就不必读回来）、5 处 `four()`/`eight()` 把数组 `try_into` 成它自己、1 处 Mutex 换成全函数的 `into_inner`、2 处 `Future.value()`/`Future.delayed` 对非空 T 取 null 改 `Err`、1 处 `FutureOr::Value` 空着（和十行下的 `then` 给同一答案）、1 处 `Sink::close` 补上错误通道；**1 处改成本来的措辞**（`dart:ffi` 没有该平台的 Abi 行是一条拒绝）；**5 处逐条辩上名单**，每条 1 个站点，理由写在尺子里。
   - 名单的规矩写进了 `bin/panic_ruler.py`：**一条消息覆盖很多站点就不该上名单**。494 处懒格子是一个发射点，答案是别再发射中止点，不是给它取个名字。
 - 体积：ws1086 收下 `--icf=all` 后，release `.text` **56,617,250**，stripped **112,917,488**；从 work_size 起点 `.text` 75,158,528 → 56,617,250（−24.7%），stripped 135,833,000 → 112,917,488（−16.9%）；对官方 `libapp.so` 的 `.text` 从 6.11× 降到 **4.61×**。ws1094 把 670 处 `.unwrap()` 换成 `?`/`Err` 之后量：`.text` +61,632（**+0.11%**），stripped **−86,008**——work.md 第十一节那条“没量”的账，现在量了：**`?` 的传播代码没有想象中贵，`Err` 构造还替掉了一批 panic 的格式化字符串。**
 
 ## 4. 已闭合/已落地
+- **ws1116 `this.child!.hitTest` 撕出来的值持有句柄了**（夹具 `tearoffnullcheck`，无改动红/有改动绿）。撕方法的闭包在计数类里持句柄，判「根在 this」只看字段读链，`!` 一夹就落空——既不持有也不先绑定，闭包借了 `this_`（抽象类的体是自由 super 函数，`this_: &dyn`）再装进 `'static` 的 `Rc<dyn Fn>`：「lifetime may not live long enough」。`_rootedAtThis` 看穿 `NullCheck` 一条，1 桩没了。
+- **ws1116 值类型的 `this` 上转成 trait 句柄走 `dart_object`**（夹具 `valuethishandle`）：mixin 里 `Holder(this, ..)` 落到值 struct 时 `_thisHandle()` 是 null，原来拼成 `(*self)` 传进要 `Rc<dyn Shape>` 的槽（E0308）。1 桩没了。
 - Goal 2 无头引擎：能 build、layout、paint 出真帧。
 - Goal 3 渲染树：节点类型、顺序、层级与参考一致，**707/707，忽略 `size=`/`offset=` 后 0 差异**。
 - 剩余 508 行只差 `size=`：32 个 `RenderParagraph` 量成 `Size(0,0)`，因无头运行时不答 `Paragraph::*` native，且 native 桥不传接收者。**这是运行时缺口，不是翻译缺口。**
