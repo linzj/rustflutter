@@ -173,6 +173,30 @@ augment class KernelFrontend {
           // rules.
         }
       }
+      // `f.then(cb)` is a future of what the callback's *body* hands
+      // back, and a body's `T?` is the plain `Option<T>`, not the edge's
+      // projection a nested `T?` is recorded as: recorded projected, the
+      // `DartFuture<Option<T>>` the call makes matched the method's
+      // `Future<T?>` return by name and was never mapped into it
+      // (`NavigatorState.pushNamed`, since ws1098). The backend spells
+      // the turbofish the same way.
+      final recorded = lowered.rustType;
+      if (node is InstanceInvocation &&
+          node.name.text == 'then' &&
+          recorded != null &&
+          recorded.name == 'Future' &&
+          recorded.arguments.length == 1 &&
+          recorded.arguments.single.projected) {
+        final held = recorded.arguments.single;
+        lowered.rustType = IrType(
+          'Future',
+          nullable: recorded.nullable,
+          arguments: [
+            IrType(held.name, nullable: true, arguments: held.arguments),
+          ],
+          module: recorded.module,
+        );
+      }
     }
     // The prelude's own `Iterable<T>` is a `Vec<T>`. `where`, `map` and
     // `followedBy` come out of a Rust iterator chain this backend
@@ -328,26 +352,45 @@ augment class KernelFrontend {
         return null;
       }
     }
+    // `DART2RUST_TRACE_THROUGH=1`: every member read this rule looks at,
+    // with what the receiver recorded for the owner's parameters.
+    if (Platform.environment['DART2RUST_TRACE_THROUGH'] == '1') {
+      stderr.writeln(
+        'TRACE_THROUGH target=${target.name.text} declared=$declared recorded=$recorded bare=$bare',
+      );
+    }
     if (!bare) {
       // Every parameter the declaration mentions has to be `dynamic` on
       // the receiver; put in, the declaration spells the value as the
       // struct holds it.
-      final pairs = <TypeParameter, DartType>{};
+      // The receiver's recorded argument put in *as recorded*: a
+      // `Completer<T?>` with `T` erased holds an `Option<Rc<dyn
+      // DartAny>>`, and `then((dynamic result) ..)` on its future then
+      // takes the `Option` the future holds, after the receiver is mapped
+      // into the `Future<dynamic>` Kernel sees (`_RouteEntry.
+      // handleDidPopNext`, ws1126). Put in by name at the IR level: at
+      // the Kernel level `Object?` spells as the bare `dynamic` and the
+      // `?` was lost.
+      final by = <String, IrType>{};
       for (var i = 0; i < owner.typeParameters.length; i++) {
         final p = owner.typeParameters[i];
         if (!_mentionsParametersOf(declared, [p])) continue;
         if (i >= recorded.arguments.length ||
-            recorded.arguments[i].name != 'dynamic' ||
-            recorded.arguments[i].nullable) {
+            recorded.arguments[i].name != 'dynamic') {
           return null;
         }
-        pairs[p] = const DynamicType();
+        by[p.name ?? ''] = recorded.arguments[i];
       }
       try {
-        return _typeNested(
-          Substitution.fromMap(pairs).substituteType(declared),
-        );
-      } on Unsupported {
+        final put = _putIn(_typeNested(declared), by);
+        if (Platform.environment['DART2RUST_TRACE_THROUGH'] == '1') {
+          stderr.writeln('TRACE_THROUGH put=$put');
+        }
+        return put;
+      } on Unsupported catch (e) {
+        if (Platform.environment['DART2RUST_TRACE_THROUGH'] == '1') {
+          stderr.writeln('TRACE_THROUGH unsupported=$e');
+        }
         return null;
       }
     }
@@ -391,6 +434,36 @@ augment class KernelFrontend {
       _unwrapped(target),
     _ => false,
   };
+
+  /// `t` with each bare parameter named in `by` replaced by what the
+  /// receiver recorded for it, its nullability kept on top.
+  static IrType _putIn(IrType t, Map<String, IrType> by) {
+    final put = by[t.name];
+    if (put != null && t.arguments.isEmpty && !t.isFunction) {
+      return IrType(
+        put.name,
+        nullable: t.nullable || put.nullable,
+        arguments: put.arguments,
+        projected: put.projected,
+        module: put.module,
+      );
+    }
+    if (t.isFunction) {
+      return IrType.function(
+        [for (final a in t.parameters!) _putIn(a, by)],
+        _putIn(t.returns!, by),
+        nullable: t.nullable,
+      );
+    }
+    if (t.arguments.isEmpty) return t;
+    return IrType(
+      t.name,
+      nullable: t.nullable,
+      arguments: [for (final a in t.arguments) _putIn(a, by)],
+      projected: t.projected,
+      module: t.module,
+    );
+  }
 
   /// Whether `t` mentions one of `params` with a `?` on it, at any depth.
   static bool _mentionsNullably(DartType t, List<TypeParameter> params) =>

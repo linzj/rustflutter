@@ -1178,7 +1178,18 @@ augment class RustBackend {
         resultType.arguments.length == 1 &&
         !resultType.arguments.single.isFunction &&
         (receiverClass == null || library[receiverClass] == null)) {
-      return '$receiver.then::<${type(resultType.arguments.single)}, _>'
+      // ..as a *body* spells it: `R` is what the callback's body hands
+      // back, and a body's `T?` is the plain `Option<T>`, not the edge's
+      // `<T as DartNullable>::Or` the call's type was recorded with
+      // (`push<Object?>(route).then((Object? result) => result as T?)`
+      // in `NavigatorState.pushNamed`: "`FutureOr<Option<T>>:
+      // IntoFutureOr<<T as DartNullable>::Or>` is not satisfied", since
+      // ws1098). The front end records the call's own type the same way.
+      final held = resultType.arguments.single;
+      final plain = held.projected
+          ? IrType(held.name, nullable: true, arguments: held.arguments)
+          : held;
+      return '$receiver.then::<${type(plain)}, _>'
           '(${args.map(expr).join(', ')})${suffixFor(viaTrait)}';
     }
     // A generic method through a trait object: its erased twin, and the
