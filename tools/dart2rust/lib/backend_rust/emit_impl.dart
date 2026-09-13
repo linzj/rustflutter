@@ -822,10 +822,23 @@ augment class RustBackend {
       return null;
     }
 
+    // A *field* of that name declared at a level nearer than the getter
+    // ends the search: the field overrides the getter, and the field
+    // branch of `_emitBaseMethod` reads it. Walked past, `NamedRoute`'s
+    // own `name` lost to `Placeholder.name` two levels up, and a route
+    // named 'home' answered 'placeholder' through its interface -- a
+    // silent wrong answer, not a stub (the fieldoverridesgetter fixture,
+    // ws1128).
+    bool fieldAt(IrClass c) =>
+        need.operator == null &&
+        !need.isSetter &&
+        need.params.isEmpty &&
+        c.fields.any((f) => f.name == need.name);
     final seen = <String>{cls.name};
     IrClass? at = cls;
     var own = true;
     while (at != null) {
+      if (fieldAt(at)) return null;
       // This class's own members are `_matching`'s; the walk starts at its
       // mixins.
       if (!own) {
@@ -837,6 +850,7 @@ augment class RustBackend {
       for (final applied in at.mixins.reversed) {
         final mixin = library[applied.name];
         if (mixin == null || !seen.add(mixin.name)) continue;
+        if (fieldAt(mixin)) return null;
         if (!library.isAbstract(mixin.name)) continue;
         final method = declared(mixin);
         if (method != null) return (mixin, method);
