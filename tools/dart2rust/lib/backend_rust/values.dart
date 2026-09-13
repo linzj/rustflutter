@@ -33,6 +33,30 @@ augment class RustBackend {
     // `const JsonEncoder()` / `const JsonEncoder.withIndent('  ')`: the
     // constant's `indent` is the struct's; `_toEncodable` is a callback
     // the prelude's encoder does not ask (`Platform.toJson`, ws1122).
+    // `const GZipCodec()` / `const ZLibCodec()` (`gzip`, `zlib`): every
+    // field the constant carries, as the prelude's struct holds them
+    // (`WidgetsFlutterBinding._addLicenses`, ws1123).
+    if (t.name == 'GZipCodec' || t.name == 'ZLibCodec') {
+      String field(String name, String absent) {
+        final value = fields[name];
+        return value == null
+            ? absent
+            : _writtenNull(value)
+            ? 'None'
+            : expr(value);
+      }
+
+      final parts = [
+        'level: ${field('level', '6')}',
+        'window_bits: ${field('windowBits', '15')}',
+        'mem_level: ${field('memLevel', '8')}',
+        'strategy: ${field('strategy', '0')}',
+        'dictionary: ${field('dictionary', 'None')}',
+        'raw: ${field('raw', 'false')}',
+        if (t.name == 'GZipCodec') 'gzip: ${field('gzip', 'true')}',
+      ];
+      return '${t.name} { ${parts.join(', ')} }';
+    }
     if (t.name == 'JsonEncoder') {
       // The field is a `String?`, and the constant's value is written
       // as one already (`Some(..)` / `None`).

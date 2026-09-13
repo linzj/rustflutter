@@ -2475,6 +2475,27 @@ impl<T> std::ops::DerefMut for Isolate<T> {
     }
 }
 
+/// `Isolate.run(computation, {debugName})`: the computation, run here and
+/// now. There is one isolate on this side, as there is on the web, where
+/// `compute` runs its callback in the same isolate; the future it hands
+/// back is the computation's result (`WidgetsFlutterBinding._addLicenses`
+/// inflates and parses the NOTICES through `compute`, ws1123). A
+/// `FutureOr` handed back as Dart's `null` for a non-nullable `R` is the
+/// null check's error, not a value.
+impl Isolate<()> {
+    pub fn run<R: Clone + 'static>(
+        computation: std::rc::Rc<dyn Fn() -> Result<FutureOr<R>, DartError>>,
+        _debug_name: Option<String>,
+    ) -> DartFuture<R> {
+        match computation() {
+            Ok(FutureOr::Value(Some(value))) => DartFuture::ready(Ok(value)),
+            Ok(FutureOr::Value(None)) => DartFuture::ready(Err(dart_null_check_failed())),
+            Ok(FutureOr::Future(future)) => future,
+            Err(e) => DartFuture::ready(Err(e)),
+        }
+    }
+}
+
 /// A Dart lazy static: `static final x = ..` on a class, or a top-level
 /// `final`/`var` whose value is computed.
 ///
@@ -10411,6 +10432,297 @@ pub fn json_indented(compact: &str, indent: &str) -> String {
         i += 1;
     }
     out
+}
+
+/// `dart:io`'s `GZipCodec` (`gzip`) and `ZLibCodec` (`zlib`), decoding
+/// only: `WidgetsFlutterBinding._addLicenses` inflates the asset bundle's
+/// `NOTICES.Z` with `gzip.decode` (2 refusals at ws1123, a const instance
+/// of a class outside the file). The fields are the constants', written
+/// as a struct literal (`_constInstance`); `level`, `memLevel` and
+/// `strategy` only matter for encoding, which nothing translated does.
+/// The inflater is RFC 1951 in full -- stored, fixed and dynamic Huffman
+/// blocks -- behind a gzip (RFC 1952) or zlib (RFC 1950) header, chosen
+/// by the magic bytes as zlib's own auto-detection does; `raw` takes the
+/// deflate stream bare. Checksums are not verified.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GZipCodec {
+    pub level: i64,
+    pub window_bits: i64,
+    pub mem_level: i64,
+    pub strategy: i64,
+    pub dictionary: Option<Vec<i64>>,
+    pub raw: bool,
+    pub gzip: bool,
+}
+
+impl GZipCodec {
+    pub fn decode(&self, bytes: Vec<i64>) -> Result<Vec<i64>, DartError> {
+        inflate_dart(&bytes, self.raw)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ZLibCodec {
+    pub level: i64,
+    pub window_bits: i64,
+    pub mem_level: i64,
+    pub strategy: i64,
+    pub dictionary: Option<Vec<i64>>,
+    pub raw: bool,
+}
+
+impl ZLibCodec {
+    pub fn decode(&self, bytes: Vec<i64>) -> Result<Vec<i64>, DartError> {
+        inflate_dart(&bytes, self.raw)
+    }
+}
+
+fn inflate_dart(bytes: &[i64], raw: bool) -> Result<Vec<i64>, DartError> {
+    let input: Vec<u8> = bytes.iter().map(|b| *b as u8).collect();
+    let out = if raw { inflate(&input, 0)? } else { inflate_framed(&input)? };
+    Ok(out.into_iter().map(|b| b as i64).collect())
+}
+
+fn inflate_error(what: &str) -> DartError {
+    dart_format_exception(format!("Filter error, bad data: {}", what))
+}
+
+/// The deflate stream inside a gzip or zlib wrapper.
+fn inflate_framed(input: &[u8]) -> Result<Vec<u8>, DartError> {
+    if input.len() >= 2 && input[0] == 0x1f && input[1] == 0x8b {
+        // gzip: ID1 ID2 CM FLG MTIME(4) XFL OS, then the optional fields
+        // FLG names, then the deflate stream, then CRC32 and ISIZE.
+        if input.len() < 10 || input[2] != 8 {
+            return Err(inflate_error("unknown compression method"));
+        }
+        let flg = input[3];
+        let mut pos = 10usize;
+        if flg & 4 != 0 {
+            if pos + 2 > input.len() {
+                return Err(inflate_error("truncated gzip header"));
+            }
+            let xlen = input[pos] as usize | ((input[pos + 1] as usize) << 8);
+            pos += 2 + xlen;
+        }
+        for bit in [8u8, 16u8] {
+            if flg & bit != 0 {
+                while pos < input.len() && input[pos] != 0 {
+                    pos += 1;
+                }
+                pos += 1;
+            }
+        }
+        if flg & 2 != 0 {
+            pos += 2;
+        }
+        if pos > input.len() {
+            return Err(inflate_error("truncated gzip header"));
+        }
+        return inflate(input, pos);
+    }
+    // zlib: CMF FLG, an optional dictionary id, the stream, ADLER32.
+    if input.len() < 2 || input[0] & 0x0f != 8 || ((input[0] as u16) << 8 | input[1] as u16) % 31 != 0 {
+        return Err(inflate_error("incorrect header check"));
+    }
+    let pos = if input[1] & 0x20 != 0 { 6 } else { 2 };
+    inflate(input, pos)
+}
+
+struct Huffman {
+    count: [u16; 16],
+    symbol: Vec<u16>,
+}
+
+fn huffman(lengths: &[u16]) -> Huffman {
+    let mut count = [0u16; 16];
+    for &l in lengths {
+        count[l as usize] += 1;
+    }
+    count[0] = 0;
+    let mut offs = [0u16; 16];
+    for len in 1..15 {
+        offs[len + 1] = offs[len] + count[len];
+    }
+    let mut symbol = vec![0u16; lengths.len()];
+    for (sym, &l) in lengths.iter().enumerate() {
+        if l != 0 {
+            symbol[offs[l as usize] as usize] = sym as u16;
+            offs[l as usize] += 1;
+        }
+    }
+    Huffman { count, symbol }
+}
+
+struct Inflater<'a> {
+    input: &'a [u8],
+    pos: usize,
+    bitbuf: u64,
+    bitcnt: u32,
+    out: Vec<u8>,
+}
+
+impl<'a> Inflater<'a> {
+    fn bits(&mut self, need: u32) -> Result<u32, DartError> {
+        let mut val = self.bitbuf;
+        while self.bitcnt < need {
+            if self.pos >= self.input.len() {
+                return Err(inflate_error("unexpected end of input"));
+            }
+            val |= (self.input[self.pos] as u64) << self.bitcnt;
+            self.pos += 1;
+            self.bitcnt += 8;
+        }
+        self.bitbuf = val >> need;
+        self.bitcnt -= need;
+        Ok((val & ((1u64 << need) - 1)) as u32)
+    }
+
+    fn decode(&mut self, h: &Huffman) -> Result<u16, DartError> {
+        let mut code: i32 = 0;
+        let mut first: i32 = 0;
+        let mut index: i32 = 0;
+        for len in 1..16 {
+            code |= self.bits(1)? as i32;
+            let count = h.count[len] as i32;
+            if code - count < first {
+                return Ok(h.symbol[(index + (code - first)) as usize]);
+            }
+            index += count;
+            first += count;
+            first <<= 1;
+            code <<= 1;
+        }
+        Err(inflate_error("invalid Huffman code"))
+    }
+
+    fn stored(&mut self) -> Result<(), DartError> {
+        self.bitbuf = 0;
+        self.bitcnt = 0;
+        if self.pos + 4 > self.input.len() {
+            return Err(inflate_error("unexpected end of input"));
+        }
+        let len = self.input[self.pos] as usize | ((self.input[self.pos + 1] as usize) << 8);
+        let nlen = self.input[self.pos + 2] as usize | ((self.input[self.pos + 3] as usize) << 8);
+        self.pos += 4;
+        if len != (!nlen & 0xffff) {
+            return Err(inflate_error("invalid stored block lengths"));
+        }
+        if self.pos + len > self.input.len() {
+            return Err(inflate_error("unexpected end of input"));
+        }
+        self.out.extend_from_slice(&self.input[self.pos..self.pos + len]);
+        self.pos += len;
+        Ok(())
+    }
+
+    fn codes(&mut self, lencode: &Huffman, distcode: &Huffman) -> Result<(), DartError> {
+        const LBASE: [u16; 29] = [3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258];
+        const LEXT: [u32; 29] = [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0];
+        const DBASE: [u16; 30] = [1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577];
+        const DEXT: [u32; 30] = [0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13];
+        loop {
+            let sym = self.decode(lencode)?;
+            if sym < 256 {
+                self.out.push(sym as u8);
+            } else if sym == 256 {
+                return Ok(());
+            } else {
+                let s = (sym - 257) as usize;
+                if s >= 29 {
+                    return Err(inflate_error("invalid literal/length code"));
+                }
+                let len = LBASE[s] as usize + self.bits(LEXT[s])? as usize;
+                let d = self.decode(distcode)? as usize;
+                if d >= 30 {
+                    return Err(inflate_error("invalid distance code"));
+                }
+                let dist = DBASE[d] as usize + self.bits(DEXT[d])? as usize;
+                if dist > self.out.len() {
+                    return Err(inflate_error("invalid distance too far back"));
+                }
+                let start = self.out.len() - dist;
+                for i in 0..len {
+                    let b = self.out[start + i];
+                    self.out.push(b);
+                }
+            }
+        }
+    }
+
+    fn fixed(&mut self) -> Result<(), DartError> {
+        let mut lengths = [0u16; 288];
+        for (i, l) in lengths.iter_mut().enumerate() {
+            *l = if i < 144 { 8 } else if i < 256 { 9 } else if i < 280 { 7 } else { 8 };
+        }
+        let lencode = huffman(&lengths);
+        let distcode = huffman(&[5u16; 30]);
+        self.codes(&lencode, &distcode)
+    }
+
+    fn dynamic(&mut self) -> Result<(), DartError> {
+        const ORDER: [usize; 19] = [16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15];
+        let nlen = self.bits(5)? as usize + 257;
+        let ndist = self.bits(5)? as usize + 1;
+        let ncode = self.bits(4)? as usize + 4;
+        if nlen > 286 || ndist > 30 {
+            return Err(inflate_error("too many length or distance symbols"));
+        }
+        let mut lengths = vec![0u16; 320];
+        for &at in ORDER.iter().take(ncode) {
+            lengths[at] = self.bits(3)? as u16;
+        }
+        let lencode = huffman(&lengths[..19]);
+        let mut index = 0usize;
+        while index < nlen + ndist {
+            let sym = self.decode(&lencode)?;
+            if sym < 16 {
+                lengths[index] = sym;
+                index += 1;
+                continue;
+            }
+            let (len, repeat) = match sym {
+                16 => {
+                    if index == 0 {
+                        return Err(inflate_error("invalid bit length repeat"));
+                    }
+                    (lengths[index - 1], 3 + self.bits(2)? as usize)
+                }
+                17 => (0, 3 + self.bits(3)? as usize),
+                _ => (0, 11 + self.bits(7)? as usize),
+            };
+            if index + repeat > nlen + ndist {
+                return Err(inflate_error("invalid bit length repeat"));
+            }
+            for _ in 0..repeat {
+                lengths[index] = len;
+                index += 1;
+            }
+        }
+        if lengths[256] == 0 {
+            return Err(inflate_error("invalid code -- missing end-of-block"));
+        }
+        let lencode = huffman(&lengths[..nlen]);
+        let distcode = huffman(&lengths[nlen..nlen + ndist]);
+        self.codes(&lencode, &distcode)
+    }
+}
+
+/// RFC 1951, from `start` to the final block.
+fn inflate(input: &[u8], start: usize) -> Result<Vec<u8>, DartError> {
+    let mut state = Inflater { input, pos: start, bitbuf: 0, bitcnt: 0, out: Vec::new() };
+    loop {
+        let last = state.bits(1)?;
+        match state.bits(2)? {
+            0 => state.stored()?,
+            1 => state.fixed()?,
+            2 => state.dynamic()?,
+            _ => return Err(inflate_error("invalid block type")),
+        }
+        if last == 1 {
+            break;
+        }
+    }
+    Ok(state.out)
 }
 
 pub type JsonReviver = std::rc::Rc<

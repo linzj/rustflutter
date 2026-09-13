@@ -721,9 +721,15 @@ augment class RustBackend {
     // `decode` too and does not fail, and putting the bare name in
     // `_preludeFailing` propagated from it -- two stubs, `E0277` on an
     // `Rc<dyn DartAny>` (ws1077).
+    // ..and `gzip.decode` / `zlib.decode` on bad data, the same
+    // exception (ws1123).
     final codec = target?.rustType?.name ?? '';
     if (args.isNotEmpty &&
-        ((name == 'decode' && (codec == 'Utf8Codec' || codec == 'JsonCodec')) ||
+        ((name == 'decode' &&
+                (codec == 'Utf8Codec' ||
+                    codec == 'JsonCodec' ||
+                    codec == 'GZipCodec' ||
+                    codec == 'ZLibCodec')) ||
             (name == 'encode' && codec == 'JsonCodec'))) {
       // `Utf8Codec.encode` is *not* in this list: it takes a `String` and
       // hands back bytes, and nothing about it can fail. Propagating from
