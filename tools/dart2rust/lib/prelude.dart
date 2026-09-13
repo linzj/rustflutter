@@ -10316,6 +10316,103 @@ pub fn json_encode<V: JsonPiece>(
     Ok(out)
 }
 
+/// `dart:convert`'s `JsonEncoder`: `const JsonEncoder()` writes compact
+/// JSON, `const JsonEncoder.withIndent(indent)` puts every member and
+/// element on its own line, indented by `indent` per level, as Dart's
+/// does (`Platform.toJson` in package:platform, a refusal since it was
+/// reached; ws1122). The const's fields are the struct's, so the
+/// constant is written as a struct literal (`_constInstance`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct JsonEncoder {
+    pub indent: Option<String>,
+}
+
+impl JsonEncoder {
+    pub fn new() -> Self {
+        JsonEncoder { indent: None }
+    }
+
+    pub fn with_indent(indent: Option<String>) -> Self {
+        JsonEncoder { indent }
+    }
+
+    /// `convert(object)`: the JSON text.
+    pub fn convert<V: JsonPiece>(&self, value: V) -> Result<String, DartError> {
+        let mut out = String::new();
+        value.json_write(&mut out)?;
+        Ok(match &self.indent {
+            None => out,
+            Some(indent) => json_indented(&out, indent),
+        })
+    }
+}
+
+/// Compact JSON laid out the way Dart's `JsonEncoder.withIndent` lays it
+/// out: an object or array with members opens on its line, each member on
+/// a line of its own one level deeper, the close on a line at the outer
+/// level; an empty one stays `{}` / `[]`; `: ` after a key. String
+/// contents are copied through untouched, escapes included.
+pub fn json_indented(compact: &str, indent: &str) -> String {
+    let bytes: Vec<char> = compact.chars().collect();
+    let mut out = String::with_capacity(compact.len() * 2);
+    let mut depth = 0usize;
+    let mut i = 0usize;
+    let newline = |out: &mut String, depth: usize| {
+        out.push('\n');
+        for _ in 0..depth {
+            out.push_str(indent);
+        }
+    };
+    while i < bytes.len() {
+        let c = bytes[i];
+        match c {
+            '"' => {
+                out.push(c);
+                i += 1;
+                while i < bytes.len() {
+                    let d = bytes[i];
+                    out.push(d);
+                    i += 1;
+                    if d == '\\' && i < bytes.len() {
+                        out.push(bytes[i]);
+                        i += 1;
+                    } else if d == '"' {
+                        break;
+                    }
+                }
+                continue;
+            }
+            '{' | '[' => {
+                let close = if c == '{' { '}' } else { ']' };
+                if i + 1 < bytes.len() && bytes[i + 1] == close {
+                    out.push(c);
+                    out.push(close);
+                    i += 2;
+                    continue;
+                }
+                out.push(c);
+                depth += 1;
+                newline(&mut out, depth);
+            }
+            '}' | ']' => {
+                depth = depth.saturating_sub(1);
+                newline(&mut out, depth);
+                out.push(c);
+            }
+            ',' => {
+                out.push(c);
+                newline(&mut out, depth);
+            }
+            ':' => {
+                out.push_str(": ");
+            }
+            _ => out.push(c),
+        }
+        i += 1;
+    }
+    out
+}
+
 pub type JsonReviver = std::rc::Rc<
     dyn Fn(Option<std::rc::Rc<dyn DartAny>>, Option<std::rc::Rc<dyn DartAny>>) -> Result<Option<std::rc::Rc<dyn DartAny>>, DartError>,
 >;

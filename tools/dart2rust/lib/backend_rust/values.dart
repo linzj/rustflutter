@@ -30,6 +30,18 @@ augment class RustBackend {
     if (t.name == 'Zone' && fields.isEmpty) return 'Zone';
     // The prelude's unit codecs: `const Utf8Codec()`, `const JsonCodec()`.
     if (t.name == 'Utf8Codec' || t.name == 'JsonCodec') return t.name;
+    // `const JsonEncoder()` / `const JsonEncoder.withIndent('  ')`: the
+    // constant's `indent` is the struct's; `_toEncodable` is a callback
+    // the prelude's encoder does not ask (`Platform.toJson`, ws1122).
+    if (t.name == 'JsonEncoder') {
+      // The field is a `String?`, and the constant's value is written
+      // as one already (`Some(..)` / `None`).
+      final indent = fields['indent'];
+      final spelled = indent == null || _writtenNull(indent)
+          ? 'None'
+          : expr(indent);
+      return 'JsonEncoder { indent: $spelled }';
+    }
     if (t.name == 'Endian') {
       final little = fields['_littleEndian'];
       return little != null && expr(little) == 'true'
