@@ -185,8 +185,12 @@ augment class RustBackend {
   IrExpr _plain(IrExpr e) {
     final t = e.rustType;
     if (t == null || !t.projected) return e;
-    return IrNullableOf(e, t.name, toOption: true)
-      ..rustType = IrType(t.name, nullable: true, arguments: t.arguments);
+    return IrNullableOf(
+      e,
+      t.name,
+      toOption: true,
+      spelled: t.arguments.isEmpty ? null : t,
+    )..rustType = IrType(t.name, nullable: true, arguments: t.arguments);
   }
 
   /// `??` where an arm is the projected `T?`. `<T as DartNullable>::Or` is

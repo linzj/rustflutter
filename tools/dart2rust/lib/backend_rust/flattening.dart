@@ -667,9 +667,19 @@ augment class RustBackend {
       // ..or this class's own projected `T?` (`EnumBox<T> extends
       // Box<T?>`): the slot stays `<T as DartNullable>::Or`, and so does
       // the crossing -- dropping it put a bare `None` into it (ws688).
-      IrNullableOf(:final value, :final parameter, :final toOption) =>
+      IrNullableOf(
+        :final value,
+        :final parameter,
+        :final toOption,
+        :final spelled,
+      ) =>
         switch (types[parameter]) {
-          null => IrNullableOf(go(value), parameter, toOption: toOption),
+          null => IrNullableOf(
+            go(value),
+            parameter,
+            toOption: toOption,
+            spelled: spelled == null ? null : _substituteType(spelled, types),
+          ),
           final to
               when to.arguments.isEmpty &&
                   (!to.nullable || to.projected) &&

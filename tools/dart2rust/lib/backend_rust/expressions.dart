@@ -389,8 +389,13 @@ augment class RustBackend {
       // A local crossing is cloned: a closure's parameter rebound in its
       // prologue (`_withEdgeParams`) may be the `&T` a prelude iterator
       // hands out (`items.map((T? x) => ..)`, fixture closureedge).
-      IrNullableOf(:final value, :final parameter, :final toOption) =>
-        '<${_nullableOf(parameter)} as DartNullable>::${toOption ? 'option' : 'from_option'}(${expr(value)}${value is IrLocal ? '.clone()' : ''})',
+      IrNullableOf(
+        :final value,
+        :final parameter,
+        :final toOption,
+        :final spelled,
+      ) =>
+        '<${spelled == null ? _nullableOf(parameter) : type(IrType(spelled.name, arguments: spelled.arguments))} as DartNullable>::${toOption ? 'option' : 'from_option'}(${expr(value)}${value is IrLocal ? '.clone()' : ''})',
       IrSome(:final value) => _some(value),
       // Inside `as_ref().map(|it| ..)` the bound value is a reference, and
       // a reference does not cast: `lerpDouble`'s `a as double` on an

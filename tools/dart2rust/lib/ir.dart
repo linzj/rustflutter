@@ -352,11 +352,23 @@ class IrStaticCall extends IrExpr {
 /// field read); the other way gives the spelled value back (a result, a
 /// field write).
 class IrNullableOf extends IrExpr {
-  IrNullableOf(this.value, this.parameter, {required this.toOption});
+  IrNullableOf(
+    this.value,
+    this.parameter, {
+    required this.toOption,
+    this.spelled,
+  });
 
   final IrExpr value;
   final String parameter;
   final bool toOption;
+
+  /// The projected type with its arguments, where it has any: a name
+  /// alone spells `Map` as `Map<Rc<dyn DartAny>, Rc<dyn DartAny>>`, which
+  /// is not the `Map<ShortcutActivator, Intent>?` field being unprojected
+  /// (`ShortcutMapProperty._value` under `DiagnosticsProperty<Object?>`,
+  /// ws1116). Null for a bare parameter.
+  final IrType? spelled;
 }
 
 /// A constructor invocation. Named constructors carry their name.
