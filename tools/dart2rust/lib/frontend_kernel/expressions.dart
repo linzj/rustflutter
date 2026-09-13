@@ -266,18 +266,40 @@ augment class KernelFrontend {
     Member target,
     DartType? declared,
   ) {
-    if (declared is! TypeParameterType) return null;
+    if (declared == null) return null;
+    final owner = target.enclosingClass;
+    final env = typeEnvironment;
+    if (owner == null || env == null || owner.typeParameters.isEmpty) {
+      return null;
+    }
+    final bare = declared is TypeParameterType;
     // Strictly non-null: `Map<K, V>.[]` returns `V?`, which Kernel writes
     // `V%` -- *undetermined*, because `V`'s bound is nullable -- and the
     // top-bound rule already spells that `Option<Rc<dyn Object>>`. Let
     // through, the read lost its `Option` and every null-aware read around
     // it stopped compiling: round 3 at 336 against 246 with the rules off
     // (ws765 through ws768).
-    if (declared.nullability == Nullability.nullable) return null;
-    final owner = target.enclosingClass;
-    final env = typeEnvironment;
-    if (owner == null || env == null) return null;
-    final at = owner.typeParameters.indexOf(declared.parameter);
+    if (bare && declared.nullability == Nullability.nullable) return null;
+    // ..and a declared type that *mentions* the parameter, not only one
+    // that is it: `Completer<T>.future` is a `Future<T>`, and read through
+    // `_TaskEntry<T>.completer` -- whose `T` this output erased -- it is a
+    // `DartFuture<Rc<dyn DartAny>>`, which the return into the method's
+    // own `Future<T>` then maps back. Untyped, no conversion was asked for
+    // ("expected `DartFuture<T>`, found `DartFuture<Rc<dyn DartAny>>`",
+    // `SchedulerBinding.scheduleTask`, since ws1098).
+    if (!bare && !_mentionsParametersOf(declared, owner.typeParameters)) {
+      return null;
+    }
+    // ..but not one that mentions it *nullably*: Kernel folds `T?` under
+    // `T := dynamic` to a bare `dynamic`, while the prelude's `Or` for a
+    // handle is an `Option` -- `BasicMessageChannel<dynamic>.send` hands
+    // back a `DartFuture<Option<Rc<dyn DartAny>>>`, which the top-bound
+    // rule below spells and this one would not (`SemanticsNode.sendEvent`,
+    // +1 at ws1125).
+    if (!bare && _mentionsNullably(declared, owner.typeParameters)) {
+      return null;
+    }
+    final at = bare ? owner.typeParameters.indexOf(declared.parameter) : 0;
     if (at < 0) return null;
     // The receiver as *this output* records it, not as Kernel wrote it: a
     // field whose own class erased a parameter reads at the erased
@@ -301,6 +323,29 @@ augment class KernelFrontend {
         recorded = IrType(
           owner.name,
           arguments: [for (final a in asOwner.typeArguments) _typeNested(a)],
+        );
+      } on Unsupported {
+        return null;
+      }
+    }
+    if (!bare) {
+      // Every parameter the declaration mentions has to be `dynamic` on
+      // the receiver; put in, the declaration spells the value as the
+      // struct holds it.
+      final pairs = <TypeParameter, DartType>{};
+      for (var i = 0; i < owner.typeParameters.length; i++) {
+        final p = owner.typeParameters[i];
+        if (!_mentionsParametersOf(declared, [p])) continue;
+        if (i >= recorded.arguments.length ||
+            recorded.arguments[i].name != 'dynamic' ||
+            recorded.arguments[i].nullable) {
+          return null;
+        }
+        pairs[p] = const DynamicType();
+      }
+      try {
+        return _typeNested(
+          Substitution.fromMap(pairs).substituteType(declared),
         );
       } on Unsupported {
         return null;
@@ -346,6 +391,29 @@ augment class KernelFrontend {
       _unwrapped(target),
     _ => false,
   };
+
+  /// Whether `t` mentions one of `params` with a `?` on it, at any depth.
+  static bool _mentionsNullably(DartType t, List<TypeParameter> params) =>
+      switch (t) {
+        TypeParameterType(:final parameter, :final nullability) =>
+          params.contains(parameter) && nullability == Nullability.nullable,
+        InterfaceType(:final typeArguments) => typeArguments.any(
+          (a) => _mentionsNullably(a, params),
+        ),
+        FunctionType(
+          :final returnType,
+          :final positionalParameters,
+          :final namedParameters,
+        ) =>
+          _mentionsNullably(returnType, params) ||
+              positionalParameters.any((a) => _mentionsNullably(a, params)) ||
+              namedParameters.any((n) => _mentionsNullably(n.type, params)),
+        FutureOrType(:final typeArgument) => _mentionsNullably(
+          typeArgument,
+          params,
+        ),
+        _ => false,
+      };
 
   IrType? _erasedRead(Member target, DartType? declared) {
     if (_erasureOff) return null;
