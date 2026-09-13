@@ -991,7 +991,12 @@ augment class RustBackend {
     '_List': 'Vec',
   };
 
-  String _new(IrType t, List<IrExpr> args, String? constructor) {
+  String _new(
+    IrType t,
+    List<IrExpr> args,
+    String? constructor, [
+    String? implementation,
+  ]) {
     final collection = _collections[t.name];
     if (collection != null) {
       // An omitted optional (`SplayTreeMap([compare, isValidKey])`) is no
@@ -1038,8 +1043,18 @@ augment class RustBackend {
     // reading back a byte-identical error established (ws1067).
     final ctorOwner = _preludeCtorOwners[t.name];
     if (ctorOwner != null) {
-      return '$ctorOwner::${_ctorName(constructor)}'
-          '(${args.map(expr).join(', ')})';
+      // Two private implementations collapsed to one public name
+      // (`IrNew.implementation`) are two constructors on the owning struct:
+      // the owner's own is `new`, any other's is named after the SDK class
+      // it stands for (`_ByteAdapterSink` behind `ByteConversionSink.from`,
+      // ws1114).
+      final ctor =
+          constructor == null &&
+              implementation != null &&
+              implementation != ctorOwner
+          ? snake(implementation)
+          : _ctorName(constructor);
+      return '$ctorOwner::$ctor(${args.map(expr).join(', ')})';
     }
     final counted = library.resolve(t)?.counted ?? false;
     final name = t.arguments.isEmpty

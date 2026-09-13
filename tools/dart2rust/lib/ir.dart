@@ -361,11 +361,20 @@ class IrNullableOf extends IrExpr {
 
 /// A constructor invocation. Named constructors carry their name.
 class IrNew extends IrExpr {
-  IrNew(this.type, this.args, {this.constructor});
+  IrNew(this.type, this.args, {this.constructor, this.implementation});
 
   final IrType type;
   final List<IrExpr> args;
   final String? constructor;
+
+  /// The private `dart:` class actually constructed, when `type` is the
+  /// public interface it was collapsed to (`_instanceName`). A redirecting
+  /// factory arrives in the dill as its target: `ByteConversionSink.from`
+  /// is `_ByteAdapterSink()`, `ByteConversionSink.withCallback` is
+  /// `_ByteCallbackSink()`, and both collapsed to `ByteConversionSink` with
+  /// no constructor name -- one prelude constructor for two implementations
+  /// (`Sha256.startChunkedConversion`, ws1114). Null for anything else.
+  final String? implementation;
 }
 
 /// A `const` instance given by its field values rather than by a constructor

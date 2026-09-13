@@ -485,7 +485,24 @@ augment class RustBackend {
       'current(&self) -> Result<__A0, $dartHandle>',
       'current()',
     ],
+    // `dart:core`'s `Sink<T>`. `DigestSink implements Sink<Digest>` and is
+    // handed to `Hash.startChunkedConversion(Sink<Digest>)`, which is
+    // `Rc<dyn DartSink<Digest>>` here (2 stubs at ws1112).
+    'Sink': [
+      'add(&self, data: __A0) -> Result<(), $dartHandle>',
+      'add(data)',
+      'close(&self) -> Result<(), $dartHandle>',
+      'close()',
+    ],
   };
+
+  /// The prelude's trait for a `dart:core` interface whose Rust name is not
+  /// the Dart one: `Sink<T>` is the handle alias there and `DartSink<T>` is
+  /// the trait. Everything else is spelled as it is named.
+  static const _preludeInterfaceTraits = {'Sink': 'DartSink'};
+
+  static String _preludeInterfaceTrait(String name) =>
+      _preludeInterfaceTraits[name] ?? name;
 
   /// The `dart:core` interfaces the prelude has a trait for that this class
   /// answers -- its own, and those an abstract ancestor listed: a class
@@ -529,6 +546,25 @@ augment class RustBackend {
       final extra = m.params.skip(given.length).toList();
       if (extra.any((p) => p.defaultValue == null)) continue;
       return '$name(${[for (final a in given) a, for (final p in extra) expr(p.defaultValue!)].join(', ')})';
+    }
+    // ..or a member the class *inherits* from an abstract ancestor, which
+    // is where a mixin-like base keeps the body: `_Sha256Sink extends
+    // HashSink` and it is `HashSink` that `implements Sink<List<int>>` and
+    // writes `add` and `close`. Spelled through that ancestor's trait,
+    // because `self.add(data)` inside the impl being written names two
+    // candidates and neither wins (the E0034 above). Without this the
+    // supertrait went on `HashSink` and no implementor answered it: 2
+    // errors outside any function and the crate -- with four others
+    // depending on it -- out of the workspace (ws1113).
+    for (final above in _abstractAncestors(cls)) {
+      for (final m in above.methods) {
+        if (m.isStatic || m.isSetter || m.operator != null) continue;
+        if (snake(m.name) != name) continue;
+        if (m.params.length != given.length) continue;
+        final self = given.isEmpty ? 'self' : 'self, ${given.join(', ')}';
+        return '<Self as ${above.name}${_baseArguments(above) ?? ''}>::'
+            '$name($self)';
+      }
     }
     // ..or a *field* of that name, where the interface's member is a
     // getter. Dart lets a field satisfy one -- `_BoardIterator implements
@@ -580,9 +616,10 @@ augment class RustBackend {
       if (!forwards) continue;
       final args = i.arguments.map((a) => type(a)).toList();
       final generic = args.isEmpty ? '' : '<${args.join(', ')}>';
-      _member('impl ${i.name} for ${cls.name}', () {
+      final trait = _preludeInterfaceTrait(i.name);
+      _member('impl $trait for ${cls.name}', () {
         _line(
-          'impl${_implGenerics(cls)} ${i.name}$generic for '
+          'impl${_implGenerics(cls)} $trait$generic for '
           '${cls.name}${_generics(cls)} {',
         );
         _indent++;
@@ -602,6 +639,8 @@ augment class RustBackend {
                 ? _resultModel
                       ? 'Ok(self.${forward.substring(_plainMark.length)})'
                       : 'self.${forward.substring(_plainMark.length)}'
+                : forward.startsWith('<')
+                ? forward
                 : 'self.$forward',
           );
           _indent--;

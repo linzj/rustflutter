@@ -132,11 +132,13 @@ augment class RustBackend {
           ),
           diverges && fails,
         ),
-      IrNew(:final type, :final args, :final constructor) => _newFailing(
-        type,
-        args,
-        constructor,
-      ),
+      IrNew(
+        :final type,
+        :final args,
+        :final constructor,
+        :final implementation,
+      ) =>
+        _newFailing(type, args, constructor, implementation),
       // Parenthesised: a struct literal is not allowed bare in an `if`
       // condition, and `if self._state == _State { .. } {` did not parse.
       // ..and a counted class's constant is its handle, as its
@@ -635,10 +637,15 @@ augment class RustBackend {
 
   /// A translated class's constructor returns `Result` like any function;
   /// the prelude's do not.
-  String _newFailing(IrType t, List<IrExpr> args, String? constructor) {
+  String _newFailing(
+    IrType t,
+    List<IrExpr> args,
+    String? constructor, [
+    String? implementation,
+  ]) {
     final awaited = _awaiting;
     _awaiting = false;
-    final call = _new(t, args, constructor);
+    final call = _new(t, args, constructor, implementation);
     final translated = _resultModel && library[t.name] != null;
     return translated && !awaited ? '$call$_propagate' : call;
   }

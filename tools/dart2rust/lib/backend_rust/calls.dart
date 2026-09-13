@@ -710,6 +710,17 @@ augment class RustBackend {
         sinkLike.contains(target?.rustType?.name ?? '')) {
       return '$receiver.close()$_propagate';
     }
+    // ..and `add`, for the same reason and by the same receiver. A class
+    // that `implements Sink<T>` gets its forwarding impl from
+    // `_preludeInterfaces`, and that impl hands on the `Result` the
+    // class's own `add` returns -- which a call that dropped it turned
+    // into silence: the `sinkinterface` fixture's sink throws from `add`
+    // and this side read `filled` where Dart read the throw (ws1112).
+    if (name == 'add' &&
+        args.length == 1 &&
+        sinkLike.contains(target?.rustType?.name ?? '')) {
+      return '$receiver.add(${expr(args.single)})$_propagate';
+    }
     // An empty one has no first and no last, and Dart throws `Bad state:
     // No element` for both. The prelude says `Result` for the queue-like
     // receivers since ws1076; the `Vec` ones used to index -- `xs[0]` on an

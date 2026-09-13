@@ -385,7 +385,8 @@ augment class RustBackend {
       for (final i in cls.interfaces)
         if (_preludeInterfaces.containsKey(i.name) &&
             !i.arguments.any((a) => a.name == cls.name))
-          '${i.name}${i.arguments.isEmpty ? '' : '<${i.arguments.map(type).join(', ')}>'}',
+          '${_preludeInterfaceTrait(i.name)}'
+              '${i.arguments.isEmpty ? '' : '<${i.arguments.map(type).join(', ')}>'}',
     }.toList();
     // ..and whatever the super functions just written need `__Self` to be
     // beyond this trait (`_superBoundTraits`): the defaults below hand

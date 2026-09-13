@@ -551,6 +551,10 @@ augment class KernelFrontend {
         ),
       ),
       constructor: name.isEmpty ? null : name,
+      // The private class behind a collapsed public name, kept for the
+      // backend to tell two implementations' constructors apart
+      // (`IrNew.implementation`).
+      implementation: _instanceName(cls) != cls.name ? cls.name : null,
     );
     // An open class's instance is its `Impl` struct, and every slot typed
     // with the class is the trait handle: the construction leaves as one

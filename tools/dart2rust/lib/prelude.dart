@@ -4934,7 +4934,11 @@ impl Timeline {
 /// as a type is a handle to one -- `Sink<Digest>` in `package:crypto`'s
 /// chunked conversion.
 pub trait DartSink<T> {
-    fn add(&self, data: T);
+    /// Fallible for the same reason `close` is: what a translated sink's
+    /// `add` runs is Dart code, and a forwarding impl written for a class
+    /// that `implements Sink<T>` has its `Result` to hand on
+    /// (`_preludeInterfaces`; `DigestSink.add`, ws1112).
+    fn add(&self, data: T) -> Result<(), DartError>;
     /// Fallible because what it closes over is Dart code: `_ByteCallbackSink`
     /// calls a `Fn(..) -> Result<(), DartError>` and had nowhere to put the
     /// error, so it aborted on one. Nothing outside this file implements or
@@ -6297,11 +6301,25 @@ impl _ByteCallbackSink {
     pub fn new(callback: std::rc::Rc<dyn Fn(Vec<i64>) -> Result<(), DartError>>) -> ByteConversionSink {
         std::rc::Rc::new(_ByteCallbackSink { accumulated: std::cell::RefCell::new(Vec::new()), callback })
     }
+
+    /// `ByteConversionSink.from(sink)` -- a redirecting factory, which the
+    /// dill spells as its target, `_ByteAdapterSink(sink)`; this is that
+    /// constructor, named after the SDK's own class as `snake` spells a
+    /// private name, since the public name already belongs to
+    /// `withCallback`'s (`IrNew.implementation`). In
+    /// Dart it wraps a `Sink<List<int>>` so it can take bytes a chunk at a
+    /// time. Here `ByteConversionSink` *is* `Sink<Vec<i64>>` -- the same
+    /// handle under another name -- so the wrapper has nothing to do and
+    /// the sink is the answer (`Sha256.startChunkedConversion`, ws1114).
+    pub fn __byte_adapter_sink(sink: ByteConversionSink) -> ByteConversionSink {
+        sink
+    }
 }
 
 impl DartSink<Vec<i64>> for _ByteCallbackSink {
-    fn add(&self, data: Vec<i64>) {
+    fn add(&self, data: Vec<i64>) -> Result<(), DartError> {
         self.accumulated.borrow_mut().extend(data);
+        Ok(())
     }
 
     fn close(&self) -> Result<(), DartError> {
