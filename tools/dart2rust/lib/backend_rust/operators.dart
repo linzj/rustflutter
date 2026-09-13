@@ -625,6 +625,13 @@ augment class RustBackend {
   /// where the last `.unwrap()` in the generated code came out, a
   /// coercion inside the body with no `Result` to leave by.
   String _mapElements(IrExpr collection, String kind, IrExpr body) {
+    // A `FutureOr` by its two cases: the value in place (the body's `?`
+    // is the enclosing function's), the future mapped as a future is.
+    if (kind == 'FutureOr') {
+      return '(match ${expr(collection)} { '
+          'FutureOr::Value(__fo) => FutureOr::Value(match __fo { Some(v) => Some(${expr(body)}), None => None }), '
+          'FutureOr::Future(__fo) => FutureOr::Future(__fo.map(|v| -> Result<_, $_error> { Ok(${_failure != null ? expr(body) : _mappedBody(body)}) })) })';
+    }
     if (_failure != null && kind != 'Future' && kind != 'Iterator') {
       final bound = kind == 'Map' ? '(k, v)' : 'v';
       final collected =

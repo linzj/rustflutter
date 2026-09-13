@@ -500,6 +500,26 @@ IrExpr coerceInto(
     if (identical(body, element)) return value;
     return IrMapElements(value, 'Iterator', body)..rustType = slot;
   }
+  // `FutureOr<A>` into `FutureOr<B>`, each case through this rule: the
+  // callback a generic method's erased twin takes hands back a
+  // `FutureOr<Rc<dyn DartAny>>` where the tear-off was typed at the call's
+  // own `T` (`scheduleTask<List<LicenseParagraph>>(license.paragraphs
+  // .toList, ..)` on the binding's trait object, ws1119).
+  if (have.name == 'FutureOr' &&
+      slot.name == 'FutureOr' &&
+      have.arguments.length == 1 &&
+      slot.arguments.length == 1 &&
+      !sameRust(have.arguments.single, slot.arguments.single)) {
+    final element = IrLocal('v')..rustType = have.arguments.single;
+    final body = coerceInto(
+      element,
+      slot.arguments.single,
+      world,
+      inClosure: true,
+    );
+    if (identical(body, element)) return value;
+    return IrMapElements(value, 'FutureOr', body)..rustType = slot;
+  }
   if (have.name == 'Future' &&
       slot.name == 'Future' &&
       have.arguments.length == 1 &&

@@ -2,6 +2,41 @@ part of '../backend_rust.dart';
 
 // `_call`: one method call, from receiver to turbofish.
 augment class RustBackend {
+  /// The arguments of a call to a generic method's erased twin, each one
+  /// whose parameter names the method's own type parameters put into the
+  /// twin's slot (the parameter at `Rc<dyn DartAny>`). The front end typed
+  /// them at the call's own `T`: `scheduleTask<List<LicenseParagraph>>(
+  /// license.paragraphs.toList, ..)` handed a `Fn() -> FutureOr<Vec<..>>`
+  /// where the twin takes a `Fn() -> FutureOr<Rc<dyn DartAny>>`
+  /// (`_PackageLicensePageState._initLicenses`, ws1119).
+  List<String> _erasedArgs(IrMethod? method, List<IrExpr> args) {
+    if (method == null || method.typeParameters.isEmpty) {
+      return args.map(expr).toList();
+    }
+    final erasure = _erasure(method);
+    return [
+      for (var i = 0; i < args.length; i++)
+        if (i < method.params.length &&
+            _mentionsAny(method.params[i].type, method.typeParameters) &&
+            args[i].rustType != null)
+          expr(
+            coerceInto(
+              args[i],
+              _substituteType(method.params[i].type, erasure),
+              _world,
+            ),
+          )
+        else
+          expr(args[i]),
+    ];
+  }
+
+  static bool _mentionsAny(IrType t, List<String> names) =>
+      names.contains(t.name) ||
+      t.arguments.any((a) => _mentionsAny(a, names)) ||
+      (t.parameters?.any((a) => _mentionsAny(a, names)) ?? false) ||
+      (t.returns != null && _mentionsAny(t.returns!, names));
+
   /// A receiver whose *value* is a `double` literal, however it is spelled.
   /// Rust resolves a method before it defaults an unsuffixed float, so such
   /// a receiver has to say `f64` outright ("can't call method `min` on
@@ -1045,7 +1080,7 @@ augment class RustBackend {
           return _erasedCast(
             resultType,
             '<$selfType as $through${_traitArgsOf(through)}>::${_identifier(name)}__erased'
-            '(&*$_selfName${args.isEmpty ? '' : ', '}${args.map(expr).join(', ')})$_propagate',
+            '(&*$_selfName${args.isEmpty ? '' : ', '}${_erasedArgs(_methodOf(through, name), args).join(', ')})$_propagate',
             method: _methodOf(through, name),
           );
         }
@@ -1088,7 +1123,7 @@ augment class RustBackend {
         return _erasedCast(
           resultType,
           '$path::${_identifier(name)}__erased'
-          '($through${args.isEmpty ? '' : ', '}${args.map(expr).join(', ')})$_propagate',
+          '($through${args.isEmpty ? '' : ', '}${_erasedArgs(_methodOf(qualifier, name), args).join(', ')})$_propagate',
           method: _methodOf(qualifier, name),
         );
       }
@@ -1109,7 +1144,7 @@ augment class RustBackend {
         return _erasedCast(
           resultType,
           '$path::${_identifier(name)}__erased'
-          '($through${args.isEmpty ? '' : ', '}${args.map(expr).join(', ')})$_propagate',
+          '($through${args.isEmpty ? '' : ', '}${_erasedArgs(_methodOf(qualifier, name), args).join(', ')})$_propagate',
           method: _methodOf(qualifier, name),
         );
       }
@@ -1157,7 +1192,7 @@ augment class RustBackend {
       return _erasedCast(
         resultType,
         '$receiver.${_identifier(name)}__erased'
-        '(${args.map(expr).join(', ')})$_propagate',
+        '(${_erasedArgs(_methodOf(receiverClass ?? cls.name, name), args).join(', ')})$_propagate',
         method: _methodOf(receiverClass ?? cls.name, name),
       );
     }
