@@ -627,6 +627,10 @@ augment class RustBackend {
   String _mapElements(IrExpr collection, String kind, IrExpr body) {
     // A `FutureOr` by its two cases: the value in place (the body's `?`
     // is the enclosing function's), the future mapped as a future is.
+    // A weak reference's target, converted: an upcast, which cannot fail.
+    if (kind == 'WeakReference') {
+      return '${expr(collection)}.map_target(|v| ${_mappedBody(body)})';
+    }
     if (kind == 'FutureOr') {
       return '(match ${expr(collection)} { '
           'FutureOr::Value(__fo) => FutureOr::Value(match __fo { Some(v) => Some(${expr(body)}), None => None }), '

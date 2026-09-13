@@ -99,6 +99,9 @@ String normalName(String name) => switch (name) {
   // a `Vec` slot unconverted -- which is `OverlayState.rearrange`'s
   // `_entries.insertAll(index, old)`, a stub since ws638.
   'LinkedHashSet' || 'HashSet' || 'SplayTreeSet' || '_Set' => 'Set',
+  // `WeakReference(..)` devirtualised to `dart:core`'s `_WeakReference`
+  // by the AOT compiler: the prelude's one `WeakReference` (ws1127).
+  '_WeakReference' => 'WeakReference',
   _ => name,
 };
 
@@ -519,6 +522,28 @@ IrExpr coerceInto(
     );
     if (identical(body, element)) return value;
     return IrMapElements(value, 'FutureOr', body)..rustType = slot;
+  }
+  // `WeakReference<A>` into `WeakReference<B>`, the target through this
+  // rule: `WeakReference<Route<dynamic>>(poppedRoute)` stored into the
+  // `WeakReference<_RoutePlaceholder>` field it is declared as, Dart's
+  // covariance on a one-element wrapper (`_RouteEntry.handleDidPopNext`,
+  // ws1127).
+  if (normalName(have.name) == 'WeakReference' &&
+      normalName(slot.name) == 'WeakReference' &&
+      have.arguments.length == 1 &&
+      slot.arguments.length == 1 &&
+      !isNullable(have) &&
+      !isNullable(slot) &&
+      !sameRust(have.arguments.single, slot.arguments.single)) {
+    final element = IrLocal('v')..rustType = have.arguments.single;
+    final body = coerceInto(
+      element,
+      slot.arguments.single,
+      world,
+      inClosure: true,
+    );
+    if (identical(body, element)) return value;
+    return IrMapElements(value, 'WeakReference', body)..rustType = slot;
   }
   if (have.name == 'Future' &&
       slot.name == 'Future' &&

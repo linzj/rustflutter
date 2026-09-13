@@ -6152,6 +6152,14 @@ impl<T: Clone> WeakReference<T> {
     pub fn target(&self) -> Option<T> {
         Some(self.0.clone())
     }
+
+    /// The reference at another type: Dart's `WeakReference<Route>` is a
+    /// `WeakReference<_RoutePlaceholder>` by covariance, and here the
+    /// target is converted the way any element is (`_RouteEntry.
+    /// handleDidPopNext`, ws1127).
+    pub fn map_target<U: Clone>(self, f: impl FnOnce(T) -> U) -> WeakReference<U> {
+        WeakReference(f(self.0))
+    }
 }
 
 impl<T> fmt::Debug for WeakReference<T> {
